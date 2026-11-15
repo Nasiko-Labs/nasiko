@@ -1,74 +1,67 @@
 # Security Policy
 
-Nasiko runs in the call path of agents, coding harnesses and model providers, and it handles
-credentials, provider keys and user data. We take security reports seriously and appreciate the
-work of everyone who helps keep Nasiko and its users safe.
+## Reporting a Vulnerability
 
-## Reporting a vulnerability
+**Please do not open a public issue for a security vulnerability.**
 
-**Do not report security vulnerabilities through public GitHub issues, pull requests, discussions or
-Discord channels.**
+Report via either channel:
 
-Report them privately through GitHub's private vulnerability reporting:
-[Report a vulnerability](https://github.com/Nasiko-Labs/nasiko/security/advisories/new).
+- **GitHub Private Vulnerability Reporting** on this repository (Security tab → "Report a vulnerability")
+- Email: **security@nasiko.com**
 
-If you cannot use GitHub, contact a maintainer privately on
-[Discord](https://discord.com/invite/HmnfkTfjFv) and ask for a private channel. Do not include
-vulnerability details in the first message.
+Include the affected component, reproduction steps or a proof of concept, and your impact
+assessment. We acknowledge within **2 business days** and send a triage verdict within **7 days**.
 
-Please include as much of the following as you can:
-
-- the type of issue (for example authentication bypass, privilege escalation, injection, secret
-  exposure, server-side request forgery);
-- the affected component, endpoint or file, and the version or commit;
-- the configuration needed to reproduce it;
-- step-by-step reproduction instructions;
-- a proof of concept, if you have one;
-- the impact, and how an attacker could exploit it.
-
-## What to expect
-
-| Step | Target |
-|---|---|
-| Acknowledgement of your report | within 3 business days |
-| Initial assessment and severity | within 10 business days |
-| Status updates while we work on a fix | at least every 2 weeks |
-
-We will keep you informed while we investigate, tell you whether we accept the report, and agree a
-disclosure date with you. Once a fix is released, we publish a security advisory that names you
-unless you ask to remain anonymous.
-
-## Supported versions
-
-Security fixes are made on the `main` branch and included in the next release. We do not backport
-fixes to older releases; move to the latest release to receive them.
+Good-faith security research against deployments you own or are authorized to test is welcomed
+and will not result in legal action from us.
 
 ## Scope
 
-In scope:
+In scope: the control-plane server, routing engine, MCP gateway, LLM router, embedded OCI
+registry, auth, flow guard, secrets handling, CLI, coding-agent harness shim, web UI, and the
+example agents in this repository.
 
-- the Nasiko server: API, authentication and authorization, agent proxy, LLM router, MCP gateway,
-  embedded registry and web UI;
-- the `nasiko` CLI;
-- the example agents and Docker images published from this repository.
+Out of scope: vulnerabilities in third-party dependencies without a demonstrated exploit path
+through Nasiko code; denial-of-service against deployments you do not own; social engineering.
 
-Out of scope:
+## Security Model (summary)
 
-- vulnerabilities in third-party dependencies that have no demonstrated impact on Nasiko (report
-  those to the upstream project);
-- issues that require a compromised host, a malicious administrator, or physical access;
-- denial of service through volumetric traffic;
-- findings from automated scanners without a demonstrated, reproducible impact;
-- missing security headers or best-practice recommendations with no exploitable impact;
-- social engineering of Nasiko maintainers or users.
+Nasiko is a **single control-plane process and the sole ingress** — there is no separate gateway.
+Agents are never publicly exposed; every agent-to-agent call is proxied back through the server,
+which enforces authentication, ACLs, rate limits, and anti-cascade flow limits at that one
+chokepoint. Agents never hold real LLM API keys (the LLM router issues per-agent identity tokens)
+and never see user session credentials (the proxy strips them before forwarding). Agent secrets
+are AES-256-GCM encrypted at rest and decrypted only into container env at deploy time. The MCP
+gateway authenticates agents with a deploy-time credential and binds user identity to the
+request's `traceparent` via the flow record — both fail closed.
 
-## Safe harbor
+The full analysis: [`docs/THREAT_MODEL.md`](docs/THREAT_MODEL.md). How we handle incidents:
+[`docs/INCIDENT_RESPONSE.md`](docs/INCIDENT_RESPONSE.md).
 
-We will not pursue legal action against anyone who, in good faith:
+## Supported Versions
 
-- reports a vulnerability through the channels above;
-- tests only against their own installation or accounts they own;
-- avoids privacy violations, data destruction, and degradation of service for others;
-- gives us reasonable time to fix the issue before disclosing it publicly.
+Nasiko is pre-1.0 and rolling-release. **Only the latest `main` and the current release tag
+receive security fixes.**
 
-Thank you for helping keep Nasiko secure.
+## Disclosure Policy
+
+- We aim to confirm, fix, and release within **90 days** of a report; critical issues faster.
+- We publish a GitHub Security Advisory with the fix release and credit reporters unless they
+  ask otherwise.
+- Please withhold public details until a fix is available.
+
+## Operator Hardening Baseline
+
+Running a Nasiko control plane? Minimum secure posture:
+
+1. **Change the bootstrap admin password** (`ADMIN_PASSWORD`, default `changeme`) on first boot.
+2. Set strong, unique `SECRETS_ENCRYPTION_KEY` (base64, 32 bytes) and `JWT_SECRET`.
+3. Terminate TLS in front of the control plane; never expose it over plain HTTP beyond localhost.
+4. Keep Postgres, Redis, and S3 off public networks — the control plane is the only public port.
+5. Set `CORS_ALLOWED_ORIGINS` explicitly if browsers call the API cross-origin (default: empty).
+6. Restrict `GIT_CLONE_ALLOWED_HOSTS` and `REGISTRY_IMPORT_ALLOWED_HOSTS` to hosts you trust.
+7. Treat `BUILD_PUSH_TOKEN` as a cluster-wide root-equivalent credential; rotate on suspicion.
+8. Review `OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT` — captured prompt/completion
+   content in Tempo/Loki is sensitive; apply access control and retention.
+9. Restrict agent egress to what agents need (LLM router, MCP gateway, approved APIs).
+10. Apply security releases promptly.

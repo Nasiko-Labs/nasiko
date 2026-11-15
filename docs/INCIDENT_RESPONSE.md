@@ -13,8 +13,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 | Tech Lead | Nasiko development lead | Technical decisions, containment execution |
 | Comms | IC designates | All external messaging — **no one else communicates externally** |
 
-- Vulnerability intake: GitHub Private Vulnerability Reporting, or a private Discord channel with a
-  maintainer (see [`SECURITY.md`](../SECURITY.md)).
+- Vulnerability intake: **security@nasiko.com** and GitHub Private Vulnerability Reporting.
 - Declare an incident when in doubt — a stood-down false alarm costs an hour; a late declaration
   costs a breach.
 
@@ -31,7 +30,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 
 ### 2.1 Preparation (maintainers: do these now)
 
-- [ ] GitHub PVR enabled and triaged; private Discord requests answered.
+- [ ] `security@nasiko.com` monitored; GitHub PVR enabled and triaged.
 - [ ] Maintainers have break-glass access to reference deployments, CI, and the package/registry accounts.
 - [ ] Alerts wired on reference deployments: `GuardUnavailable` spikes, LLM-router 403 storms, OCI 401 bursts.
 - [ ] Postgres backups with point-in-time recovery; restore tested quarterly.
@@ -39,7 +38,7 @@ deployments of the OSS control plane. Operators running their own deployment sho
 
 ### 2.2 Detection & analysis
 
-Sources: alerts, user reports, vulnerability reports, GitHub advisories, Tempo/Loki anomalies.
+Sources: alerts, user reports, security@ intake, GitHub advisories, Tempo/Loki anomalies.
 
 1. **Declare** (IC) with a severity guess — refine later.
 2. **Start the timeline** — every action timestamped, one shared doc.
