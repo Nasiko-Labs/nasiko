@@ -1,7 +1,8 @@
 /**
  * Type-to-confirm field for destructive dialogs: the phrase to type sits on its own line as a
- * selectable chip, then an empty input below it. The phrase is part of the label, so screen
- * readers announce "Type … to confirm" and tests can find the input by label.
+ * selectable chip, then an empty input below it. The label carries the phrase in a screen-reader-only
+ * span, so the input's name is "Type … to confirm:"; the chip is aria-hidden and sits outside the label,
+ * so the phrase is neither read twice nor part of the label's text.
  *
  * No placeholder on purpose: a grey copy of the phrase inside the input reads as already filled in.
  */
@@ -31,10 +32,11 @@ export function TypeToConfirm({
   const id = useId()
   return (
     <div className={cn('flex flex-col gap-2', className)}>
-      <label htmlFor={id} className="flex flex-col gap-1.5 text-sm text-muted-foreground">
-        <span>
+      <div className="flex flex-col gap-1.5">
+        <label htmlFor={id} className="text-sm text-muted-foreground">
           {lead} <span className="sr-only">{phrase}</span> {tail}:
-        </span>
+        </label>
+        {/* Outside the label: clicking a label focuses its input, which would fight text selection here. */}
         <code
           aria-hidden
           className={cn(
@@ -44,7 +46,7 @@ export function TypeToConfirm({
         >
           {phrase}
         </code>
-      </label>
+      </div>
       <Input
         id={id}
         value={value}
