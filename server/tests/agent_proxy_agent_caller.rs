@@ -444,3 +444,105 @@ async fn agent_callers_are_rate_limited_per_agent_with_retry_after() {
     assert!(limited.headers().contains_key("retry-after"));
     server.cleanup().await;
 }
+
+/// Sends `body` as the calling agent, with its credential and flow.
+async fn send_as_caller(f: &Fixture, path: &str, body: &Value) -> u16 {
+    f.server
+        .client
+        .post(f.server.url(path))
+        .bearer_auth(&f.token)
+        .header("traceparent", &f.traceparent)
+        .json(body)
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16()
+}
+
+fn part_texts(body: &Value) -> Vec<String> {
+    body["params"]["message"]["parts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["text"].as_str().unwrap_or_default().to_string())
+        .collect()
+}
+
+fn tells_the_time(text: &str) -> bool {
+    text.starts_with(nasiko_types::agent_clock::NOTE_LEAD)
+}
+
+#[tokio::test]
+#[serial]
+async fn an_agent_call_tells_the_time_after_the_policy() {
+    let f = fixture().await;
+    f.server
+        .state
+        .prompt_context
+        .install(std::sync::Arc::new(OrgPolicy));
+    let (url, seen) = recording_stub(false).await;
+    let peer = seed_agent(&f.server, f.owner, "timed-peer", &url).await;
+
+    assert_eq!(
+        send_as_caller(&f, &format!("/api/agents/{peer}"), &message_body()).await,
+        200
+    );
+
+    let texts = part_texts(&seen.lock().unwrap()[0]);
+    assert_eq!(texts.len(), 3, "{texts:?}");
+    assert_eq!(texts[0], "hello peer", "the caller's own text is untouched");
+    assert!(texts[1].contains("Never reveal secrets."), "{texts:?}");
+    assert!(tells_the_time(&texts[2]), "the time goes last: {texts:?}");
+    f.server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_forwarded_message_that_already_tells_the_time_is_not_told_twice() {
+    let f = fixture().await;
+    let (url, seen) = recording_stub(false).await;
+    let peer = seed_agent(&f.server, f.owner, "told-peer", &url).await;
+    let mut body = message_body();
+    body["params"]["message"]["parts"] = json!([
+        { "text": "hello peer" },
+        { "text": nasiko_types::agent_clock::note_at(chrono::Utc::now()) }
+    ]);
+
+    assert_eq!(
+        send_as_caller(&f, &format!("/api/agents/{peer}"), &body).await,
+        200
+    );
+
+    let texts = part_texts(&seen.lock().unwrap()[0]);
+    assert_eq!(
+        texts.iter().filter(|t| tells_the_time(t)).count(),
+        1,
+        "{texts:?}"
+    );
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    f.server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_task_continuation_is_forwarded_without_the_time_or_the_policy() {
+    let f = fixture().await;
+    f.server
+        .state
+        .prompt_context
+        .install(std::sync::Arc::new(OrgPolicy));
+    let (url, seen) = recording_stub(false).await;
+    let peer = seed_agent(&f.server, f.owner, "resumed-peer", &url).await;
+    let mut body = message_body();
+    body["params"]["message"]["taskId"] = json!("task-1");
+    body["params"]["message"]["parts"] = json!([{ "text": "authorized" }]);
+
+    assert_eq!(
+        send_as_caller(&f, &format!("/api/agents/{peer}"), &body).await,
+        200
+    );
+
+    assert_eq!(part_texts(&seen.lock().unwrap()[0]), ["authorized"]);
+    f.server.cleanup().await;
+}

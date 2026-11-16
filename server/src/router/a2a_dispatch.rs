@@ -1497,6 +1497,19 @@ fn append_org_policy_part(req: &mut JsonRpcRequest, org_context: Option<&str>) {
     let _ = nasiko_agent_proxy::context_part::append_context_part(message, org, tagging);
 }
 
+/// Appends the current date and time as its own part, after organization policy, on the same
+/// terms the agent proxy does (`crate::current_time`). Every request this path builds opens a
+/// task, so none is a continuation.
+fn append_current_time_part(
+    req: &mut JsonRpcRequest,
+    clock: nasiko_types::agent_clock::AgentClock,
+) {
+    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&req.method);
+    if let Some(message) = req.params.as_mut().and_then(|p| p.get_mut("message")) {
+        crate::current_time::append_current_time(message, clock, tagging);
+    }
+}
+
 /// Orchestrator tool names of the agents whose Token optimization switch is off.
 async fn opted_out_agent_tools(
     db: &sqlx::PgPool,
@@ -1739,6 +1752,7 @@ async fn agent_stream(
     };
     append_attachment_note(&mut req_body, attachment_note.as_deref());
     append_org_policy_part(&mut req_body, org_context);
+    append_current_time_part(&mut req_body, state.agent_clock());
 
     // No per-request MCP credential: the agent authenticates to /api/mcp with
     // its own deploy-time MCP_GATEWAY_TOKEN; the forwarded traceparent + the
@@ -2066,6 +2080,7 @@ async fn agent_stream(
             );
             append_attachment_note(&mut retry_body, attachment_note.as_deref());
             append_org_policy_part(&mut retry_body, org_context);
+            append_current_time_part(&mut retry_body, state.agent_clock());
             let retry = build_agent_req()
                 .json(&retry_body)
                 .send()

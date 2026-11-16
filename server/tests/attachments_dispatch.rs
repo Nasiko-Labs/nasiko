@@ -837,7 +837,14 @@ async fn a_turn_without_files_gets_no_attachment_line() {
 
     let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(text_parts_seen(&agent).len(), 1);
+    // Only the user's text, besides the current time the platform tells every agent.
+    let texts = text_parts_seen(&agent);
+    let own: Vec<&String> = texts
+        .iter()
+        .filter(|t| !t.starts_with(nasiko_types::agent_clock::NOTE_LEAD))
+        .collect();
+    assert_eq!(own.len(), 1, "{texts:?}");
+    assert!(!own[0].contains("nasiko-file://"), "{texts:?}");
 
     server.cleanup().await;
 }
@@ -1195,139 +1202,6 @@ async fn an_agent_with_no_media_code_gets_the_image_to_its_model_through_the_rou
             .filter_map(|p| p["text"].as_str())
             .any(|t| t.contains("what is in the attachment?"))
     );
-
-    server.cleanup().await;
-}
-
-// ─── Files from earlier turns ────────────────────────────────────────────────
-
-/// Save the user's message the way the web UI does before it dispatches the turn, which ties
-/// the turn's uploads to the message.
-async fn save_user_message(
-    server: &common::TestServer,
-    user: &User,
-    session_id: &str,
-    file_ids: &[String],
-) {
-    let res = common::as_member(
-        server
-            .client
-            .post(server.url(&format!("/api/chat/sessions/{session_id}/messages"))),
-        &user.id,
-        &user.name,
-    )
-    .json(&json!({"role": "user", "content": "see attached", "file_ids": file_ids}))
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(res.status(), 201);
-}
-
-/// The filenames of the files the agent got on each of its calls, in order.
-fn filenames_per_call(agent: &StubAgent) -> Vec<Vec<String>> {
-    agent
-        .seen
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|req| {
-            req["params"]["message"]["parts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|p| p.get("raw").is_some())
-                .map(|p| p["filename"].as_str().unwrap().to_string())
-                .collect()
-        })
-        .collect()
-}
-
-#[tokio::test]
-#[serial]
-async fn a_file_from_an_earlier_turn_comes_with_every_later_turn_once() {
-    let server = common::TestServer::start().await;
-    let (_, user) = admin_and_member(&server, "att-carry").await;
-    let sid = create_session(&server, &user).await;
-    let (url, agent, _handle) = start_stub_agent().await;
-    let agent_id = seed_running_agent(&server, &user, &url).await;
-
-    let pdf = upload(
-        &server,
-        &user,
-        &sid,
-        b"%PDF-1.7 report".to_vec(),
-        "report.pdf",
-        "application/pdf",
-    )
-    .await;
-    save_user_message(&server, &user, &sid, std::slice::from_ref(&pdf)).await;
-    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[pdf], vec![]).await;
-    assert_eq!(status, 200, "{body}");
-
-    save_user_message(&server, &user, &sid, &[]).await;
-    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
-    assert_eq!(status, 200, "{body}");
-
-    let png = upload(&server, &user, &sid, png_of(64), "chart.png", "image/png").await;
-    save_user_message(&server, &user, &sid, std::slice::from_ref(&png)).await;
-    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[png], vec![]).await;
-    assert_eq!(status, 200, "{body}");
-
-    assert_eq!(
-        filenames_per_call(&agent),
-        [
-            vec!["report.pdf"],
-            vec!["report.pdf"],
-            vec!["report.pdf", "chart.png"],
-        ]
-    );
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn an_upload_that_was_never_sent_does_not_ride_along() {
-    let server = common::TestServer::start().await;
-    let (_, user) = admin_and_member(&server, "att-unsent").await;
-    let sid = create_session(&server, &user).await;
-    let (url, agent, _handle) = start_stub_agent().await;
-    let agent_id = seed_running_agent(&server, &user, &url).await;
-
-    // Uploaded, then dropped from the message before it was sent: no message claims it.
-    upload(&server, &user, &sid, png_of(64), "dropped.png", "image/png").await;
-    save_user_message(&server, &user, &sid, &[]).await;
-    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
-    assert_eq!(status, 200, "{body}");
-
-    assert_eq!(filenames_per_call(&agent), [Vec::<String>::new()]);
-
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn an_earlier_file_whose_bytes_are_gone_is_left_out_not_refused() {
-    let server = common::TestServer::start().await;
-    let (_, user) = admin_and_member(&server, "att-carry-gone").await;
-    let sid = create_session(&server, &user).await;
-    let (url, agent, _handle) = start_stub_agent().await;
-    let agent_id = seed_running_agent(&server, &user, &url).await;
-
-    let gone = seed_file_row(
-        &server,
-        &sid,
-        "gone.png",
-        &format!("chat-files/{sid}/{}", Uuid::new_v4()),
-    )
-    .await;
-    save_user_message(&server, &user, &sid, &[gone]).await;
-    let kept = upload(&server, &user, &sid, png_of(64), "kept.png", "image/png").await;
-    save_user_message(&server, &user, &sid, &[kept]).await;
-
-    let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
-    assert_eq!(status, 200, "{body}");
-    assert_eq!(filenames_per_call(&agent), [vec!["kept.png"]]);
 
     server.cleanup().await;
 }

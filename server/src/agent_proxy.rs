@@ -1193,9 +1193,10 @@ fn append_org_context(
     Some(org.len())
 }
 
-/// The body of an agent→agent message send, with organization policy appended exactly as on a
-/// user's chat: policy governs every agent invocation, whoever made it. Everything else about the
-/// caller's chat (session, history, contextId, transcript) is left alone.
+/// The body of an agent→agent message send, with organization policy and the current time
+/// appended exactly as on a user's chat: both concern every agent invocation, whoever made it.
+/// Everything else about the caller's chat (session, history, contextId, transcript) is left
+/// alone.
 async fn prepare_agent_call(state: &AppState, body_bytes: axum::body::Bytes) -> PreparedRequest {
     let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
         return PreparedRequest::passthrough(body_bytes);
@@ -1213,7 +1214,12 @@ async fn prepare_agent_call(state: &AppState, body_bytes: axum::body::Bytes) -> 
     };
     let org = org_context_for(state, message).await;
     let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&method);
-    if append_org_context(message, org.as_deref(), tagging).is_none() {
+    let org_added = append_org_context(message, org.as_deref(), tagging).is_some();
+    // After the policy, as on a user's chat. An agent forwarding its own input already carries
+    // the time, and is not given a second one (`append_current_time`).
+    let time_added =
+        crate::current_time::append_current_time(message, state.agent_clock(), tagging);
+    if !org_added && !time_added {
         return PreparedRequest::passthrough(body_bytes);
     }
     match serde_json::to_vec(&rpc) {
@@ -1223,7 +1229,7 @@ async fn prepare_agent_call(state: &AppState, body_bytes: axum::body::Bytes) -> 
             context_report: None,
         },
         Err(e) => {
-            tracing::error!(error = %e, "agent proxy: failed to re-serialize an agent call with org policy");
+            tracing::error!(error = %e, "agent proxy: failed to re-serialize an agent call with platform context");
             PreparedRequest::passthrough(body_bytes)
         }
     }
@@ -1451,6 +1457,12 @@ async fn ensure_chat_session(
         // to a message that had no `parts` array to append to.
         persist_info.org_applied = true;
         persist_info.org_policy_chars = chars;
+    }
+    // The current time, its own part after the policy, for the same reason. Skipped on a task
+    // continuation like the policy is. A harness or coding turn reads only `user_text`, never
+    // these parts.
+    if crate::current_time::append_current_time(message, state.agent_clock(), tagging) {
+        rewrite_needed = true;
     }
 
     if injected {
