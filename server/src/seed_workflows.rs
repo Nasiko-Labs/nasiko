@@ -52,42 +52,36 @@ pub struct TemplateStep {
 
 /// Every template this server knows. Ids must be unique.
 pub const TEMPLATES: &[WorkflowTemplate] = &[
-    // Showcase workflows: a run needs no input (the dashboard's Run sends none), so each
-    // carries its own sample data in its first step, and its description says so.
+    // Showcase workflows: a run needs no input (the dashboard's Run sends none). Each first step
+    // either reads the running user's own app (a connect card the first time, see the agents'
+    // connected-apps support) or carries its own sample data, and its description says which.
     WorkflowTemplate {
         id: "chief-of-staff-follow-up",
-        version: 1,
+        version: 2,
         name: "Chief of Staff: Meeting Follow-up",
-        description: "Turns a meeting into decisions, owners and a ready-to-send \
-                      follow-up email. Runs on a built-in sample meeting.",
+        description: "Reads your latest meeting notes from Google Drive and turns them into \
+                      decisions, owners and a ready-to-send follow-up email. Asks you to \
+                      connect Google Drive the first time.",
         steps: &[
             TemplateStep {
                 agent: "meeting-notes-processor",
                 agent_version: "1.1.1",
-                task: "Read this sample meeting transcript and pull out the decisions, \
-                       the action items with owner and due date, and the open \
-                       questions. Transcript: \"Weekly launch sync, 12 Nov. Attendees: \
-                       Priya (PM), Rahul (Eng), Anil (Marketing). Priya: We agreed to \
-                       ship the new onboarding flow on 20 Nov. Rahul: I'll fix the CSV \
-                       export bug by 18 Nov. Anil: I'll have the launch blog post ready \
-                       by 17 Nov. Open question: do we launch the mobile app now? \
-                       Decision: the mobile app moves to December. Priya: Rahul, please \
-                       also add usage alerts before launch.\"",
+                task: "Process my latest meeting notes from Google Drive: pull out the \
+                       decisions, the action items with owner and due date, and the open \
+                       questions.",
             },
             TemplateStep {
                 agent: "task-breakdown",
                 agent_version: "1.1.1",
-                task: "Turn the action items into an ordered task list for the launch, \
-                       keeping each owner and due date, and flag anything due before \
-                       18 Nov as urgent.",
+                task: "Turn the action items into an ordered task list, keeping each \
+                       owner and due date, and flag anything due this week as urgent.",
             },
             TemplateStep {
                 agent: "reply-drafter",
                 agent_version: "1.1.1",
-                task: "Draft the follow-up email the meeting organiser sends to Priya, \
-                       Rahul and Anil: thank them, confirm the decisions, list each task \
-                       with owner and due date, and note that the mobile app moved to \
-                       December. It goes out by email.",
+                task: "Draft the follow-up email the meeting organiser sends to the \
+                       attendees: thank them, confirm the decisions, and list each task \
+                       with its owner and due date. It goes out by email.",
             },
             TemplateStep {
                 agent: "humanizer",
@@ -141,6 +135,39 @@ pub const TEMPLATES: &[WorkflowTemplate] = &[
                 agent: "translator",
                 agent_version: "1.1.1",
                 task: "Translate the reply into Spanish for Lumen, keeping its tone.",
+            },
+        ],
+    },
+    WorkflowTemplate {
+        id: "inbox-morning-brief",
+        version: 1,
+        name: "Inbox Morning Brief",
+        description: "Reads the last day of your Gmail and turns it into a prioritised \
+                      to-do list and a short morning note. Asks you to connect Gmail the \
+                      first time.",
+        steps: &[
+            TemplateStep {
+                agent: "summarizer",
+                agent_version: "1.1.1",
+                // A plain summary, and the search spelled out relative to now. Asking this step
+                // for "who needs what from me" made the summarizer refuse an inbox of
+                // newsletters as not summarizable; finding the asks is the next step's job.
+                task: "Summarize the emails I received in Gmail in the last day (Gmail \
+                       search: newer_than:1d).",
+            },
+            TemplateStep {
+                agent: "task-breakdown",
+                agent_version: "1.1.1",
+                task: "From that summary, make a prioritised to-do list for today of \
+                       anything someone needs from me, each with a time estimate. If \
+                       nothing needs action, the list is one item: 'Inbox is clear: \
+                       nothing needs a reply today'.",
+            },
+            TemplateStep {
+                agent: "humanizer",
+                agent_version: "1.1.1",
+                task: "Rewrite the summary and the to-do list as a short, friendly \
+                       morning note to me.",
             },
         ],
     },

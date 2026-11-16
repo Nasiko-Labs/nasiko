@@ -5,7 +5,7 @@
 /// Run with:  `cargo test --test seed_workflows -- --test-threads=1`
 mod common;
 
-use nasiko_server::seed_workflows::{SeedOutcome, seed_workflows};
+use nasiko_server::seed_workflows::{SeedOutcome, TEMPLATES, seed_workflows};
 use serde_json::Value;
 use serial_test::serial;
 use uuid::Uuid;
@@ -242,8 +242,12 @@ async fn a_newer_template_version_updates_the_same_row() {
             .fetch_one(&server.db)
             .await
             .unwrap();
-    assert_eq!(name, "Chief of Staff: Meeting Follow-up");
-    assert_eq!(version, 1);
+    let template = TEMPLATES
+        .iter()
+        .find(|t| t.id == "chief-of-staff-follow-up")
+        .unwrap();
+    assert_eq!(name, template.name);
+    assert_eq!(version, template.version);
 
     server.cleanup().await;
 }
