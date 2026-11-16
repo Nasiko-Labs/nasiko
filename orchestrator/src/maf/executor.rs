@@ -1007,11 +1007,20 @@ pub async fn execute_step(
     // step, so the gateway keys its decision cache on the whole MAF run: the
     // first step writes the tier decision, later steps reuse it. Best-effort —
     // a failed insert only means this step falls back to the default model.
+    //
+    // A retried step reuses its trace id (`build_traceparent` derives it from the execution and
+    // the step), so the row its last attempt closed is already here. The gateway and the router
+    // only honour a `running` row younger than the flow timeout, so that row is reopened, fresh,
+    // with this attempt's prompt; leaving it closed refused every model and tool call the retried
+    // step's agent made. Only the run's own user's row is reopened.
     let flow_metadata = step_flow_metadata(execution_id, &actual_prompt);
     let _ = sqlx::query(
         r#"INSERT INTO flows (flow_id, user_id, root_agent_name, title, status, metadata, session_id)
            VALUES ($1, $2, $3, $4, 'running', $5, $6)
-           ON CONFLICT (flow_id) DO NOTHING"#,
+           ON CONFLICT (flow_id) DO UPDATE
+              SET status = 'running', created_at = now(), completed_at = NULL,
+                  duration_ms = NULL, error_message = NULL, metadata = EXCLUDED.metadata
+            WHERE flows.user_id = EXCLUDED.user_id"#,
     )
     .bind(&trace_id)
     .bind(user_id)
@@ -1286,8 +1295,8 @@ pub async fn continue_paused_step(
             .to_string(),
     };
 
-    // `register_flow` (execute_step's first-attempt insert) stamped `created_at` once, at the
-    // original attempt — `ON CONFLICT DO NOTHING`, never touched again. The MCP gateway's
+    // `execute_step` stamped `created_at` when the paused attempt called the agent, and the
+    // pause closed the row. The MCP gateway's
     // liveness check (`gateway.rs::flow_user`) requires `created_at` to be within
     // `NASIKO_FLOW_TIMEOUT_SECS` (600s default) of `now()`, so a human who takes longer than that to
     // approve a paused tool call permanently strands this trace id: every retried `tools/call`
