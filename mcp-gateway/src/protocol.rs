@@ -49,6 +49,11 @@ pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value
 const SEARCH_TOOLS_META: &str = "nasiko_search_tools";
 const CALL_TOOL_META: &str = "nasiko_call_tool";
 const RECOVER_COMPRESSED_META: &str = "recover_compressed";
+/// Asks the user to connect a Composio toolkit (e.g. `gmail`) the agent needs
+/// but has no active connection for. Unconnected toolkits contribute no tools
+/// to search or listing, so without this an agent never reaches a tool call
+/// that could return `AUTH_REQUIRED` and the user never sees a Connect card.
+const CONNECT_TOOLKIT_META: &str = "nasiko_connect_toolkit";
 
 /// Full JSON-RPC dispatch for the agent-facing gateway. Returns `None` for a
 /// notification (a request with no `id`).
@@ -383,6 +388,7 @@ pub async fn handle_tools_list(
     tools.push(nasiko_search_tools_definition());
     tools.push(nasiko_call_tool_definition());
     tools.push(recover_compressed_definition());
+    tools.push(nasiko_connect_toolkit_definition());
 
     ok(req_id, json!({ "tools": tools }))
 }
@@ -524,6 +530,24 @@ fn rendered_bytes<'a>(
         .filter_map(|m| search_match_to_json(m, resolved))
         .map(|v| v.to_string().len())
         .sum()
+}
+
+/// The `nasiko_connect_toolkit` meta-tool definition.
+fn nasiko_connect_toolkit_definition() -> Value {
+    json!({
+        "name": CONNECT_TOOLKIT_META,
+        "description": "Ask the user to connect an app account (e.g. gmail, googlecalendar, slack, github) when the tools you need are missing because the account is not connected. Returns 'connected' if it already is; otherwise the user is shown a Connect button.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "toolkit": {
+                    "type": "string",
+                    "description": "Toolkit slug, lowercase, e.g. 'gmail'"
+                }
+            },
+            "required": ["toolkit"]
+        }
+    })
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in
@@ -749,7 +773,10 @@ pub async fn handle_tools_call(
         req_id,
         perms.agent_id,
         verified_flow_id.and(traceparent),
-        matches!(tool, SEARCH_TOOLS_META | RECOVER_COMPRESSED_META),
+        matches!(
+            tool,
+            SEARCH_TOOLS_META | RECOVER_COMPRESSED_META | CONNECT_TOOLKIT_META
+        ),
     );
     if state.config.capture_content {
         let arguments = match params.get("name").and_then(Value::as_str) {
@@ -867,6 +894,108 @@ async fn handle_tools_call_inner(
             "isError": false,
         });
         return ok(req_id, result);
+    }
+
+    // ── nasiko_connect_toolkit meta-tool ─────────────────────────────────
+    if tool_name == CONNECT_TOOLKIT_META {
+        let toolkit: String = arguments
+            .get("toolkit")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if toolkit.is_empty() {
+            return err(
+                req_id,
+                codes::INVALID_PARAMS,
+                "nasiko_connect_toolkit requires `toolkit`",
+            );
+        }
+        let connector = match crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
+        {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("No app named '{toolkit}' is available on this platform.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Err(e) => {
+                return err(
+                    req_id,
+                    codes::INTERNAL_ERROR,
+                    format!("connector lookup failed: {e}"),
+                );
+            }
+        };
+        if !connector.active() {
+            return err(
+                req_id,
+                codes::TOOL_BLOCKED,
+                format!("'{toolkit}' has been switched off by an admin."),
+            );
+        }
+        // Asking to connect a toolkit is the agent declaring it needs it: turn the connector on
+        // for this agent so its tools show up after consent. An explicit "off" set by whoever
+        // manages the agent is respected; only a never-configured connector is enabled.
+        match crate::repo::get_agent_connector_access_row(&state.db, perms.agent_id, connector.id)
+            .await
+        {
+            Ok(Some(row)) if !row.enabled => {
+                tracing::info!(agent_id = %perms.agent_id, connector = %connector.name, "connect_toolkit: connector disabled for agent, not enabling");
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("'{toolkit}' is turned off for this agent. Ask its owner to enable it in the agent's MCP settings.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Ok(Some(_)) => {}
+            Ok(None) => {
+                match crate::permissions::set_connector_access_view(
+                    state,
+                    user_id,
+                    perms.agent_id,
+                    connector.id,
+                    true,
+                )
+                .await
+                {
+                    Ok(_) => {
+                        tracing::info!(agent_id = %perms.agent_id, connector = %connector.name, "connect_toolkit: enabled connector for agent")
+                    }
+                    Err(e) => {
+                        tracing::warn!(agent_id = %perms.agent_id, connector = %connector.name, error = %e, "connect_toolkit: enabling connector for agent failed")
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!(agent_id = %perms.agent_id, error = %e, "connect_toolkit: access lookup failed")
+            }
+        }
+        let connection = crate::repo::get_user_connection(&state.db, user_id, connector.id).await;
+        if needs_auth_required(&connection) {
+            return handle_auth_required(
+                state,
+                user_id,
+                req_id,
+                perms.agent_id,
+                connector.id,
+                &connector.name,
+                verified_flow_id,
+            )
+            .await;
+        }
+        let text: String =
+            format!("'{toolkit}' is connected. Use nasiko_search_tools to find its tools.");
+        return ok(
+            req_id,
+            json!({"content": [{"type": "text", "text": text}], "isError": false}),
+        );
     }
 
     // ── recover_compressed meta-tool (IP-5) ──────────────────────────────
@@ -1704,6 +1833,9 @@ async fn handle_auth_required(
         }
     }
 
+    // The agent forwards this link on its A2A `TASK_STATE_AUTH_REQUIRED` message
+    // (`metadata.auth_url`), so the chat renders the Connect button.
+    let auth_url: Value = question.get("auth_url").cloned().unwrap_or(Value::Null);
     match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
         nasiko_hitl::NewAuthRequired {
@@ -1725,7 +1857,12 @@ async fn handle_auth_required(
                  recorded (id {}); ask the user to re-authenticate, then retry this tool.",
                 request.id
             ),
-            json!({ "connector": connector_name, "connector_id": connector_id, "hitl_request_id": request.id }),
+            json!({
+                "connector": connector_name,
+                "connector_id": connector_id,
+                "hitl_request_id": request.id,
+                "auth_url": auth_url,
+            }),
         ),
         Err(e) => {
             tracing::error!(connector = %connector_name, %connector_id, error = %e, "failed to persist auth_required hitl request");

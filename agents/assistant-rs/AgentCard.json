@@ -1,0 +1,42 @@
+{
+  "capabilities": {
+    "pushNotifications": false,
+    "streaming": true
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "description": "General assistant that works on your connected accounts (Gmail, Calendar, Slack, Linear...) through the MCP gateway; asks to connect accounts and asks clarifying questions when needed",
+  "name": "assistant_rs",
+  "preferredTransport": "JSONRPC",
+  "protocolVersion": "0.2.9",
+  "provider": {
+    "organization": "Nasiko",
+    "url": "https://nasiko.io"
+  },
+  "skills": [
+    {
+      "description": "Read and act on your connected accounts; drafts before sending",
+      "id": "assistant",
+      "name": "Assistant",
+      "tags": [
+        "assistant",
+        "mcp",
+        "composio",
+        "gmail"
+      ]
+    }
+  ],
+  "supportedInterfaces": [
+    {
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0",
+      "url": "http://0.0.0.0:__PORT__/"
+    }
+  ],
+  "url": "http://localhost:8000/",
+  "version": "0.1.5"
+}
