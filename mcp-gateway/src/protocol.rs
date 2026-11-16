@@ -49,6 +49,11 @@ pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value
 const SEARCH_TOOLS_META: &str = "nasiko_search_tools";
 const CALL_TOOL_META: &str = "nasiko_call_tool";
 const RECOVER_COMPRESSED_META: &str = "recover_compressed";
+/// Asks the user to connect a Composio toolkit (e.g. `gmail`) the agent needs
+/// but has no active connection for. Unconnected toolkits contribute no tools
+/// to search or listing, so without this an agent never reaches a tool call
+/// that could return `AUTH_REQUIRED` and the user never sees a Connect card.
+const CONNECT_TOOLKIT_META: &str = "nasiko_connect_toolkit";
 
 /// Full JSON-RPC dispatch for the agent-facing gateway. Returns `None` for a
 /// notification (a request with no `id`).
@@ -320,7 +325,10 @@ pub async fn handle_tools_list(
         )
         .await
         {
-            Ok(tools) => ok(req_id, json!({ "tools": tools })),
+            Ok(mut tools) => {
+                tools.push(nasiko_connect_toolkit_definition());
+                ok(req_id, json!({ "tools": tools }))
+            }
             Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
         };
     }
@@ -383,6 +391,7 @@ pub async fn handle_tools_list(
     tools.push(nasiko_search_tools_definition());
     tools.push(nasiko_call_tool_definition());
     tools.push(recover_compressed_definition());
+    tools.push(nasiko_connect_toolkit_definition());
 
     ok(req_id, json!({ "tools": tools }))
 }
@@ -524,6 +533,24 @@ fn rendered_bytes<'a>(
         .filter_map(|m| search_match_to_json(m, resolved))
         .map(|v| v.to_string().len())
         .sum()
+}
+
+/// The `nasiko_connect_toolkit` meta-tool definition.
+fn nasiko_connect_toolkit_definition() -> Value {
+    json!({
+        "name": CONNECT_TOOLKIT_META,
+        "description": "Ask the user to connect an app account (e.g. gmail, googlecalendar, slack, github) when the tools you need are missing because the account is not connected. Returns 'connected' if it already is; otherwise the user is shown a Connect button.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "toolkit": {
+                    "type": "string",
+                    "description": "Toolkit slug, lowercase, e.g. 'gmail'"
+                }
+            },
+            "required": ["toolkit"]
+        }
+    })
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in
@@ -749,7 +776,10 @@ pub async fn handle_tools_call(
         req_id,
         perms.agent_id,
         verified_flow_id.and(traceparent),
-        matches!(tool, SEARCH_TOOLS_META | RECOVER_COMPRESSED_META),
+        matches!(
+            tool,
+            SEARCH_TOOLS_META | RECOVER_COMPRESSED_META | CONNECT_TOOLKIT_META
+        ),
     );
     if state.config.capture_content {
         let arguments = match params.get("name").and_then(Value::as_str) {
@@ -867,6 +897,100 @@ async fn handle_tools_call_inner(
             "isError": false,
         });
         return ok(req_id, result);
+    }
+
+    // ── nasiko_connect_toolkit meta-tool ─────────────────────────────────
+    if tool_name == CONNECT_TOOLKIT_META {
+        let toolkit: String = arguments
+            .get("toolkit")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if toolkit.is_empty() {
+            return err(
+                req_id,
+                codes::INVALID_PARAMS,
+                "nasiko_connect_toolkit requires `toolkit`",
+            );
+        }
+        let connector = match crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
+        {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("No app named '{toolkit}' is available on this platform.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Err(e) => {
+                return err(
+                    req_id,
+                    codes::INTERNAL_ERROR,
+                    format!("connector lookup failed: {e}"),
+                );
+            }
+        };
+        if !connector.active() {
+            return err(
+                req_id,
+                codes::TOOL_BLOCKED,
+                format!("'{toolkit}' has been switched off by an admin."),
+            );
+        }
+        // Asking to connect a toolkit is the agent declaring it needs it: turn the connector on
+        // for this agent so its tools show up after consent. An explicit "off" set by whoever
+        // manages the agent is respected; only a never-configured connector is enabled.
+        if let Err(e) = crate::repo::insert_agent_connector_access_if_absent(
+            &state.db,
+            perms.agent_id,
+            connector.id,
+            true,
+        )
+        .await
+        {
+            tracing::warn!(agent_id = %perms.agent_id, connector = %connector.name, error = %e, "connect_toolkit: enabling connector for agent failed");
+        }
+        match crate::repo::get_agent_connector_access_row(&state.db, perms.agent_id, connector.id)
+            .await
+        {
+            Ok(Some(row)) if !row.enabled => {
+                tracing::info!(agent_id = %perms.agent_id, connector = %connector.name, "connect_toolkit: connector disabled for agent, not enabling");
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("'{toolkit}' is turned off for this agent. Ask its owner to enable it in the agent's MCP settings.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Ok(Some(_)) | Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(agent_id = %perms.agent_id, error = %e, "connect_toolkit: access lookup failed")
+            }
+        }
+        let connection = crate::repo::get_user_connection(&state.db, user_id, connector.id).await;
+        if needs_auth_required(&connection) {
+            return handle_auth_required(
+                state,
+                user_id,
+                req_id,
+                perms.agent_id,
+                connector.id,
+                &connector.name,
+                verified_flow_id,
+            )
+            .await;
+        }
+        let text: String =
+            format!("'{toolkit}' is connected. Use nasiko_search_tools to find its tools.");
+        return ok(
+            req_id,
+            json!({"content": [{"type": "text", "text": text}], "isError": false}),
+        );
     }
 
     // ── recover_compressed meta-tool (IP-5) ──────────────────────────────
@@ -1704,6 +1828,9 @@ async fn handle_auth_required(
         }
     }
 
+    // The agent forwards this link on its A2A `TASK_STATE_AUTH_REQUIRED` message
+    // (`metadata.auth_url`), so the chat renders the Connect button.
+    let auth_url: Value = question.get("auth_url").cloned().unwrap_or(Value::Null);
     match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
         nasiko_hitl::NewAuthRequired {
@@ -1725,7 +1852,12 @@ async fn handle_auth_required(
                  recorded (id {}); ask the user to re-authenticate, then retry this tool.",
                 request.id
             ),
-            json!({ "connector": connector_name, "connector_id": connector_id, "hitl_request_id": request.id }),
+            json!({
+                "connector": connector_name,
+                "connector_id": connector_id,
+                "hitl_request_id": request.id,
+                "auth_url": auth_url,
+            }),
         ),
         Err(e) => {
             tracing::error!(connector = %connector_name, %connector_id, error = %e, "failed to persist auth_required hitl request");
@@ -2025,32 +2157,31 @@ fn connector_disabled(
         .unwrap_or(false)
 }
 
-/// Follows a preview of a result Composio found too large to send inline. The full copy it keeps
-/// is a file in its own sandbox, which the agent cannot open, so asking for less is the only way
-/// to all of it.
-const PARTIAL_RESULT_NOTE: &str = "Partial result: the full output was too large to return, so \
-    this is only a preview of it. Ask for less (fewer items, a narrower time range, or without \
-    full message bodies) to get everything.";
-
-/// Stands in for a result Composio found too large to send inline and sent no preview of.
-const TOO_LARGE_RESULT_NOTE: &str = "The output was too large to return. Ask for less (fewer \
-    items, a narrower time range, or without full message bodies).";
-
+/// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to a normal tool
+/// response the agent expects.
+///
+/// MULTI_EXECUTE returns:
+/// ```json
+/// { "jsonrpc": "2.0", "id": 1, "result": {
+///     "content": [{ "type": "text", "text": "[{\"data\": {...}, ...}]" }]
+/// }}
+/// ```
+///
+/// We extract the inner JSON from the first `content[].text` entry and return
+/// it as a standard `result.content[].text` with the unwrapped payload.
 /// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to the clean tool
 /// result the agent expects.
 ///
 /// MULTI_EXECUTE returns:
 /// ```text
 /// result.content[0].text = JSON string of {
-///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }],
-///             "remote_file_info": {…} only when the output was too large to send inline },
+///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }] },
 ///   "successful": bool
 /// }
 /// ```
 ///
 /// We extract `data.results[0].response.data` (the actual tool output) and
-/// return it as a clean `result.content[0].text`. An output too large to send
-/// inline comes as `response.data_preview` instead: see [`successful_output`].
+/// return it as a clean `result.content[0].text`.
 fn unwrap_multi_execute_response(response: Value) -> Value {
     let text = response
         .get("result")
@@ -2076,7 +2207,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
         .and_then(|r| r.as_array())
         .and_then(|arr| arr.first());
 
-    let parts: Vec<String> = match first_result {
+    let inner_text = match first_result {
         Some(result) => {
             let tool_response = result.get("response");
             let successful = tool_response
@@ -2085,7 +2216,12 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                 .unwrap_or(false);
 
             if successful {
-                successful_output(result, &parsed)
+                // Success: return response.data (the actual tool output).
+                let data = tool_response
+                    .and_then(|r| r.get("data"))
+                    .cloned()
+                    .unwrap_or(json!({"success": true}));
+                serde_json::to_string(&data).unwrap_or_else(|_| text.to_string())
             } else {
                 // Failure: return a clean error message.
                 let error = result
@@ -2098,57 +2234,21 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                             .and_then(|m| m.as_str())
                     })
                     .unwrap_or("tool execution failed");
-                vec![
-                    serde_json::to_string(&json!({"error": error}))
-                        .unwrap_or_else(|_| text.to_string()),
-                ]
+                serde_json::to_string(&json!({"error": error})).unwrap_or_else(|_| text.to_string())
             }
         }
-        None => vec![text.to_string()],
+        None => text.to_string(),
     };
 
     // Rebuild as a standard MCP tool response.
-    let content: Vec<Value> = parts
-        .into_iter()
-        .map(|text| json!({ "type": "text", "text": text }))
-        .collect();
     let mut out = response.clone();
-    out["result"] = json!({ "content": content });
+    out["result"] = json!({
+        "content": [{
+            "type": "text",
+            "text": inner_text
+        }]
+    });
     out
-}
-
-/// A successful tool's output, as content parts: `response.data`; or, when Composio found the
-/// output too large to send inline, its `response.data_preview` followed by a note that it is
-/// partial; or only that note when it sent no preview either. Composio's pointer to the full copy
-/// (`remote_file_info`, a file in its sandbox) is not passed on: the agent cannot open it.
-fn successful_output(result: &Value, envelope: &Value) -> Vec<String> {
-    let tool_response = result.get("response");
-    if let Some(data) = tool_response.and_then(|r| r.get("data")) {
-        return vec![data.to_string()];
-    }
-    let tool = result
-        .get("tool_slug")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if let Some(preview) = tool_response.and_then(|r| r.get("data_preview")) {
-        tracing::info!(
-            tool,
-            "composio sent a preview of an output too large to return inline"
-        );
-        return vec![preview.to_string(), PARTIAL_RESULT_NOTE.to_string()];
-    }
-    if envelope
-        .get("data")
-        .and_then(|d| d.get("remote_file_info"))
-        .is_some()
-    {
-        tracing::info!(
-            tool,
-            "composio kept an output too large to return inline and sent no preview"
-        );
-        return vec![TOO_LARGE_RESULT_NOTE.to_string()];
-    }
-    vec![json!({ "success": true }).to_string()]
 }
 
 #[cfg(test)]
@@ -3213,94 +3313,6 @@ mod tests {
         });
         let unwrapped = unwrap_multi_execute_response(response.clone());
         assert_eq!(unwrapped, response);
-    }
-
-    /// A MULTI_EXECUTE response carrying `tool_response` as its one result, shaped as Composio
-    /// answers (`remote_file_info` only with an output too large to send inline).
-    fn multi_execute(tool_response: Value, remote_file_info: Option<Value>) -> Value {
-        let mut data = json!({
-            "results": [{ "response": tool_response, "tool_slug": "GMAIL_FETCH_EMAILS", "index": 0 }],
-            "total_count": 1, "success_count": 1, "error_count": 0
-        });
-        if let Some(info) = remote_file_info {
-            data["remote_file_info"] = info;
-        }
-        let envelope =
-            json!({ "successful": true, "data": data, "error": null, "log_id": "log_test" });
-        json!({ "jsonrpc": "2.0", "id": "test", "result": {
-            "content": [{ "type": "text", "text": envelope.to_string() }]
-        }})
-    }
-
-    fn texts(unwrapped: &Value) -> Vec<String> {
-        unwrapped["result"]["content"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|part| part["text"].as_str().unwrap().to_string())
-            .collect()
-    }
-
-    fn large_output_info() -> Value {
-        json!({
-            "message": "Complete response was large (40329 tokens). Full data saved to sandbox in /mnt/files/mex/wind.json.",
-            "file_path": "/mnt/files/mex/wind.json",
-            "filename": "wind.json"
-        })
-    }
-
-    #[test]
-    fn unwrap_returns_the_data_alone_when_it_was_sent_inline() {
-        let response = multi_execute(
-            json!({ "successful": true, "data": { "messages": [{ "subject": "Hi" }] } }),
-            None,
-        );
-
-        let parts = texts(&unwrap_multi_execute_response(response));
-
-        assert_eq!(parts.len(), 1);
-        let parsed: Value = serde_json::from_str(&parts[0]).unwrap();
-        assert_eq!(parsed["messages"][0]["subject"], "Hi");
-    }
-
-    #[test]
-    fn unwrap_passes_a_preview_of_an_output_too_large_to_send_inline() {
-        let response = multi_execute(
-            json!({ "successful": true, "data_preview": {
-                "messages": [{ "subject": "One" }, { "subject": "Two" }, { "subject": "Three" }],
-                "resultSizeEstimate": 9
-            }}),
-            Some(large_output_info()),
-        );
-
-        let parts = texts(&unwrap_multi_execute_response(response));
-
-        assert_eq!(parts.len(), 2, "{parts:?}");
-        let preview: Value = serde_json::from_str(&parts[0]).unwrap();
-        assert_eq!(preview["messages"].as_array().unwrap().len(), 3);
-        assert_eq!(parts[1], PARTIAL_RESULT_NOTE);
-        assert!(
-            parts.iter().all(|p| !p.contains("/mnt/files")),
-            "the sandbox file is not the agent's to open: {parts:?}"
-        );
-    }
-
-    #[test]
-    fn unwrap_says_so_when_an_output_was_too_large_and_came_without_a_preview() {
-        let response = multi_execute(json!({ "successful": true }), Some(large_output_info()));
-
-        let parts = texts(&unwrap_multi_execute_response(response));
-
-        assert_eq!(parts, [TOO_LARGE_RESULT_NOTE]);
-    }
-
-    #[test]
-    fn unwrap_reports_success_for_a_tool_with_no_output() {
-        let response = multi_execute(json!({ "successful": true }), None);
-
-        let parts = texts(&unwrap_multi_execute_response(response));
-
-        assert_eq!(parts, [r#"{"success":true}"#]);
     }
 
     // ─── nasiko_call_tool: the executor for fixed-menu clients ─────────────────
