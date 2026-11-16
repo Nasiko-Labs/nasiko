@@ -47,6 +47,9 @@ const DEFAULT_PRICING_BASE: &str = "https://configs.portkey.ai";
 const PUBLIC_PRICE_BOOKS: &[(&str, &str)] = &[
     ("anthropic", "https://api.anthropic.com"),
     ("openai", "https://api.openai.com"),
+    // The free plane has no platform Gemini key (users bring their own), so without
+    // this its Gemini picker showed only migration-seeded 1.5-era models.
+    ("gemini", "https://generativelanguage.googleapis.com"),
 ];
 
 /// OpenRouter's own model catalog (public, no auth) — it publishes live per-token
