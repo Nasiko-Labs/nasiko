@@ -68,13 +68,12 @@ pub enum GatewayError {
     NoSharedUserConfig,
 
     // ── 429 - the owner's allowance for this caller is spent ────────────────
-    /// A call the deployment would cover (the agent's owner paying for a shared caller, or the
-    /// platform for an owner's own call that found no key) was refused until the allowance renews,
-    /// and the caller has no config of their own to fall back on. Worded for the end user, like
+    /// A call the agent's owner would pay for was refused until the allowance renews, and the
+    /// caller has no config of their own to fall back on. Worded for the end user, like
     /// [`NoSharedUserConfig`](Self::NoSharedUserConfig); `Retry-After` carries the seconds.
     #[error(
-        "Today's free model calls are used up. Connect your own model in LLM router to keep \
-         going, or try again after 00:00 UTC."
+        "Today's calls on this agent's own model are used up. Connect your own model in LLM \
+         router to keep chatting with it, or try again after 00:00 UTC."
     )]
     OwnerAllowanceSpent { retry_after_secs: u64 },
 
@@ -149,12 +148,27 @@ impl IntoResponse for GatewayError {
         };
         let mut response = (status, error_body(status, &detail)).into_response();
         if let GatewayError::OwnerAllowanceSpent { retry_after_secs } = self {
-            response
-                .headers_mut()
-                .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+            mark_allowance_spent(&mut response, retry_after_secs);
         }
         response
     }
+}
+
+/// On a response that refused a call with [`GatewayError::OwnerAllowanceSpent`]: lets a layer
+/// around the router tell that refusal from a provider's own `429` without reading the body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AllowanceSpent {
+    pub retry_after_secs: u64,
+}
+
+/// `Retry-After` for the caller and [`AllowanceSpent`] for the layers around the router.
+pub(crate) fn mark_allowance_spent(response: &mut Response, retry_after_secs: u64) {
+    response
+        .headers_mut()
+        .insert(RETRY_AFTER, HeaderValue::from(retry_after_secs));
+    response
+        .extensions_mut()
+        .insert(AllowanceSpent { retry_after_secs });
 }
 
 /// The environment variable that holds the platform key for a built-in provider, or `None`
@@ -357,5 +371,28 @@ mod tests {
         assert_eq!(body["detail"], "Internal server error");
         assert_eq!(body["error"]["message"], "Internal server error");
         assert!(!body.to_string().contains("password"));
+    }
+
+    #[test]
+    fn only_a_spent_allowance_is_marked_as_one() {
+        let spent = GatewayError::OwnerAllowanceSpent {
+            retry_after_secs: 90,
+        }
+        .into_response();
+        assert_eq!(spent.headers()[RETRY_AFTER], "90");
+        assert_eq!(
+            spent.extensions().get::<AllowanceSpent>(),
+            Some(&AllowanceSpent {
+                retry_after_secs: 90
+            })
+        );
+
+        // A provider's own 429 is a rate limit, not the allowance.
+        let provider = GatewayError::Provider {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: "slow down".into(),
+        }
+        .into_response();
+        assert!(provider.extensions().get::<AllowanceSpent>().is_none());
     }
 }

@@ -9,8 +9,8 @@ use std::time::Instant;
 use axum::body::{Body, Bytes};
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
-use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE, RETRY_AFTER};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use futures::StreamExt;
@@ -98,9 +98,7 @@ pub(crate) fn gateway_error_response(error: GatewayError) -> Response {
     };
     let mut response = responses_error(status, message, code);
     if let Some(secs) = retry_after {
-        response
-            .headers_mut()
-            .insert(RETRY_AFTER, HeaderValue::from(secs));
+        crate::error::mark_allowance_spent(&mut response, secs);
     }
     response
 }
@@ -1372,14 +1370,18 @@ mod tests {
         });
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         assert_eq!(response.headers()["retry-after"], "120");
+        assert_eq!(
+            response.extensions().get::<crate::error::AllowanceSpent>(),
+            Some(&crate::error::AllowanceSpent {
+                retry_after_secs: 120
+            })
+        );
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["error"]["code"], "allowance_exhausted");
         assert_eq!(value["error"]["type"], "invalid_request_error");
-        assert!(
-            value["error"]["message"]
-                .as_str()
-                .is_some_and(|m| { m.starts_with("Today's free model calls are used up.") })
-        );
+        assert!(value["error"]["message"].as_str().is_some_and(|m| {
+            m.starts_with("Today's calls on this agent's own model are used up.")
+        }));
     }
 
     #[tokio::test]
