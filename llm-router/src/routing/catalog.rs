@@ -15,9 +15,10 @@
 //! `model_registry`). A failed fetch leaves existing rows untouched — stale data
 //! beats no data.
 //!
-//! Gemini is skipped: its list endpoint has a different shape/auth and the router
-//! has no Gemini tier routing today. Unknown/absent catalogs degrade to no tier
-//! routing (the request's own model passes through), never to a wrong model.
+//! Gemini is listed through its own `ListModels` shape ([`fetch_gemini_models`]):
+//! `{"models": [{"name": "models/…"}], "nextPageToken": …}` with an
+//! `x-goog-api-key` header. Unknown/absent catalogs degrade to no tier routing (the
+//! request's own model passes through), never to a wrong model.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -214,6 +215,107 @@ fn parse_models_response(body: &serde_json::Value) -> HashSet<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Name fragments of Gemini models that list `generateContent` but are not chat
+/// models (speech, image generation, embeddings, live audio, computer use).
+const GEMINI_NON_CHAT_MARKERS: &[&str] = &[
+    "-tts",
+    "-image",
+    "imagen",
+    "embedding",
+    "-live",
+    "native-audio",
+    "computer-use",
+    "aqa",
+];
+
+/// One page of Gemini `ListModels`:
+/// `{"models": [{"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent", …]}], "nextPageToken": "…"}`.
+/// Keeps chat-capable Gemini models only (`generateContent`, `gemini-` prefix, no
+/// non-chat marker) with the `models/` prefix stripped. Returns the next page token.
+fn parse_gemini_models(body: &serde_json::Value) -> (HashSet<String>, Option<String>) {
+    let models: HashSet<String> = body
+        .get("models")
+        .and_then(|m| m.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter(|m| {
+                    m.get("supportedGenerationMethods")
+                        .and_then(|v| v.as_array())
+                        .is_some_and(|methods| {
+                            methods.iter().any(|x| x.as_str() == Some("generateContent"))
+                        })
+                })
+                .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
+                .map(|name| name.strip_prefix("models/").unwrap_or(name))
+                .filter(|name| {
+                    name.starts_with("gemini-")
+                        && !GEMINI_NON_CHAT_MARKERS.iter().any(|mark| name.contains(mark))
+                })
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let next: Option<String> = body
+        .get("nextPageToken")
+        .and_then(|t| t.as_str())
+        .filter(|t| !t.is_empty())
+        .map(str::to_string);
+    (models, next)
+}
+
+/// Upper bound on `ListModels` pages so a looping token can't stall the sync.
+const GEMINI_MAX_PAGES: usize = 20;
+
+/// Fetch every page of Gemini `ListModels` with `api_key`. `None` on any failure —
+/// callers keep existing rows. `pub` so the server can list models for a user's own
+/// key (BYOK on planes without a platform Gemini key).
+pub async fn fetch_gemini_models(
+    http: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+) -> Option<HashSet<String>> {
+    let url = format!("{}/models", base.trim_end_matches('/'));
+    let mut all: HashSet<String> = HashSet::new();
+    let mut page_token: Option<String> = None;
+    for _ in 0..GEMINI_MAX_PAGES {
+        let mut req = http
+            .get(&url)
+            .timeout(FETCH_TIMEOUT)
+            .header("x-goog-api-key", api_key)
+            .query(&[("pageSize", "1000")]);
+        if let Some(token) = &page_token {
+            req = req.query(&[("pageToken", token.as_str())]);
+        }
+        let resp = match req.send().await {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!(
+                    target: "nasiko::llm_router::catalog",
+                    provider = "gemini", error = %e,
+                    "model catalog sync: ListModels fetch failed — keeping existing rows"
+                );
+                return None;
+            }
+        };
+        if !resp.status().is_success() {
+            tracing::warn!(
+                target: "nasiko::llm_router::catalog",
+                provider = "gemini", status = %resp.status(),
+                "model catalog sync: ListModels returned non-success — keeping existing rows"
+            );
+            return None;
+        }
+        let body: serde_json::Value = resp.json().await.ok()?;
+        let (models, next) = parse_gemini_models(&body);
+        all.extend(models);
+        match next {
+            Some(token) => page_token = Some(token),
+            None => return Some(all),
+        }
+    }
+    Some(all)
 }
 
 /// Parse the Bedrock control-plane `ListFoundationModels` response:
@@ -487,6 +589,24 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
             ),
         }
     }
+    // Gemini: its own ListModels shape and credential header.
+    if !cfg.platform_gemini_api_key.is_empty() {
+        match fetch_gemini_models(http, &cfg.gemini_api_base, &cfg.platform_gemini_api_key).await {
+            Some(models) if !models.is_empty() => match sync_provider(db, "gemini", &models).await {
+                Ok(()) => synced += 1,
+                Err(e) => tracing::warn!(
+                    target: "nasiko::llm_router::catalog",
+                    provider = "gemini", error = %e, "model catalog sync: DB write failed"
+                ),
+            },
+            Some(_) => tracing::warn!(
+                target: "nasiko::llm_router::catalog",
+                provider = "gemini",
+                "model catalog sync: provider listed zero models — keeping existing rows"
+            ),
+            None => {} // already logged by fetch_gemini_models
+        }
+    }
     // Custom providers: sync + record health + default_model check.
     for c in load_custom_providers(db).await {
         if !c.catalog_sync_enabled {
@@ -547,6 +667,34 @@ mod tests {
         assert!(models.contains("deepseek-v4-pro"));
         assert!(models.contains("deepseek-v4-flash"));
         assert!(!models.contains("gpt-5.4"));
+    }
+
+    #[test]
+    fn parses_gemini_list_models_keeping_chat_models_only() {
+        let body = serde_json::json!({
+            "models": [
+                {"name": "models/gemini-2.5-flash", "supportedGenerationMethods": ["generateContent", "countTokens"]},
+                {"name": "models/gemini-4-argon", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-2.5-flash-preview-tts", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-2.5-flash-image", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-embedding-001", "supportedGenerationMethods": ["embedContent"]},
+                {"name": "models/gemma-4-26b-a4b-it", "supportedGenerationMethods": ["generateContent"]},
+                {"name": "models/gemini-x", "supportedGenerationMethods": ["countTokens"]}
+            ],
+            "nextPageToken": "abc"
+        });
+        let (models, next) = parse_gemini_models(&body);
+        let mut got: Vec<String> = models.into_iter().collect();
+        got.sort();
+        assert_eq!(got, vec!["gemini-2.5-flash", "gemini-4-argon"]);
+        assert_eq!(next.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn gemini_last_page_has_no_token() {
+        let (models, next) = parse_gemini_models(&serde_json::json!({"models": [], "nextPageToken": ""}));
+        assert!(models.is_empty());
+        assert!(next.is_none());
     }
 
     #[test]

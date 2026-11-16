@@ -195,6 +195,14 @@ fn group_by_provider(
     custom_labels: &std::collections::HashSet<String>,
     custom_meta: &std::collections::HashMap<String, (uuid::Uuid, String)>,
 ) -> Vec<ProviderCatalog> {
+    // A built-in whose own listing has synced (any served row) is authoritative too:
+    // price-only names (`gemini-4-argon-lte-128k`, retired 1.5 seeds) are dropped. A
+    // built-in with no listing yet keeps the union so the dropdown is never empty.
+    let listed: std::collections::HashSet<String> = rows
+        .iter()
+        .filter(|r| r.served)
+        .map(|r| normalize_provider(&r.provider).to_owned())
+        .collect();
     let mut out: Vec<ProviderCatalog> = Vec::new();
     for row in rows {
         let provider = normalize_provider(&row.provider).to_owned();
@@ -205,7 +213,7 @@ fn group_by_provider(
         // A custom provider's own listing is the whole truth (see the module doc): drop a
         // model only a price book claims. Built-ins keep the union — that is what carries
         // Gemini, which is priced but whose listing shape the catalog sync cannot read.
-        if custom_labels.contains(&provider) && !row.served {
+        if (custom_labels.contains(&provider) || listed.contains(&provider)) && !row.served {
             continue;
         }
         let input = row.input_price_per_1m.and_then(|d| d.to_f64());
@@ -376,6 +384,21 @@ mod tests {
         assert_eq!(
             models_of(&group_by_provider(rows, &labels, &meta), "deepseek"),
             vec!["deepseek-chat"]
+        );
+    }
+
+    /// Once Gemini's ListModels has synced, price-only names are dropped.
+    #[test]
+    fn builtin_with_listing_drops_price_only_models() {
+        let (labels, meta) = custom(&[]);
+        let rows = vec![
+            unpriced("gemini", "gemini-4-argon"),
+            priced("gemini", "gemini-4-argon-lte-128k", false),
+            priced("gemini", "gemini-1.5-pro", false),
+        ];
+        assert_eq!(
+            models_of(&group_by_provider(rows, &labels, &meta), "gemini"),
+            vec!["gemini-4-argon"]
         );
     }
 
