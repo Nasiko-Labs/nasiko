@@ -36,6 +36,18 @@ agents/assistant-agent/main.py
 agents/assistant-agent/nasiko_state.py
 agents/assistant-agent/pyproject.toml
 agents/assistant-agent/telemetry.py
+agents/assistant-rs/.dockerignore
+agents/assistant-rs/.nasiko/agent.json
+agents/assistant-rs/AgentCard.json
+agents/assistant-rs/Cargo.toml
+agents/assistant-rs/Dockerfile
+agents/assistant-rs/src/lib.rs
+agents/assistant-rs/src/llm_stream.rs
+agents/assistant-rs/src/main.rs
+agents/assistant-rs/src/mcp.rs
+agents/assistant-rs/src/pause.rs
+agents/assistant-rs/src/session.rs
+agents/assistant-rs/src/telemetry.rs
 agents/books/AgentCard.json
 agents/books/Dockerfile
 agents/books/go.mod
@@ -651,6 +663,7 @@ llm-router/src/providers/fallback.rs
 llm-router/src/providers/gemini.rs
 llm-router/src/providers/gemini_cache.rs
 llm-router/src/providers/media.rs
+llm-router/src/providers/media/office.rs
 llm-router/src/providers/mod.rs
 llm-router/src/providers/openai.rs
 llm-router/src/providers/openrouter.rs
@@ -827,6 +840,7 @@ migrations/0105_agent_registry_rehosts.sql
 migrations/0106_agent_llm_tokens_revoked_at.sql
 migrations/0107_maf_public_seed.sql
 migrations/0108_cost_usd_over_100.sql
+migrations/0109_tool_calls_agent_index.sql
 migrations/storage-classes.txt
 observability/Cargo.toml
 observability/config/otel-collector.yaml
@@ -1282,6 +1296,7 @@ server/tests/llm_owner_transfer.rs
 server/tests/llm_router_body_limits.rs
 server/tests/maf_flow.rs
 server/tests/maf_hitl_discovery.rs
+server/tests/maf_step_flow_retry.rs
 server/tests/maf_worker.rs
 server/tests/mcp_agent_access_defaults.rs
 server/tests/mcp_build_status_inference.rs
@@ -1506,6 +1521,7 @@ ui/shared/app-shell/package.json
 ui/shared/app-shell/src/errorReporting/errorReporting.test.ts
 ui/shared/app-shell/src/errorReporting/queue.ts
 ui/shared/app-shell/src/errorReporting/scrub.ts
+ui/shared/app-shell/src/errorReporting/sentry.test.ts
 ui/shared/app-shell/src/errorReporting/sentry.ts
 ui/shared/app-shell/src/errorReporting/settings.ts
 ui/shared/app-shell/src/errorReporting/start.ts
@@ -1793,6 +1809,8 @@ ui/shared/features/src/deploy/components/BuildToasts.tsx
 ui/shared/features/src/deploy/components/DeployAgentButton.tsx
 ui/shared/features/src/deploy/components/DropZone.tsx
 ui/shared/features/src/deploy/components/LockedNameHint.tsx
+ui/shared/features/src/deploy/components/ModelKeyNotice.test.tsx
+ui/shared/features/src/deploy/components/ModelKeyNotice.tsx
 ui/shared/features/src/deploy/components/Requirements.tsx
 ui/shared/features/src/deploy/components/StageList.tsx
 ui/shared/features/src/deploy/copy.ts
@@ -1991,6 +2009,7 @@ ui/shared/features/src/onboarding/AgentStep.starterPack.test.tsx
 ui/shared/features/src/onboarding/AgentStep.tsx
 ui/shared/features/src/onboarding/GuideCard.tsx
 ui/shared/features/src/onboarding/GuideHost.tsx
+ui/shared/features/src/onboarding/HarnessSetup.tsx
 ui/shared/features/src/onboarding/HarnessStep.tsx
 ui/shared/features/src/onboarding/ModelStep.tsx
 ui/shared/features/src/onboarding/OnboardingDialog.test.tsx
@@ -2633,6 +2652,7 @@ ui/shared/ui/src/composites/suggest-input.test.tsx
 ui/shared/ui/src/composites/suggest-input.tsx
 ui/shared/ui/src/composites/text-generate-effect.tsx
 ui/shared/ui/src/composites/time-control.tsx
+ui/shared/ui/src/composites/type-to-confirm.tsx
 ui/shared/ui/src/lib/chart.ts
 ui/shared/ui/src/lib/delta.ts
 ui/shared/ui/src/lib/download.ts
@@ -2710,7 +2730,9 @@ utils/build.rs
 utils/src/display.rs
 utils/src/image.rs
 utils/src/lib.rs
+utils/src/logs_level.rs
 utils/src/net.rs
+utils/src/redact.rs
 utils/src/source_files.rs
 utils/src/term.rs
 utils/src/version.rs
