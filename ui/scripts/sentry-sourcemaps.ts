@@ -20,9 +20,12 @@
 import { execFileSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findEditions } from './editions.ts'
 import { precompress } from './lib/precompress.ts'
+
+// Run as a script, not imported: compare URLs, because `file://${argv[1]}` never matches on Windows (D:\… paths).
+const isMain = () => !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 
 /** Pinned: this runs with CI's credentials. */
 const SENTRY_CLI = '@sentry/cli@3.8.0'
@@ -140,4 +143,4 @@ function main(argv: string[]): number {
   return failed ? 1 : 0
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))
+if (isMain()) process.exit(main(process.argv.slice(2)))

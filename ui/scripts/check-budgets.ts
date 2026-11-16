@@ -5,9 +5,12 @@
 // Usage: node scripts/check-budgets.ts [dist…]   (default: every edition's dist/, scripts/editions.ts)
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findEditions } from './editions.ts'
 import { gzipSync } from 'node:zlib'
+
+// Run as a script, not imported: compare URLs, because `file://${argv[1]}` never matches on Windows (D:\… paths).
+const isMain = () => !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 
 type Chunk = { file: string; src?: string; isEntry?: boolean; imports?: string[]; css?: string[] }
 
@@ -148,7 +151,7 @@ export function findCycle(manifest: Record<string, Pick<Chunk, 'imports'>>): str
   return null
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMain()) {
   const root = join(dirname(fileURLToPath(import.meta.url)), '..')
   const dists =
     process.argv.length > 2
