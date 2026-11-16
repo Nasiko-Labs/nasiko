@@ -232,6 +232,17 @@ impl AgentExecutor for Assistant {
                         break;
                     }
                 }
+                if let Some(err_msg) = acc.error() {
+                    let msg = err_msg.to_owned();
+                    store.put(&context_id, conv);
+                    yield Ok(pause::status_event(&task_id, &context_id, TaskState::Failed, &format!("LLM error: {msg}"), None));
+                    return;
+                }
+                if acc.finish_reason().is_none() {
+                    store.put(&context_id, conv);
+                    yield Ok(pause::status_event(&task_id, &context_id, TaskState::Failed, "LLM stream ended without finish_reason", None));
+                    return;
+                }
                 let choice: Value = acc.finish();
                 conv.messages.push(choice.clone());
 

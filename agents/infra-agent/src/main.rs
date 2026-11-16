@@ -125,8 +125,10 @@ impl InfraAgent {
             let traceparent: Option<String> = match parent_cx {
                 Some(cx) => {
                     use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+                    let fallback = cx.clone();
                     chat_span.set_parent(cx);
                     telemetry::traceparent_for_context(&chat_span.context())
+                        .or_else(|| telemetry::traceparent_for_context(&fallback))
                 }
                 None => None,
             };

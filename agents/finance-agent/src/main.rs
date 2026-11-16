@@ -118,7 +118,11 @@ impl FinanceAgent {
             use tracing_opentelemetry::OpenTelemetrySpanExt as _;
             tracing::Span::current().context()
         });
-        if let Some(tp) = own_cx.as_ref().and_then(telemetry::traceparent_for_context) {
+        if let Some(tp) = own_cx
+            .as_ref()
+            .and_then(telemetry::traceparent_for_context)
+            .or_else(|| parent_cx.and_then(telemetry::traceparent_for_context))
+        {
             req = req.header("traceparent", tp);
         }
         let resp = req

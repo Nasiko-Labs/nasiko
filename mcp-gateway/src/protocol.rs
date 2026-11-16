@@ -325,7 +325,10 @@ pub async fn handle_tools_list(
         )
         .await
         {
-            Ok(tools) => ok(req_id, json!({ "tools": tools })),
+            Ok(mut tools) => {
+                tools.push(nasiko_connect_toolkit_definition());
+                ok(req_id, json!({ "tools": tools }))
+            }
             Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
         };
     }

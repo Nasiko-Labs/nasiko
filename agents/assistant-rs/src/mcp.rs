@@ -187,16 +187,22 @@ impl McpSession {
         self.names.contains(name)
     }
 
-    /// Adds new `tools[]` entries; returns names added.
+    /// Adds new `tools[]` entries; returns all tool names returned by the search.
     pub fn absorb(&mut self, result: &Value) -> Vec<String> {
-        let mut added: Vec<String> = Vec::new();
-        let Some(tools) = result.get("tools").and_then(Value::as_array) else {
-            return added;
+        let mut found: Vec<String> = Vec::new();
+        let tools_opt = result
+            .get("structuredContent")
+            .and_then(|sc| sc.get("tools"))
+            .or_else(|| result.get("tools"))
+            .and_then(Value::as_array);
+        let Some(tools) = tools_opt else {
+            return found;
         };
         for tool in tools {
             let Some(name) = tool.get("name").and_then(Value::as_str) else {
                 continue;
             };
+            found.push(name.to_owned());
             if !self.names.insert(name.to_owned()) {
                 continue;
             }
@@ -213,9 +219,8 @@ impl McpSession {
                     "parameters": parameters,
                 }
             }));
-            added.push(name.to_owned());
         }
-        added
+        found
     }
 
     /// Runs one gateway tool. `AUTH_REQUIRED` comes back as [`ToolOutcome::AuthRequired`].

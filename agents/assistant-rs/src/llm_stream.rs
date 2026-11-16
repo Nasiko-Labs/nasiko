@@ -19,6 +19,8 @@ pub struct StreamAccumulator {
     line_buf: Vec<u8>,
     content: String,
     tool_calls: Vec<ToolCallBuf>,
+    finish_reason: Option<String>,
+    error: Option<String>,
     done: bool,
 }
 
@@ -49,6 +51,18 @@ impl StreamAccumulator {
             return None;
         }
         let chunk: Value = serde_json::from_str(data).ok()?;
+        if let Some(err) = chunk.get("error").filter(|e| !e.is_null()) {
+            let msg = err
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| err.to_string());
+            self.error = Some(msg);
+            return None;
+        }
+        if let Some(reason) = chunk["choices"][0]["finish_reason"].as_str() {
+            self.finish_reason = Some(reason.to_owned());
+        }
         let delta: &Value = &chunk["choices"][0]["delta"];
         if let Some(calls) = delta["tool_calls"].as_array() {
             for c in calls {
@@ -78,6 +92,14 @@ impl StreamAccumulator {
 
     pub fn is_done(&self) -> bool {
         self.done
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        self.error.as_deref()
+    }
+
+    pub fn finish_reason(&self) -> Option<&str> {
+        self.finish_reason.as_deref()
     }
 
     /// The assistant message, shaped like a non-streamed `choices[0].message`.
@@ -132,5 +154,18 @@ mod tests {
         assert_eq!(msg["tool_calls"][0]["id"], "c1");
         assert_eq!(msg["tool_calls"][0]["function"]["name"], "GMAIL_FETCH");
         assert_eq!(msg["tool_calls"][0]["function"]["arguments"], "{\"q\":1}");
+    }
+
+    #[test]
+    fn multibyte_utf8_split_across_chunks() {
+        let mut acc = StreamAccumulator::new();
+        // "😀" is 4 UTF-8 bytes: F0 9F 98 80
+        let mut chunk1 = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi \xF0\x9F".to_vec();
+        let mut chunk2 = b"\x98\x80\"}}]}\n\ndata: [DONE]\n".to_vec();
+        assert!(acc.push_bytes(&chunk1).is_empty());
+        let out: Vec<String> = acc.push_bytes(&chunk2);
+        assert_eq!(out, vec!["hi 😀"]);
+        assert!(acc.is_done());
+        let _ = (&mut chunk1, &mut chunk2);
     }
 }
