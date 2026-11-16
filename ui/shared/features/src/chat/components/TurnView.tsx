@@ -363,7 +363,7 @@ function TurnViewBody({
     !saved.length &&
     !!turn.user &&
     routed.endFor(turn.user.id)?.kind === 'empty'
-  // A routed request is asked by the agent OpenRuntime called (its execution's agent), not OpenRuntime.
+  // A routed request is asked by the agent Open Runtime called (its execution's agent), not Open Runtime.
   const requestAgent = (r: HitlDto) => {
     const a =
       routed && r.execution.agent_id

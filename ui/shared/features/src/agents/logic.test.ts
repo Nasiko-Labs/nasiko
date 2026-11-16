@@ -294,10 +294,10 @@ describe('error table', () => {
 
   it('says the server reason instead of "something went wrong" when we have no words of our own', () => {
     const plain = errorCopy(err(400, 'bad owner'), 'read')
-    expect(plain).toEqual({ message: 'OpenRuntime said: bad owner.', detail: null })
+    expect(plain).toEqual({ message: 'Open Runtime said: bad owner.', detail: null })
     // JSON bodies too, not only plain text.
     expect(errorCopy(err(409, { message: 'AGENT_JWT_SECRET is not configured' })).message).toBe(
-      'OpenRuntime said: AGENT_JWT_SECRET is not configured.',
+      'Open Runtime said: AGENT_JWT_SECRET is not configured.',
     )
     // A bare "internal error" names no cause.
     expect(errorCopy(err(500, 'internal error')).message).toBe(copy.somethingWrong)
@@ -309,7 +309,7 @@ describe('error table', () => {
     )
     expect(
       errorCopy(err(500, { error: 'secret OPENAI_API_KEY not found' }), 'lifecycle').message,
-    ).toBe('OpenRuntime said: secret OPENAI_API_KEY not found.')
+    ).toBe('Open Runtime said: secret OPENAI_API_KEY not found.')
   })
 
   it('a non-API error is "something went wrong" with its message', () => {

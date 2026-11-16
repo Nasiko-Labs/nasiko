@@ -103,7 +103,7 @@ export interface TurnState {
    * How many artifacts existed when the first `trace_meta` arrived. A routed reconnect replays the
    * sub-agent's own resumed stream before the orchestrator's new turn, which starts with
    * `trace_meta` (hitl/mod.rs deliver → trigger_new_orchestrator_turn): only later artifacts are
-   * OpenRuntime's reply.
+   * Open Runtime's reply.
    */
   replyArtifactsFrom: number | null
 }

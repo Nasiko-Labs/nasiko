@@ -47,7 +47,7 @@ export const villageCopy = {
     orb: 'Opportunities',
     orbSub: 'Ways to spend fewer tokens',
     observatory: 'Observability',
-    observatorySub: 'Traces of the agents OpenRuntime runs',
+    observatorySub: 'Traces of the agents Open Runtime runs',
     outpost: 'Coding-tool observatory',
     workflows: 'Workflows',
     workflowsSub: 'Every workflow, and how often it ran',
@@ -204,7 +204,7 @@ export const villageCopy = {
     title: 'Build',
     sub: 'Pick what you want to add, then a green plot for it. Each one opens the page where you set it up; it lands on that plot once it exists.',
     tabs: { fleet: 'Fleet', buildings: 'Buildings', savings: 'Savings', guardrails: 'Guardrails' },
-    soon: 'Not in OpenRuntime yet',
+    soon: 'Not in Open Runtime yet',
     opens: (page: string) => `Opens ${page}`,
     pick: (page: string) => `Pick a plot, then ${page}`,
     full: 'No open plot on this plan',
@@ -247,7 +247,7 @@ export const villageCopy = {
     routers: 'Routers',
     guardrailsTitle: 'Guardrails',
     guardrailsNote:
-      'Guardrails will stand here as walls around teams and checkpoints on the token lines. They aren’t in OpenRuntime yet.',
+      'Guardrails will stand here as walls around teams and checkpoints on the token lines. They aren’t in Open Runtime yet.',
     orchestrator: (live: number) =>
       live ? `Coordinating ${n(live, 'running agent', 'running agents')}` : 'Quiet',
     waiting: (k: number) =>
@@ -273,7 +273,7 @@ export const villageCopy = {
     runs: 'Runs',
     success: 'Success',
     watchNote:
-      'The eye walks the park, watching the agents OpenRuntime runs. Coding tools have their own, on the dirt plot.',
+      'The eye walks the park, watching the agents Open Runtime runs. Coding tools have their own, on the dirt plot.',
     openSessions: 'Open Sessions',
     openFlows: 'Open Flows',
     railsTitle: 'Workflows',

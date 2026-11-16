@@ -146,9 +146,9 @@ describe('copy guards (test 2, §5.1)', () => {
     errorCopy,
   })
 
-  it('no "Auto" badge, no "Let OpenRuntime choose", and composed strings take the article', () => {
+  it('no "Auto" badge, no "Let Open Runtime choose", and composed strings take the article', () => {
     expect(copy.orchestratorName).toBe('Orchestrator')
-    expect(all).not.toContain('Let OpenRuntime choose')
+    expect(all).not.toContain('Let Open Runtime choose')
     for (const banned of [
       /Ask Orchestrator/,
       /by Orchestrator/,
@@ -161,7 +161,7 @@ describe('copy guards (test 2, §5.1)', () => {
     expect(copy.theOrchestrator).toBe('the Orchestrator')
   })
 
-  it('routed strings say Orchestrator; platform strings keep OpenRuntime', () => {
+  it('routed strings say Orchestrator; platform strings keep Open Runtime', () => {
     for (const s of [
       copy.heroOrchestratorSubline,
       copy.routedBadgeTooltip,
@@ -181,7 +181,7 @@ describe('copy guards (test 2, §5.1)', () => {
       errorCopy.routedMayStillArrive,
       errorCopy.routedInternal,
     ])
-      expect(`${e.problem} ${e.cause}`).toMatch(/OpenRuntime/)
+      expect(`${e.problem} ${e.cause}`).toMatch(/Open Runtime/)
   })
 })
 

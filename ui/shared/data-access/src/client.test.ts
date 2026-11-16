@@ -57,7 +57,7 @@ describe('apiFetch / apiData', () => {
     vi.restoreAllMocks()
     expect(net).toBeInstanceOf(ApiError)
     expect((net as ApiError).isServerUnreachable).toBe(true)
-    expect((net as ApiError).message).toBe("Couldn't reach OpenRuntime (POST /api/x)")
+    expect((net as ApiError).message).toBe("Couldn't reach Open Runtime (POST /api/x)")
   })
 
   it("says the server's own reason as the error message, else the status and the request", async () => {

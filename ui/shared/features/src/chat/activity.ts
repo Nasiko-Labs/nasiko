@@ -121,7 +121,7 @@ export interface MetricTurn {
   empty: boolean
 }
 
-/** NC-2: how often OpenRuntime called no agent, one, or several, and how often a turn ended empty. */
+/** NC-2: how often Open Runtime called no agent, one, or several, and how often a turn ended empty. */
 export function routedMetric(turns: readonly MetricTurn[]) {
   return {
     total: turns.length,

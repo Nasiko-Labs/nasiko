@@ -13,7 +13,7 @@ const reasonList = (reasons: readonly { reason: string; count: number }[]) =>
  */
 export const copy = {
   title: 'Coding harnesses',
-  subtitle: 'Coding harnesses connected to OpenRuntime',
+  subtitle: 'Coding harnesses connected to Open Runtime',
   loading: 'Loading harness usage',
   registered: 'Registered',
   registeredTip:
@@ -59,7 +59,7 @@ export const copy = {
   noDevelopersInScope: 'No developers in this scope.',
   notVisible: 'Not found or not visible.',
   notVisibleHint: "This usage doesn't exist, or it isn't shared with you.",
-  noHarnesses: 'No harnesses connected to OpenRuntime yet.',
+  noHarnesses: 'No harnesses connected to Open Runtime yet.',
   deltaUnavailable: 'Δ unavailable',
 
   // Onboarding (viewer only).

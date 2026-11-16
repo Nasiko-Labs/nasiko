@@ -173,7 +173,7 @@ export function announcement(
   switch (next.phase) {
     case 'done':
       return prev && isLivePhase(prev.phase) ? copy.announceReply(agent) : null
-    // A routed pause names the agent that asked (awaiting_human), not OpenRuntime.
+    // A routed pause names the agent that asked (awaiting_human), not Open Runtime.
     // A chained pause has no awaiting_human: `askedBy` is the agent of the request being resumed.
     case 'paused':
       return copy.announceRequest(next.state.awaiting?.agent ?? askedBy ?? agent)

@@ -1,6 +1,6 @@
-# OpenRuntime UI
+# Open Runtime UI
 
-The browser app for Nasiko's OpenRuntime: React 19 + Vite (static SPA), TanStack Router/Query,
+The browser app for Nasiko's Open Runtime: React 19 + Vite (static SPA), TanStack Router/Query,
 Tailwind v4 + shadcn/ui, Recharts, Motion. The server embeds the built bundle and serves it same-origin.
 
 What's here:
@@ -33,7 +33,7 @@ What's here:
   agent page has a Builds tab, and a build you leave keeps being followed (a sidebar count and one toast when it
   finishes). **Deploy an agent** buttons replace the CLI-only empty states; the CLI steps stay underneath.
 - **Chat** (`/chat`, `/chat/:id`): talk to one agent in the browser, with streamed replies, tool steps, answerable
-  requests and the trace one click away, or let OpenRuntime choose the agents (`/chat?auto=1`, routed chat).
+  requests and the trace one click away, or let Open Runtime choose the agents (`/chat?auto=1`, routed chat).
   **Try it** on a running agent's page opens a chat with it. Guide: [docs/chat.md](docs/chat.md).
 - **App shell**: a sidebar grouped by goal (collapses to an icon rail with ⌘B / Ctrl+B, a sheet on phones), a
   theme menu (System / Light / Dark, and the Teal, Indigo, Plum or Mist/Carbon theme) and Sign out, synced across tabs.
@@ -79,7 +79,7 @@ pnpm run seed:live     # optional: load seed rows into the local Postgres (pnpm 
 pnpm run dev:live      # log in as admin / changeme
 ```
 
-**Chat.** `/chat` talks to one agent in the browser, and `/chat?auto=1` lets OpenRuntime choose.
+**Chat.** `/chat` talks to one agent in the browser, and `/chat?auto=1` lets Open Runtime choose.
 [docs/chat.md](docs/chat.md) has a mock quickstart (5 steps), a stack quickstart (8 steps), every mock scenario, the
 routed smoke and the error guide.
 

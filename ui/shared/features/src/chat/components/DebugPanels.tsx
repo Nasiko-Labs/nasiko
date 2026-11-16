@@ -88,7 +88,7 @@ export function DebugFrames({
 }
 
 /**
- * `?debug=turn` on a routed chat (NC-2): how often OpenRuntime called no agent, one or several,
+ * `?debug=turn` on a routed chat (NC-2): how often Open Runtime called no agent, one or several,
  * over the loaded replies whose agents are known (this tab's steps, or flows already fetched),
  * and how many attempts this tab saw end empty.
  */

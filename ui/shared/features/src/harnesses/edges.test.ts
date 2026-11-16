@@ -128,14 +128,14 @@ describe('summary window wording', () => {
         res: { totals: T(), by_harness: [] },
         individual: { self: true, name: 'Ada' },
       }),
-    ).toEqual(['You have no harness connected to OpenRuntime yet.'])
+    ).toEqual(['You have no harness connected to Open Runtime yet.'])
     expect(
       harnessNarrative({
         windowLabel: 'Last 7 days',
         res: { totals: T(), by_harness: [] },
         individual: { self: false, name: 'Ada' },
       }),
-    ).toEqual(['Ada has no harness connected to OpenRuntime yet.'])
+    ).toEqual(['Ada has no harness connected to Open Runtime yet.'])
   })
 
   it('another developer with one connected harness reads "their connected harness"', () => {

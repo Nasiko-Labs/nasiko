@@ -109,7 +109,7 @@ describe('rejected before run (§6.6)', () => {
     await waitFor(() =>
       expect(
         within(screen.getByTestId('error-notice')).getByText(
-          'OpenRuntime has no running agent for this.',
+          'Open Runtime has no running agent for this.',
         ),
       ).toBeInTheDocument(),
     )

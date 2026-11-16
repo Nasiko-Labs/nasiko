@@ -508,7 +508,7 @@ describe('server contract (§5.3, §5.6, NC-5)', () => {
       tokens: 'NASIKO_FLOW_MAX_TOKENS',
       timeout: 'NASIKO_FLOW_TIMEOUT_SECS',
     })
-    expect(policyCopy.stopped(policyCopy.fanOut)).toBe('Stopped by an OpenRuntime limit: fan-out.')
+    expect(policyCopy.stopped(policyCopy.fanOut)).toBe('Stopped by an Open Runtime limit: fan-out.')
     expect(policyCopy.raise(POLICY_ENV.fanOut!)).toBe(
       'Ask your admin to raise NASIKO_FLOW_MAX_FAN_OUT.',
     )

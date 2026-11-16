@@ -74,7 +74,7 @@ describe('RouteError (the router default)', () => {
         throw new TypeError('Failed to fetch dynamically imported module: /assets/page-old.js')
       })
       expect(await screen.findByText('Try again in a moment.')).toBeInTheDocument()
-      expect(screen.queryByText(/OpenRuntime was updated/)).toBeNull()
+      expect(screen.queryByText(/Open Runtime was updated/)).toBeNull()
       expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument()
       vi.restoreAllMocks()
     })

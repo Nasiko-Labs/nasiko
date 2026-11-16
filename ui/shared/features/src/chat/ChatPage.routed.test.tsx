@@ -317,7 +317,7 @@ describe('routed turn (§5.5, §5.7, §5.8)', () => {
     await userEvent.click(await screen.findByRole('button', { name: /Activity/ }))
     expect(
       screen.getByText(
-        /Stopped by an OpenRuntime limit: fan-out\. Ask your admin to raise NASIKO_FLOW_MAX_FAN_OUT\./,
+        /Stopped by an Open Runtime limit: fan-out\. Ask your admin to raise NASIKO_FLOW_MAX_FAN_OUT\./,
       ),
     ).toBeInTheDocument()
   })
@@ -333,7 +333,7 @@ describe('routed turn (§5.5, §5.7, §5.8)', () => {
 })
 
 describe('end states (§5.5) and notices (§5.6)', () => {
-  it('known-empty: OpenRuntime finished without a reply, with Run again', async () => {
+  it('known-empty: Open Runtime finished without a reply, with Run again', async () => {
     await sendRouted('nothing', 'routed-empty')
     expect(
       await screen.findByText('The Orchestrator finished without a reply.'),
@@ -385,7 +385,7 @@ describe('end states (§5.5) and notices (§5.6)', () => {
     ['routed-400', "The Orchestrator couldn't read this request.", 'Edit and send', '400'],
     ['routed-429', 'Too many requests.', 'Retry', '429'],
     ['routed-503', 'No accessible, reachable agents were available for this request.', null, '503'],
-    ['routed-500', 'OpenRuntime hit an error.', 'Refresh status', '500'],
+    ['routed-500', 'Open Runtime hit an error.', 'Refresh status', '500'],
   ] as const)(
     '%s: problem, action, Copy details and anchor',
     async (sc, problem, action, anchor) => {

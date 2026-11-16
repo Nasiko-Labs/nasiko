@@ -158,7 +158,7 @@ describe('narrative', () => {
     })
     expect(s).toHaveLength(2)
     expect(s[0]).toBe(
-      'In the last 30 days, 41 of 60 developers used a harness connected to OpenRuntime; Claude Code leads with 31 active developers.',
+      'In the last 30 days, 41 of 60 developers used a harness connected to Open Runtime; Claude Code leads with 31 active developers.',
     )
     expect(s[1]).toBe('12 registered seats had no activity; usage worth $1,000.00 at API prices.')
   })
@@ -175,7 +175,7 @@ describe('narrative', () => {
         windowLabel: 'Last 7 days',
         res: res({ active_devs: 0, registered_devs: 0 }, []),
       }),
-    ).toEqual(['No harnesses connected to OpenRuntime yet.'])
+    ).toEqual(['No harnesses connected to Open Runtime yet.'])
     expect(
       harnessNarrative({
         windowLabel: 'Last 7 days',

@@ -1,6 +1,6 @@
 /**
  * Every onboarding string. The flow and wording follow the user's prototype ("Nasiko Console", screen "02 Onboarding"),
- * with the lab's naming: the platform is OpenRuntime, never a "control plane". The Welcome opens with OpenRuntime's
+ * with the lab's naming: the platform is Open Runtime, never a "control plane". The Welcome opens with Open Runtime's
  * narrative, then what it gets you (user review 2026-11-05).
  */
 import type { StepId } from './logic'
@@ -30,11 +30,11 @@ export const copy = {
   } satisfies Record<StepId, { title: string; sub: string }>,
   welcome: {
     title: 'Welcome to Nasiko',
-    // OpenRuntime's narrative comes back ahead of the capabilities (user review 2026-11-05). It meters spend, never
+    // Open Runtime's narrative comes back ahead of the capabilities (user review 2026-11-05). It meters spend, never
     // "pays for" agents: that read as Nasiko covering the user's model costs (NAS-1592). No lead-in to the stages
     // below: "work flows through it in four stages" was unclear, and the row stands on its own.
     intro:
-      'OpenRuntime runs, observes and secures AI agents on any framework, and meters what they spend.',
+      'Open Runtime runs, observes and secures AI agents on any framework, and meters what they spend.',
     // The four stages as they were before 2026-11-04 (user review 2026-11-05).
     stages: [
       { title: 'Connect', line: 'Models, MCP tools and channels' },
@@ -42,7 +42,7 @@ export const copy = {
       { title: 'Run', line: 'Orchestrate tasks end to end' },
       { title: 'Govern', line: 'Budgets, guardrails and traces' },
     ],
-    stagesLabel: 'How work flows through OpenRuntime',
+    stagesLabel: 'How work flows through Open Runtime',
     does: 'What Nasiko does',
     get: 'What you get',
     // One row per category (user review 2026-11-05: six rows repeated each other): run, measure, cut, harnesses.

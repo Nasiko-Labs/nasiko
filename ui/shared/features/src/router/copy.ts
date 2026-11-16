@@ -217,7 +217,7 @@ export const copy = {
   pinModelHint: 'A pinned model turns tier routing and fallbacks off.',
   pinModelRequired: 'Choose the model to pin.',
   cantClear:
-    'OpenRuntime can’t clear this field yet. Duplicate without this field, or use the CLI.',
+    'Open Runtime can’t clear this field yet. Duplicate without this field, or use the CLI.',
   duplicateWithout: 'Duplicate without this field',
   missingKey: (name: string) => `Saved key ${name} not found: add it again`,
   providerGone: 'Provider no longer registered',
@@ -305,7 +305,7 @@ export const copy = {
   cpKindHint: {
     openai: 'Speaks the OpenAI chat completions format.',
     'azure-openai':
-      'An Azure OpenAI resource. OpenRuntime adds the deployment path and api-version.',
+      'An Azure OpenAI resource. Open Runtime adds the deployment path and api-version.',
     'bedrock-converse': 'Bedrock Runtime’s Converse API, with a Bedrock API key.',
   },
   cpKindLocked: 'The endpoint type can’t change after registering. Add a new provider instead.',
@@ -335,8 +335,8 @@ export const copy = {
     `Still used by: ${names}. Some may belong to other users; their owners must repoint them first.`,
 
   // Errors (errors.ts builds the entries)
-  errUnmapped: (text: string, status: number) => `OpenRuntime said: ${text} (HTTP ${status})`,
-  errDown: 'OpenRuntime isn’t answering.',
+  errUnmapped: (text: string, status: number) => `Open Runtime said: ${text} (HTTP ${status})`,
+  errDown: 'Open Runtime isn’t answering.',
   errDownFix: 'Check that nasiko-server is running, then retry.',
 } as const
 

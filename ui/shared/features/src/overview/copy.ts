@@ -12,7 +12,7 @@ export const copy = {
   title: 'Home',
   loading: 'Loading',
   loadingPage: 'Loading Home',
-  meFailed: "Couldn't reach OpenRuntime to load your account.",
+  meFailed: "Couldn't reach Open Runtime to load your account.",
   checkStatus: 'Check server status',
   retry: 'Retry',
   couldntLoad: (what: string) => `Couldn't load ${what}.`,
@@ -45,7 +45,7 @@ export const copy = {
   },
   setup: {
     button: 'Setup guide',
-    title: 'Set up OpenRuntime',
+    title: 'Set up Open Runtime',
     intro:
       'Deploy an agent from the app, or use the CLI. Cost, health and sessions show up on Home once it runs.',
   },
@@ -452,7 +452,7 @@ export const copy = {
     greeting: hello,
     title: 'Get your first agent running',
     headline:
-      'OpenRuntime hosts it, routes its model calls and records every session. Once it runs, this page shows what it costs, how healthy it is and what needs you.',
+      'Open Runtime hosts it, routes its model calls and records every session. Once it runs, this page shows what it costs, how healthy it is and what needs you.',
     cli: (n: number) => `Or use the CLI (${n} commands)`,
     cliTitle: 'Or use the CLI',
   },

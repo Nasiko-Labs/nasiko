@@ -98,7 +98,7 @@ export const copy = {
         : `${on.toLocaleString('en-US')} of ${total.toLocaleString('en-US')} workspace agents on`,
     saved: (tokens: string, estimated: boolean) =>
       `~${tokens} tokens saved${estimated ? ' (estimated)' : ''}`,
-    absent: 'Counts and savings for each show here once your OpenRuntime server reports them.',
+    absent: 'Counts and savings for each show here once your Open Runtime server reports them.',
     failed: 'Couldn’t load counts and savings.',
   },
 
@@ -161,7 +161,7 @@ export const copy = {
     meta: (period: string, superuser: boolean) =>
       `${period} · ${superuser ? 'all agents' : 'agents you can access'} · estimates`,
     absentLine:
-      'Your OpenRuntime server doesn’t record what each request carried yet. Every block below says what will show there once it does.',
+      'Your Open Runtime server doesn’t record what each request carried yet. Every block below says what will show there once it does.',
     noReportsLine: 'Chat with an agent, then come back: each request’s savings show here.',
     startChat: 'Start a chat',
     noAgentsLine:
@@ -232,11 +232,11 @@ export const copy = {
         `Too few reported (${reports.toLocaleString('en-US')} of ${eligible.toLocaleString('en-US')})`,
       /** R4C: the baseline is defined once, here. */
       footnote: (unit: 'hour' | 'day' | 'week') =>
-        `Without optimization = the recent messages OpenRuntime chooses from (up to 150), before selection. Fewer tokens, not necessarily better answers. Click ${unit === 'hour' ? 'an hour' : `a ${unit}`} to see its biggest senders.`,
+        `Without optimization = the recent messages Open Runtime chooses from (up to 150), before selection. Fewer tokens, not necessarily better answers. Click ${unit === 'hour' ? 'an hour' : `a ${unit}`} to see its biggest senders.`,
       /** R6B: a phone's chart bar is a week. */
       week: (label: string) => `Week of ${label}`,
       outline: (hourly: boolean) =>
-        `Tokens sent and saved per ${hourly ? 'hour' : 'day'} will show here once your OpenRuntime server reports them.`,
+        `Tokens sent and saved per ${hourly ? 'hour' : 'day'} will show here once your Open Runtime server reports them.`,
       summary: (period: string, sent: string, saved: string) =>
         `Tokens over ${period}: ~${sent} sent, ~${saved} saved.`,
       loading: 'Loading savings over time',
@@ -299,10 +299,10 @@ export const copy = {
     without: 'Without optimization',
     /** 2A: one baseline on every surface. */
     baselineTip:
-      'The recent messages OpenRuntime chooses from (up to 150), before selection. Chats longer than 150 messages count as 150.',
+      'The recent messages Open Runtime chooses from (up to 150), before selection. Chats longer than 150 messages count as 150.',
     /** 2A on every device: tooltips don't open on tap, so the definition is in the footnote too (review finding 3). */
     estimates:
-      'Estimates. Without optimization = the recent messages OpenRuntime chooses from (up to 150), before selection. Fewer tokens, not necessarily better answers.',
+      'Estimates. Without optimization = the recent messages Open Runtime chooses from (up to 150), before selection. Fewer tokens, not necessarily better answers.',
     noChats: 'The preview appears after your first chat.',
     failed: 'Preview unavailable.',
     label: 'What each tier keeps from your last chat',
@@ -338,12 +338,12 @@ export const copy = {
     defaultsTitle: 'Defaults. Your server’s environment may override these.',
     partialTitle: 'Read-only. Your server reports only some of these values.',
     partialHint:
-      'Values it doesn’t report show their defaults. Editing needs a newer OpenRuntime server that reports every value.',
+      'Values it doesn’t report show their defaults. Editing needs a newer Open Runtime server that reports every value.',
     conflict: 'Someone else saved the tiers after you opened this page. Your changes aren’t saved.',
     conflictAction: 'Load their values',
     conflictLoadFailed: 'Couldn’t load their values. Your changes are still here; try again.',
     defaultsHint:
-      'They are read when OpenRuntime starts. Editing them here needs a newer OpenRuntime server; until then, change the variables and restart.',
+      'They are read when Open Runtime starts. Editing them here needs a newer Open Runtime server; until then, change the variables and restart.',
     budgets: 'History budgets (PACMS)',
     counts: 'Message counts (Top-K and Last-K)',
     shared: 'Shared limits',
@@ -384,7 +384,7 @@ export const copy = {
   fieldName: { strategy: 'Strategy', level: 'History budget', enabled: 'Context optimization' },
   fieldFailed: (field: string, message: string) =>
     `${field} didn’t save: ${message}. Save changes to try again.`,
-  saveFailed: 'OpenRuntime couldn’t save this',
+  saveFailed: 'Open Runtime couldn’t save this',
   loading: 'Loading your optimization settings',
   retry: 'Retry',
 }

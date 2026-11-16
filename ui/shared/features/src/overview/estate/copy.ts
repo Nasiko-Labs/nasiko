@@ -213,7 +213,7 @@ export const estateCopy = {
       undo: 'Undo',
       failed: 'Couldn’t save that. Try again.',
     },
-    readOnly: 'Assigning needs a newer OpenRuntime server.',
+    readOnly: 'Assigning needs a newer Open Runtime server.',
   },
   filters: {
     team: 'Team',
@@ -369,7 +369,7 @@ export const estateCopy = {
     fixedWhen: 'Fleet health rates it Healthy again',
     openAgent: 'Open the agent',
     person: (n: number) => `Person ${n}`,
-    note: 'A smaller map: this OpenRuntime server doesn’t report teams, workflows, routing or tools yet.',
+    note: 'A smaller map: this Open Runtime server doesn’t report teams, workflows, routing or tools yet.',
   },
   error: {
     title: 'Couldn’t load the map.',

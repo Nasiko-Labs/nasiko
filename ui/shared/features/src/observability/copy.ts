@@ -32,7 +32,7 @@ export const copy = {
   // Sessions → Open chat (Chat v1c §5.10; never "session" for a chat, ND-12).
   openChat: 'Open chat',
   probeFailed: "Couldn't check chat availability",
-  probeFailedCause: 'OpenRuntime did not answer whether this is one of your chats.',
+  probeFailedCause: 'Open Runtime did not answer whether this is one of your chats.',
   retryProbe: 'Retry',
   copyProbeDetails: 'Copy details',
   failingChip: (n: number, checked: number) => `${n} failing · ${checked} checked`,

@@ -337,7 +337,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Show one status at a time, or search by agent.',
     },
     {
-      // The Build page has no logs yet ("Build logs need a newer OpenRuntime server").
+      // The Build page has no logs yet ("Build logs need a newer Open Runtime server").
       target: 'builds-panel',
       side: 'top',
       title: 'Build history',

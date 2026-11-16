@@ -1,4 +1,4 @@
-# OpenRuntime UI Lab: design notes
+# Open Runtime UI Lab: design notes
 
 What exists today, in one place. Values live in code: colours in `shared/ui/src/styles/index.css`,
 motion in `shared/ui/src/lib/motion.ts`, theme logic in `shared/app-core/src/shell/theme.ts`.
