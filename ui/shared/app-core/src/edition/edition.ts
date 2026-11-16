@@ -496,6 +496,11 @@ export interface StarterPack<T = unknown> {
   offered: (data: T | undefined) => boolean
   /** A note at the top of the tab, such as what the plan includes for these agents; none without it. */
   note?: string
+  /**
+   * Where the pack is offered, what the Deploy page's model-key notice says in place of its own line, such as what the
+   * plan includes for the agents a user deploys; without it the notice keeps its line.
+   */
+  deployNote?: string
 }
 
 export const starterPack = <T>(s: StarterPack<T>) => s as unknown as StarterPack
