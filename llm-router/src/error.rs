@@ -68,12 +68,13 @@ pub enum GatewayError {
     NoSharedUserConfig,
 
     // ── 429 - the owner's allowance for this caller is spent ────────────────
-    /// A call the agent's owner would pay for was refused until the allowance renews, and the
-    /// caller has no config of their own to fall back on. Worded for the end user, like
+    /// A call the deployment would cover (the agent's owner paying for a shared caller, or the
+    /// platform for an owner's own call that found no key) was refused until the allowance renews,
+    /// and the caller has no config of their own to fall back on. Worded for the end user, like
     /// [`NoSharedUserConfig`](Self::NoSharedUserConfig); `Retry-After` carries the seconds.
     #[error(
-        "Today's calls on this agent's own model are used up. Connect your own model in LLM \
-         router to keep chatting with it, or try again after 00:00 UTC."
+        "Today's free model calls are used up. Connect your own model in LLM router to keep \
+         going, or try again after 00:00 UTC."
     )]
     OwnerAllowanceSpent { retry_after_secs: u64 },
 

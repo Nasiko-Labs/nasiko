@@ -3147,6 +3147,27 @@ mod shared_user_tests {
         .map(|_| ())
     }
 
+    /// A config that is neither the owner's default nor attached to the agent is not the agent's,
+    /// so the owner's call finds no key and a deployment may cover it.
+    #[sqlx::test(migrator = "MIGRATIONS")]
+    #[ignore = "requires disposable PostgreSQL"]
+    async fn an_owner_config_neither_default_nor_attached_resolves_to_none(
+        pool: PgPool,
+    ) -> Result<(), sqlx::Error> {
+        let store = PgRegistry::new(pool.clone());
+        let alice = insert_user(&pool).await?;
+        let agent = insert_agent(&pool, alice).await?;
+        insert_config(&pool, alice, "spare", false).await?;
+        let read = store.fetch_llm_config(agent).await?.expect("agent row");
+        assert!(read.config.is_none());
+
+        insert_config(&pool, alice, "alice-default", true).await?;
+        let read = store.fetch_llm_config(agent).await?.expect("agent row");
+        let model = read.config.and_then(|c| c.model);
+        assert_eq!(model.as_deref(), Some("alice-default"));
+        Ok(())
+    }
+
     #[sqlx::test(migrator = "MIGRATIONS")]
     #[ignore = "requires disposable PostgreSQL"]
     async fn a_users_choice_for_an_agent_is_read_live_and_never_anothers(

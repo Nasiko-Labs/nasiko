@@ -52,7 +52,10 @@ For agent calls there is exactly one path — **`traceparent`, resolved, or reje
    flow the calling agent is not part of — is rejected with `403` (see below).
 
 The caller also decides **whose config and keys** the call runs on. The owner on their own agent
-keeps the agent's attached config, else their default. Anyone else — a user the agent is shared
+keeps the agent's attached config, else their default; when that finds no key (`GatewayError::NoApiKey`),
+the deployment's payer may cover the call with `Payer::Platform`, which runs it on the platform's default
+model and own key with no config, pin or requested model read (`resolver::ConfigSubject::Platform`), or
+refuse it with the `429` below. The default payer never does. Anyone else — a user the agent is shared
 with — runs on *their own* config and `user_secrets` (`resolver::ConfigSubject::SharedUser`): the
 config they chose for this agent (`PUT /api/agents/{id}/my-llm-config`), else their default. The
 agent's attached config, its model pin and the owner's keys are not read for them, unless the

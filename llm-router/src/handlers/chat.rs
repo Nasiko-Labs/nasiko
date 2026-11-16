@@ -34,7 +34,7 @@ use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
 use crate::payer;
 use crate::providers::{ProviderError, fallback};
-use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve_for};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, RequestHint, resolve_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
 use crate::usage::{self, UsageRecord};
@@ -1006,9 +1006,20 @@ pub(crate) async fn resolve_routed_request(
     let (subject, retry_after) =
         payer::subject_for_call(store, ctx.payer.as_ref(), &agent_id, &owner_id, acting_user)
             .await?;
-    let mut resolved = resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint)
-        .await
-        .map_err(|e| payer::allowance_error(e, retry_after))?;
+    let mut resolved =
+        match resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint).await {
+            Err(no_key @ GatewayError::NoApiKey { .. })
+                if matches!(subject, ConfigSubject::Owner(_)) =>
+            {
+                match payer::cover_owner_call(ctx.payer.as_ref(), &owner_id, acting_user).await? {
+                    Some(covered) => {
+                        resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, covered, hint).await?
+                    }
+                    None => return Err(no_key),
+                }
+            }
+            resolved => resolved.map_err(|e| payer::allowance_error(e, retry_after))?,
+        };
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
     let decision = routing::route_model_with(
         ctx.classifier.as_ref(),
@@ -2514,10 +2525,12 @@ mod tests {
 
     const SHARED: &str = "33333333-3333-3333-3333-333333333333";
 
-    /// An agent `OWNER` owns, attached to `owner-model`, called by `flow_user`. Every secret
-    /// decrypts to `key-of-<holder>`, so the key a provider receives names whose key it is.
+    /// An agent `OWNER` owns, attached to `owner_config` (`owner-model` unless a test clears it),
+    /// called by `flow_user`. Every secret decrypts to `key-of-<holder>`, so the key a provider
+    /// receives names whose key it is.
     struct PayerStore {
         flow_user: Uuid,
+        owner_config: Option<LLMConfig>,
         chosen: Option<LLMConfig>,
         default: Option<LLMConfig>,
         is_coding_agent: bool,
@@ -2533,6 +2546,7 @@ mod tests {
             };
             Self {
                 flow_user: Uuid::parse_str(SHARED).unwrap(),
+                owner_config: Some(keyed("owner-model")),
                 chosen: chosen.map(keyed),
                 default: default.map(keyed),
                 is_coding_agent: false,
@@ -2548,11 +2562,7 @@ mod tests {
             _: Uuid,
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             Ok(Some(AgentConfigResult {
-                config: Some(LLMConfig {
-                    model: Some("owner-model".into()),
-                    api_key_secret_name: Some("KEY".into()),
-                    ..openai_config()
-                }),
+                config: self.owner_config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
                 compress_enabled: false,
@@ -2646,9 +2656,20 @@ mod tests {
     async fn paid_chat(store: &PayerStore, payer: &Payers, model: &str, key_holder: &str) {
         install_master_key();
         let mut server = mockito::Server::new_async().await;
-        let mock = server
+        let mock = completion_mock(&mut server, model, &format!("key-of-{key_holder}")).await;
+        chat_paid_by(payer, server.url(), store).await.unwrap();
+        mock.assert_async().await;
+    }
+
+    /// A completion answered only for `model` with `Bearer <key>`, exactly once.
+    async fn completion_mock(
+        server: &mut mockito::ServerGuard,
+        model: &str,
+        key: &str,
+    ) -> mockito::Mock {
+        server
             .mock("POST", "/chat/completions")
-            .match_header("authorization", format!("Bearer key-of-{key_holder}").as_str())
+            .match_header("authorization", format!("Bearer {key}").as_str())
             .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -2662,9 +2683,7 @@ mod tests {
             )
             .expect(1)
             .create_async()
-            .await;
-        chat_paid_by(payer, server.url(), store).await.unwrap();
-        mock.assert_async().await;
+            .await
     }
 
     /// What the payer is asked about: the agent's owner, then the calling user.
@@ -2735,8 +2754,8 @@ mod tests {
         let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
         assert_eq!(
             body["detail"],
-            "Today's calls on this agent's own model are used up. Connect your own model in LLM \
-             router to keep chatting with it, or try again after 00:00 UTC."
+            "Today's free model calls are used up. Connect your own model in LLM router to keep \
+             going, or try again after 00:00 UTC."
         );
     }
 
@@ -2826,6 +2845,117 @@ mod tests {
             matches!(&err, GatewayError::Internal(m) if m.starts_with(read_failed)),
             "{err:?}"
         );
+        assert!(asked(&payer).is_empty());
+    }
+
+    /// The Free plane's shape: agents get no platform key, the platform keeps its own.
+    fn free_ctx(base: String, payer: &Payers) -> LlmRouterCtx {
+        let ctx = ctx_with(base);
+        let cfg = GatewayConfig {
+            generic_key_fallback: false,
+            platform_openai_api_key: String::new(),
+            service_openai_api_key: "sk-service".into(),
+            ..(*ctx.cfg).clone()
+        };
+        LlmRouterCtx {
+            cfg: Arc::new(cfg),
+            payer: payer.clone(),
+            ..ctx
+        }
+    }
+
+    /// The owner calling their own agent, which resolves to no config.
+    fn unconfigured_owner() -> PayerStore {
+        PayerStore {
+            flow_user: Uuid::parse_str(OWNER).unwrap(),
+            owner_config: None,
+            ..PayerStore::new(None, None)
+        }
+    }
+
+    fn owner_asked_about_themselves() -> Vec<(Uuid, Uuid)> {
+        let owner = Uuid::parse_str(OWNER).unwrap();
+        vec![(owner, owner)]
+    }
+
+    #[tokio::test]
+    async fn an_owner_without_a_key_is_covered_on_the_platform_defaults() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let mut server = mockito::Server::new_async().await;
+        // The request asks for `gpt-4o`; a covered call runs the platform default instead.
+        let mock = completion_mock(&mut server, "gpt-4o-mini", "sk-service").await;
+        let ctx = free_ctx(server.url(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(asked(&payer), owner_asked_about_themselves());
+    }
+
+    #[tokio::test]
+    async fn an_owner_whose_allowance_is_spent_gets_the_429() {
+        let spent = Payer::CallerAfterAllowance {
+            retry_after_secs: 120,
+        };
+        let payer = crate::payer::RecordingPayer::answering(Some(spent));
+        let ctx = free_ctx("http://unused".into(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GatewayError::OwnerAllowanceSpent {
+                    retry_after_secs: 120
+                }
+            ),
+            "{err:?}"
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "120");
+        let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
+        assert_eq!(
+            body["detail"],
+            "Today's free model calls are used up. Connect your own model in LLM router to keep \
+             going, or try again after 00:00 UTC."
+        );
+    }
+
+    #[tokio::test]
+    async fn an_owner_the_payer_leaves_alone_keeps_the_no_api_key_error() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Caller));
+        let ctx = free_ctx("http://unused".into(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::NoApiKey { .. }), "{err:?}");
+        assert_eq!(asked(&payer), owner_asked_about_themselves());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_owner_with_a_working_config_is_never_counted_on_the_free_ctx() {
+        install_master_key();
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let mut server = mockito::Server::new_async().await;
+        let mock = completion_mock(&mut server, "owner-model", &format!("key-of-{OWNER}")).await;
+        let ctx = free_ctx(server.url(), &payer);
+        let headers = auth_headers(&token());
+        let store = PayerStore {
+            flow_user: Uuid::parse_str(OWNER).unwrap(),
+            ..PayerStore::new(None, None)
+        };
+        chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+        mock.assert_async().await;
         assert!(asked(&payer).is_empty());
     }
 

@@ -1375,9 +1375,11 @@ mod tests {
         let value: Value = serde_json::from_slice(&body(response).await).unwrap();
         assert_eq!(value["error"]["code"], "allowance_exhausted");
         assert_eq!(value["error"]["type"], "invalid_request_error");
-        assert!(value["error"]["message"].as_str().is_some_and(|m| {
-            m.starts_with("Today's calls on this agent's own model are used up.")
-        }));
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .is_some_and(|m| { m.starts_with("Today's free model calls are used up.") })
+        );
     }
 
     #[tokio::test]
