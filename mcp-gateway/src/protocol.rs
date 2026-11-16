@@ -944,6 +944,16 @@ async fn handle_tools_call_inner(
         // Asking to connect a toolkit is the agent declaring it needs it: turn the connector on
         // for this agent so its tools show up after consent. An explicit "off" set by whoever
         // manages the agent is respected; only a never-configured connector is enabled.
+        if let Err(e) = crate::repo::insert_agent_connector_access_if_absent(
+            &state.db,
+            perms.agent_id,
+            connector.id,
+            true,
+        )
+        .await
+        {
+            tracing::warn!(agent_id = %perms.agent_id, connector = %connector.name, error = %e, "connect_toolkit: enabling connector for agent failed");
+        }
         match crate::repo::get_agent_connector_access_row(&state.db, perms.agent_id, connector.id)
             .await
         {
@@ -957,25 +967,7 @@ async fn handle_tools_call_inner(
                     }),
                 );
             }
-            Ok(Some(_)) => {}
-            Ok(None) => {
-                match crate::permissions::set_connector_access_view(
-                    state,
-                    user_id,
-                    perms.agent_id,
-                    connector.id,
-                    true,
-                )
-                .await
-                {
-                    Ok(_) => {
-                        tracing::info!(agent_id = %perms.agent_id, connector = %connector.name, "connect_toolkit: enabled connector for agent")
-                    }
-                    Err(e) => {
-                        tracing::warn!(agent_id = %perms.agent_id, connector = %connector.name, error = %e, "connect_toolkit: enabling connector for agent failed")
-                    }
-                }
-            }
+            Ok(Some(_)) | Ok(None) => {}
             Err(e) => {
                 tracing::warn!(agent_id = %perms.agent_id, error = %e, "connect_toolkit: access lookup failed")
             }

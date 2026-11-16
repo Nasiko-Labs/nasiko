@@ -301,6 +301,14 @@ impl AgentExecutor for Assistant {
                             yield Ok(pause::auth_required_event(&task_id, &context_id, &auth));
                             return;
                         }
+                        ToolOutcome::ToolAsk(ask) => {
+                            tracing::info!(context_id = %context_id, tool = %name, hitl_request_id = ?ask.hitl_request_id, "tool ask -> TASK_STATE_INPUT_REQUIRED");
+                            conv.pending = Some(Pending::Input { tool_call_id: call_id });
+                            skip_rest(&mut conv, &calls, i);
+                            store.put(&context_id, conv);
+                            yield Ok(pause::tool_ask_event(&task_id, &context_id, &ask));
+                            return;
+                        }
                     }
                 }
             }

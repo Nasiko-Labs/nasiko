@@ -5,7 +5,7 @@
 //! user connected the account (auth), and the loop continues.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 
@@ -57,6 +57,7 @@ impl Conversation {
 /// In-memory store keyed by A2A `context_id`, capped to bound memory.
 pub struct ConversationStore {
     inner: Mutex<HashMap<String, Conversation>>,
+    locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     max: usize,
 }
 
@@ -64,8 +65,18 @@ impl ConversationStore {
     pub fn new(max: usize) -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
+            locks: Mutex::new(HashMap::new()),
             max,
         }
+    }
+
+    /// Per-context mutex so overlapping turns on the same `context_id` serialize.
+    pub fn context_lock(&self, context_id: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.locks.lock().unwrap();
+        locks
+            .entry(context_id.to_owned())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     pub fn take(&self, context_id: &str) -> Conversation {

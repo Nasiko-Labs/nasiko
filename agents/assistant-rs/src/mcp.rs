@@ -12,6 +12,8 @@ use serde_json::{Value, json};
 /// Gateway tool-search meta-tool; its result carries full tool definitions.
 pub const SEARCH_TOOL: &str = "nasiko_search_tools";
 
+/// JSON-RPC code the gateway returns when a tool requires HITL confirmation.
+pub const TOOL_ASK_CODE: i64 = -32001;
 /// JSON-RPC code the gateway returns when the user must connect an account.
 pub const AUTH_REQUIRED_CODE: i64 = -32002;
 
@@ -58,6 +60,37 @@ impl AuthRequired {
     }
 }
 
+/// The user must approve a gated tool call before it can run.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolAsk {
+    pub hitl_request_id: Option<String>,
+    pub message: String,
+}
+
+impl ToolAsk {
+    pub fn from_rpc_error(err: &Value) -> Option<Self> {
+        if err.get("code").and_then(Value::as_i64) != Some(TOOL_ASK_CODE) {
+            return None;
+        }
+        let hitl_request_id = err
+            .get("data")
+            .and_then(|d| d.get("hitl_request_id"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned);
+        let message = err
+            .get("message")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| "Approval required to run this tool.".to_owned());
+        Some(Self {
+            hitl_request_id,
+            message,
+        })
+    }
+}
+
 /// Result of one gateway tool call.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ToolOutcome {
@@ -65,11 +98,14 @@ pub enum ToolOutcome {
     Text(String),
     /// Pause the task until the user connects the account.
     AuthRequired(AuthRequired),
+    /// Pause the task until the user approves the tool call.
+    ToolAsk(ToolAsk),
 }
 
 #[derive(Debug)]
 enum RpcError {
     Auth(AuthRequired),
+    ToolAsk(ToolAsk),
     Other(String),
 }
 
@@ -131,6 +167,9 @@ impl McpClient {
         if let Some(err) = parsed.get("error").filter(|e| !e.is_null()) {
             if let Some(auth) = AuthRequired::from_rpc_error(err) {
                 return Err(RpcError::Auth(auth));
+            }
+            if let Some(ask) = ToolAsk::from_rpc_error(err) {
+                return Err(RpcError::ToolAsk(ask));
             }
             return Err(RpcError::Other(format!("gateway error: {err}")));
         }
@@ -236,6 +275,7 @@ impl McpSession {
         let result: Value = match self.client.rpc(&self.traceparent, body).await {
             Ok(r) => r,
             Err(RpcError::Auth(auth)) => return ToolOutcome::AuthRequired(auth),
+            Err(RpcError::ToolAsk(ask)) => return ToolOutcome::ToolAsk(ask),
             Err(RpcError::Other(e)) => {
                 return ToolOutcome::Text(format!("tool {name} failed: {e}"));
             }

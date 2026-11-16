@@ -11,7 +11,7 @@ use a2a::*;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::mcp::AuthRequired;
+use crate::mcp::{AuthRequired, ToolAsk};
 
 /// One selectable answer.
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -108,6 +108,22 @@ pub fn input_required_event(task_id: &str, context_id: &str, req: &InputRequest)
         TaskState::InputRequired,
         &req.question,
         Some(input_metadata(req)),
+    )
+}
+
+/// `TASK_STATE_INPUT_REQUIRED` status update for a gateway `TOOL_ASK` HITL pause.
+pub fn tool_ask_event(task_id: &str, context_id: &str, ask: &ToolAsk) -> StreamResponse {
+    let mut m: HashMap<String, Value> = HashMap::new();
+    m.insert("expected_input".into(), json!("text"));
+    if let Some(id) = &ask.hitl_request_id {
+        m.insert("hitl_request_id".into(), json!(id));
+    }
+    status_event(
+        task_id,
+        context_id,
+        TaskState::InputRequired,
+        &ask.message,
+        Some(m),
     )
 }
 
