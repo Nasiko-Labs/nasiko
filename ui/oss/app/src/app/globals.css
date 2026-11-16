@@ -1,9 +1,0 @@
-/* The app owns no theme: everything comes from @nasiko/ui (Phase 3). The
-   @source lines are needed because Tailwind 4 does not scan node_modules, and
-   the workspace packages are reached through it. */
-@import "@nasiko/ui/styles.css";
-@source "../../../../shared/ui/src";
-/* The shared workspace shell, its core and the product features (ADR-0007, ADR-0009). */
-@source "../../../../shared/app-core/src";
-@source "../../../../shared/app-shell/src";
-@source "../../../../shared/features/src";
