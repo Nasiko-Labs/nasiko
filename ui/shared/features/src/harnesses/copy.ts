@@ -85,7 +85,6 @@ export const copy = {
     findMyAgents: 'Find my agents',
     idle: 'Your coding agents are not being imported right now.',
     // Browser: running the command is the consent.
-    commandTitle: 'Bring in your coding agents',
     commandBody: 'To discover your coding agents and load your previous sessions, run:',
     command: 'nasiko agents setup',
     copyCommand: 'Copy command',

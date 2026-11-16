@@ -97,7 +97,8 @@ const PUBLIC = {
     'types',
   ],
   narrative: ['tokenops', 'trace', 'harness', 'overview', 'flows', 'agentHub', 'home'],
-  onboarding: ['api', 'GuideCard', 'GuideHost', 'index', 'logic', 'types'],
+  // Coding harnesses' empty state shows the guide's own harness step.
+  onboarding: ['api', 'GuideCard', 'GuideHost', 'HarnessSetup', 'index', 'logic', 'types'],
   // The product tour (shared/features/src/tour): the shell's `_app` route mounts its host.
   tour: ['TourHost'],
   // Context optimization (plans/feat-context-optimization.md eng D1): its rules, copy, the trace's Optimization block
