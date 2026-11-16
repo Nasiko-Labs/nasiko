@@ -232,10 +232,8 @@ pub async fn a2a_dispatch_handler(
     // turn hands it to every agent the orchestrator calls, a direct one puts it in the A2A
     // message. Resolved before either, because an attachment belongs to the turn, not to the
     // target that happens to answer it.
-    let InboundAttachments {
-        parts: file_parts,
-        files: attached_files,
-    } = inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
+    let mut attachments =
+        inbound_file_parts(&state, &params, session_id.as_deref(), user_id).await?;
 
     // Resolved before the history fetch: the target's switch decides IP-4.
     let target_agent = if is_orchestrator {
@@ -303,6 +301,13 @@ pub async fn a2a_dispatch_handler(
     // multi-turn chats keep their history either way. An unknown id simply
     // fetches zero rows.
     let history_sid = session_id.as_deref().unwrap_or(&context_id);
+    // The history below is text: a file sent on an earlier turn rides along with this one, or an
+    // agent without a memory of its own answers a follow-up about it without the file.
+    carry_earlier_attachments(&state, history_sid, user_id, &params, &mut attachments).await;
+    let InboundAttachments {
+        parts: file_parts,
+        files: attached_files,
+    } = attachments;
     let history_store = state.history_vector_store(user_id).await;
     let history = context_selection::fetch_for_user(
         &state.db,
@@ -2453,24 +2458,7 @@ async fn inbound_file_parts(
         })
         .sum();
 
-    let mut ids: Vec<Uuid> = Vec::new();
-    let listed = params
-        .metadata
-        .as_ref()
-        .and_then(|m| m.get("file_ids"))
-        .and_then(|v| v.as_array());
-    for value in listed.into_iter().flatten() {
-        let raw = value
-            .as_str()
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string());
-        let id = Uuid::parse_str(&raw).map_err(|_| {
-            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
-        })?;
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
+    let ids = listed_file_ids(params)?;
     if ids.len() + parts.len() > MAX_ATTACHED_FILES {
         return Err(A2aDispatchError::InvalidRequest(format!(
             "at most {MAX_ATTACHED_FILES} attachments per message"
@@ -2562,18 +2550,137 @@ async fn inbound_file_parts(
                 )));
             }
         }
-        files.push(AttachedFile {
-            reference: AttachmentRef::ChatUpload {
-                session_id: row.session_id,
-                file_id: row.id,
-            },
-            filename: row.filename,
-            media_type: row.mime_type,
-            size_bytes: row.size_bytes.max(0) as u64,
-        });
+        files.push(row.into_chat_upload());
     }
 
     Ok(InboundAttachments { parts, files })
+}
+
+/// The stored uploads `metadata.file_ids` names, without repeats, in the caller's order.
+fn listed_file_ids(
+    params: &nasiko_types::a2a::SendMessageRequest,
+) -> Result<Vec<Uuid>, A2aDispatchError> {
+    let mut ids: Vec<Uuid> = Vec::new();
+    let listed = params
+        .metadata
+        .as_ref()
+        .and_then(|m| m.get("file_ids"))
+        .and_then(|v| v.as_array());
+    for value in listed.into_iter().flatten() {
+        let raw = value
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string());
+        let id = Uuid::parse_str(&raw).map_err(|_| {
+            A2aDispatchError::InvalidRequest(format!("attachment {raw} was not found"))
+        })?;
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    Ok(ids)
+}
+
+/// Put the files attached on earlier turns of `session_id` ahead of this turn's own.
+///
+/// The history a turn carries is text, so an agent that keeps no conversation of its own would
+/// otherwise meet a follow-up question about a PDF without the PDF. Only files a saved user
+/// message claimed count (an upload dropped before sending never does). They are taken newest
+/// first while they fit what this turn's own files leave of `MAX_ATTACHED_FILES` and
+/// `MAX_ATTACHED_BYTES`, and sent in the order the user sent them. Best effort: a file that can
+/// no longer be read is left out with a warning, rather than refusing every later turn of the
+/// chat over a file the user did not send with it.
+async fn carry_earlier_attachments(
+    state: &AppState,
+    session_id: &str,
+    user_id: Uuid,
+    params: &nasiko_types::a2a::SendMessageRequest,
+    turn: &mut InboundAttachments,
+) {
+    // Already validated by `inbound_file_parts`; listed here only to leave them out.
+    let this_turn = listed_file_ids(params).unwrap_or_default();
+    let rows = sqlx::query_as::<_, AttachedRow>(
+        "SELECT cmf.id, cmf.session_id, cmf.filename, cmf.mime_type, cmf.size_bytes, \
+                cmf.storage_uri \
+           FROM chat_message_files cmf \
+           JOIN chat_sessions cs ON cs.session_id = cmf.session_id \
+          WHERE cmf.session_id = $1 AND cs.user_id = $2 \
+            AND cmf.message_id IS NOT NULL AND cmf.id <> ALL($3) \
+          ORDER BY cmf.created_at DESC, cmf.id",
+    )
+    .bind(session_id)
+    .bind(user_id)
+    .bind(&this_turn)
+    .fetch_all(&state.db)
+    .await;
+    let rows = match rows {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(%e, "earlier attachments lookup failed; the turn goes without them");
+            return;
+        }
+    };
+
+    let (mut room_files, mut room_bytes) = turn.room_left();
+    let mut chosen = Vec::new();
+    for row in rows {
+        if room_files == 0 {
+            break;
+        }
+        let size = row.size_bytes.max(0) as u64;
+        if size > room_bytes {
+            continue;
+        }
+        room_files -= 1;
+        room_bytes -= size;
+        chosen.push(row);
+    }
+    chosen.reverse();
+
+    let carried: Vec<_> = futures::stream::iter(
+        chosen
+            .into_iter()
+            .map(|row| carried_attachment(state, user_id, row)),
+    )
+    .buffered(ATTACHMENT_READ_CONCURRENCY)
+    .collect()
+    .await;
+    let (parts, files): (Vec<_>, Vec<_>) = carried.into_iter().flatten().unzip();
+    turn.parts.splice(0..0, parts.into_iter().flatten());
+    turn.files.splice(0..0, files);
+}
+
+/// One earlier file read for this turn: its bytes as a part when it is a chat upload, and what
+/// the agent is told about it. `None`, with a warning, when it can no longer be read.
+async fn carried_attachment(
+    state: &AppState,
+    user_id: Uuid,
+    row: AttachedRow,
+) -> Option<(Option<a2a::Part>, AttachedFile)> {
+    let id = row.id;
+    if !row.storage_uri.starts_with(CHAT_UPLOAD_PREFIX) {
+        return match elsewhere_attachment(state, user_id, row).await {
+            Ok(file) => Some((None, file)),
+            Err(e) => {
+                tracing::warn!(%id, error = ?e, "an earlier attachment is left out of this turn");
+                None
+            }
+        };
+    }
+    match state.oci_storage.get_blob(&row.storage_uri).await {
+        Ok(bytes) => Some((
+            Some(a2a::file_part(
+                Vec::from(bytes),
+                Some(row.filename.clone()),
+                Some(row.mime_type.clone()),
+            )),
+            row.into_chat_upload(),
+        )),
+        Err(e) => {
+            tracing::warn!(%id, %e, "an earlier attachment is left out of this turn");
+            None
+        }
+    }
 }
 
 enum Resolved {
@@ -2638,9 +2745,51 @@ struct AttachedRow {
     storage_uri: String,
 }
 
+impl AttachedRow {
+    /// A chat upload as the agent is told about it.
+    fn into_chat_upload(self) -> AttachedFile {
+        AttachedFile {
+            reference: AttachmentRef::ChatUpload {
+                session_id: self.session_id,
+                file_id: self.id,
+            },
+            filename: self.filename,
+            media_type: self.mime_type,
+            size_bytes: self.size_bytes.max(0) as u64,
+        }
+    }
+}
+
 pub(crate) struct InboundAttachments {
     pub(crate) parts: Vec<a2a::Part>,
     pub(crate) files: Vec<AttachedFile>,
+}
+
+impl InboundAttachments {
+    /// What these files leave of the per-turn limits: a count, then bytes. A chat upload is in
+    /// both lists (its bytes in `parts`, its reference in `files`), an inline part only in
+    /// `parts`, and a file read from elsewhere only in `files`.
+    fn room_left(&self) -> (usize, u64) {
+        let inline_bytes: u64 = self
+            .parts
+            .iter()
+            .map(|p| match &p.content {
+                PartContent::Raw(data) => data.len() as u64,
+                _ => 0,
+            })
+            .sum();
+        let (count, bytes) = self
+            .files
+            .iter()
+            .filter(|f| !matches!(f.reference, AttachmentRef::ChatUpload { .. }))
+            .fold((self.parts.len(), inline_bytes), |(n, b), f| {
+                (n + 1, b + f.size_bytes)
+            });
+        (
+            MAX_ATTACHED_FILES.saturating_sub(count),
+            MAX_ATTACHED_BYTES.saturating_sub(bytes),
+        )
+    }
 }
 
 pub(crate) struct AttachedFile {
