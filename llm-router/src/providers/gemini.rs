@@ -964,9 +964,12 @@ fn assistant_to_gemini(m: &Message) -> Value {
         // Gemini 3+/thinking models reject a model turn whose first functionCall lacks a
         // thoughtSignature. Clients that rebuild history (Responses API, compacted tools,
         // stored chats) drop it, so send Google's documented bypass value instead.
-        let has_sig: bool = tool_calls
-            .iter()
-            .any(|tc| tc.extra.get("thought_signature").and_then(|v| v.as_str()).is_some());
+        let has_sig: bool = tool_calls.iter().any(|tc| {
+            tc.extra
+                .get("thought_signature")
+                .and_then(|v| v.as_str())
+                .is_some()
+        });
         for (i, tc) in tool_calls.iter().enumerate() {
             let args: Value =
                 serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
@@ -2296,7 +2299,10 @@ mod tests {
         let call = |name: &str| ToolCall {
             id: name.into(),
             kind: "function".into(),
-            function: FunctionCall { name: name.into(), arguments: "{}".into() },
+            function: FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
             extra: Map::new(),
         };
         let mut m: Message = serde_json::from_value(json!({"role": "assistant"})).unwrap();
