@@ -58,6 +58,13 @@ export const copy = {
     terminalHint: 'Run this command to upload from your machine.',
     copyCommand: 'Copy command',
   },
+  // The Deploy page's model-key notice (components/ModelKeyNotice.tsx); the setup guide's tabs leave it out, since the
+  // guide's next step takes the key.
+  keyNotice: {
+    title: 'Your agents need a model key',
+    body: 'Agents you deploy call their model with your own provider key: OpenAI, Anthropic, Gemini or a custom provider. Add one in the LLM router before their first run.',
+    link: 'Set up a model key',
+  },
   methods: {
     label: 'How to deploy',
     upload: 'Upload a zip',

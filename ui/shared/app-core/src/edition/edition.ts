@@ -494,6 +494,8 @@ export interface StarterPack<T = unknown> {
   query: SlotQuery<T>
   /** `data` is undefined when the read failed: the layer decides what that means. */
   offered: (data: T | undefined) => boolean
+  /** A note at the top of the tab, such as what the plan includes for these agents; none without it. */
+  note?: string
 }
 
 export const starterPack = <T>(s: StarterPack<T>) => s as unknown as StarterPack
