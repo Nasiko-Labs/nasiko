@@ -249,6 +249,56 @@ async fn a_member_sees_only_what_they_can_reach() {
 
 #[tokio::test]
 #[serial]
+async fn a_member_counts_only_their_own_calls_on_a_public_agent() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "ov-seed-owner").await;
+    let member = seed_user(&server, "ov-seed-member").await;
+    let stranger = seed_user(&server, "ov-seed-stranger").await;
+    let public = seed_agent(&server, owner, "public-seed-agent").await;
+    sqlx::query("UPDATE agents SET is_public = TRUE WHERE id = $1")
+        .bind(public)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    seed_runs(&server, public, member, 3, 0).await;
+    seed_runs(&server, public, stranger, 40, 20).await;
+
+    let (status, body) = estate(&server, &token(member, "ov-seed-member", false), "7d").await;
+    assert_eq!(status, 200, "{body}");
+    let e = &body["data"];
+    let row = e["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == public.to_string())
+        .expect("a public agent is on a member's map");
+    assert_eq!(row["runs"], 3, "only the member's own calls count");
+    assert_eq!(row["success_pct"], 100.0);
+    assert!(
+        !e["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == format!("agent-failing:{public}")),
+        "a stranger's failures aren't the member's problem"
+    );
+
+    let (status, body) = estate(&server, &token(owner, "ov-seed-owner", true), "7d").await;
+    assert_eq!(status, 200, "{body}");
+    let row = body["data"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == public.to_string())
+        .unwrap()
+        .clone();
+    assert_eq!(row["runs"], 43, "a superuser sees every caller");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
 async fn a_problem_takes_an_owner_a_snooze_and_handled() {
     let server = common::TestServer::start().await;
     let admin = seed_user(&server, "ov-admin").await;
