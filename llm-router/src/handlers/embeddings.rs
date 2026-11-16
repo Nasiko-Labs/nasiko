@@ -593,7 +593,7 @@ mod tests {
             .create_async()
             .await;
         let base = ctx_with(server.url());
-        // The Free plane's shape: agents get no platform key, the platform keeps its own.
+        // Agents get no platform key; the platform keeps its own.
         let cfg = GatewayConfig {
             generic_key_fallback: false,
             platform_openai_api_key: String::new(),

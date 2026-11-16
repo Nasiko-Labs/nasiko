@@ -69,8 +69,8 @@ pub async fn subject_for_call<'a>(
     }
     Ok(match payer.payer(owner, caller).await? {
         Payer::Owner => (ConfigSubject::Sponsored(owner_id), None),
-        Payer::Platform => (ConfigSubject::Platform, None),
-        Payer::Caller => (subject, None),
+        // The platform covers only an owner's own call (`cover_owner_call`); anyone else stays on their own.
+        Payer::Caller | Payer::Platform => (subject, None),
         Payer::CallerAfterAllowance { retry_after_secs } => (subject, Some(retry_after_secs)),
     })
 }
@@ -136,5 +136,71 @@ impl SharedCallPayer for RecordingPayer {
             .push((owner, caller));
         self.answer
             .ok_or_else(|| GatewayError::Internal("counter store down".into()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OWNER: &str = "22222222-2222-2222-2222-222222222222";
+    const SOMEONE_ELSE: &str = "33333333-3333-3333-3333-333333333333";
+
+    fn id(s: &str) -> Uuid {
+        Uuid::parse_str(s).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_owner_call_asks_about_the_owner_alone_and_maps_the_answer() {
+        let covered = RecordingPayer::answering(Some(Payer::Platform));
+        let subject = cover_owner_call(covered.as_ref(), OWNER, Some(id(OWNER))).await;
+        assert_eq!(subject.unwrap(), Some(ConfigSubject::Platform));
+        assert_eq!(*covered.calls.lock().unwrap(), [(id(OWNER), id(OWNER))]);
+
+        for left in [Payer::Caller, Payer::Owner] {
+            let payer = RecordingPayer::answering(Some(left));
+            let subject = cover_owner_call(payer.as_ref(), OWNER, Some(id(OWNER))).await;
+            assert_eq!(subject.unwrap(), None);
+        }
+
+        let spent = RecordingPayer::answering(Some(Payer::CallerAfterAllowance {
+            retry_after_secs: 7,
+        }));
+        let err = cover_owner_call(spent.as_ref(), OWNER, Some(id(OWNER)))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GatewayError::OwnerAllowanceSpent {
+                    retry_after_secs: 7
+                }
+            ),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_call_by_anyone_else_or_no_one_never_asks() {
+        let payer = RecordingPayer::answering(Some(Payer::Platform));
+        let calls = [
+            (OWNER, None),
+            (OWNER, Some(id(SOMEONE_ELSE))),
+            ("not-a-uuid", Some(id(OWNER))),
+        ];
+        for (owner_id, acting_user) in calls {
+            let subject = cover_owner_call(payer.as_ref(), owner_id, acting_user).await;
+            assert_eq!(subject.unwrap(), None);
+        }
+        assert!(payer.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_payer_failure_on_an_owner_call_fails_closed() {
+        let payer = RecordingPayer::answering(None);
+        let err = cover_owner_call(payer.as_ref(), OWNER, Some(id(OWNER)))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::Internal(_)), "{err:?}");
     }
 }

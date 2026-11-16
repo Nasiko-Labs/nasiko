@@ -2848,8 +2848,8 @@ mod tests {
         assert!(asked(&payer).is_empty());
     }
 
-    /// The Free plane's shape: agents get no platform key, the platform keeps its own.
-    fn free_ctx(base: String, payer: &Payers) -> LlmRouterCtx {
+    /// Agents get no platform key; the platform keeps its own.
+    fn no_agent_key_ctx(base: String, payer: &Payers) -> LlmRouterCtx {
         let ctx = ctx_with(base);
         let cfg = GatewayConfig {
             generic_key_fallback: false,
@@ -2884,7 +2884,7 @@ mod tests {
         let mut server = mockito::Server::new_async().await;
         // The request asks for `gpt-4o`; a covered call runs the platform default instead.
         let mock = completion_mock(&mut server, "gpt-4o-mini", "sk-service").await;
-        let ctx = free_ctx(server.url(), &payer);
+        let ctx = no_agent_key_ctx(server.url(), &payer);
         let headers = auth_headers(&token());
         let store = unconfigured_owner();
         chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
@@ -2900,7 +2900,7 @@ mod tests {
             retry_after_secs: 120,
         };
         let payer = crate::payer::RecordingPayer::answering(Some(spent));
-        let ctx = free_ctx("http://unused".into(), &payer);
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
         let headers = auth_headers(&token());
         let store = unconfigured_owner();
         let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
@@ -2929,7 +2929,7 @@ mod tests {
     #[tokio::test]
     async fn an_owner_the_payer_leaves_alone_keeps_the_no_api_key_error() {
         let payer = crate::payer::RecordingPayer::answering(Some(Payer::Caller));
-        let ctx = free_ctx("http://unused".into(), &payer);
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
         let headers = auth_headers(&token());
         let store = unconfigured_owner();
         let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
@@ -2941,12 +2941,12 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn an_owner_with_a_working_config_is_never_counted_on_the_free_ctx() {
+    async fn an_owner_with_a_working_config_is_never_counted_on_the_no_agent_key_ctx() {
         install_master_key();
         let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
         let mut server = mockito::Server::new_async().await;
         let mock = completion_mock(&mut server, "owner-model", &format!("key-of-{OWNER}")).await;
-        let ctx = free_ctx(server.url(), &payer);
+        let ctx = no_agent_key_ctx(server.url(), &payer);
         let headers = auth_headers(&token());
         let store = PayerStore {
             flow_user: Uuid::parse_str(OWNER).unwrap(),
@@ -2956,6 +2956,63 @@ mod tests {
             .await
             .unwrap();
         mock.assert_async().await;
+        assert!(asked(&payer).is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_shared_caller_is_never_put_on_the_platform() {
+        // The platform covers only an owner's own call: for anyone else the answer is their own config.
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let store = PayerStore::new(None, Some("default-model"));
+        paid_chat(&store, &payer, "default-model", SHARED).await;
+        assert_eq!(asked(&payer), owner_and_caller());
+    }
+
+    #[tokio::test]
+    async fn an_unattributed_call_that_finds_no_key_never_asks_the_payer() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
+        // A coding agent and a session token are never attributed to a flow user.
+        let coding_store = PayerStore {
+            is_coding_agent: true,
+            owner_config: None,
+            ..PayerStore::new(None, None)
+        };
+        let session = SessionClaims {
+            agent_id: AGENT.into(),
+            user_id: OWNER.into(),
+            session_id: "ses_1".into(),
+            flow_id: "flow".into(),
+            jti: "jti".into(),
+            aud: String::new(),
+            iat: 0,
+            exp: 0,
+        };
+        for session in [None, Some(session)] {
+            let routed = resolve_routed_request(
+                &ctx,
+                &coding_store,
+                &HeaderMap::new(),
+                AGENT.into(),
+                OWNER.into(),
+                RequestHint {
+                    provider: Some("openai"),
+                    model: None,
+                },
+                RequestSignals {
+                    query: Some("hi".into()),
+                    turn_ordinal: 1,
+                    is_tool_continuation: false,
+                },
+                session,
+            )
+            .await;
+            let Err(err) = routed else {
+                panic!("an unattributed call was covered");
+            };
+            assert!(matches!(err, GatewayError::NoApiKey { .. }), "{err:?}");
+        }
         assert!(asked(&payer).is_empty());
     }
 
