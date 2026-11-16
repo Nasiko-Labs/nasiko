@@ -244,14 +244,18 @@ fn parse_gemini_models(body: &serde_json::Value) -> (HashSet<String>, Option<Str
                     m.get("supportedGenerationMethods")
                         .and_then(|v| v.as_array())
                         .is_some_and(|methods| {
-                            methods.iter().any(|x| x.as_str() == Some("generateContent"))
+                            methods
+                                .iter()
+                                .any(|x| x.as_str() == Some("generateContent"))
                         })
                 })
                 .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
                 .map(|name| name.strip_prefix("models/").unwrap_or(name))
                 .filter(|name| {
                     name.starts_with("gemini-")
-                        && !GEMINI_NON_CHAT_MARKERS.iter().any(|mark| name.contains(mark))
+                        && !GEMINI_NON_CHAT_MARKERS
+                            .iter()
+                            .any(|mark| name.contains(mark))
                 })
                 .map(str::to_string)
                 .collect()
@@ -592,13 +596,15 @@ pub async fn sync_once(db: &PgPool, http: &reqwest::Client, cfg: &GatewayConfig)
     // Gemini: its own ListModels shape and credential header.
     if !cfg.platform_gemini_api_key.is_empty() {
         match fetch_gemini_models(http, &cfg.gemini_api_base, &cfg.platform_gemini_api_key).await {
-            Some(models) if !models.is_empty() => match sync_provider(db, "gemini", &models).await {
-                Ok(()) => synced += 1,
-                Err(e) => tracing::warn!(
-                    target: "nasiko::llm_router::catalog",
-                    provider = "gemini", error = %e, "model catalog sync: DB write failed"
-                ),
-            },
+            Some(models) if !models.is_empty() => {
+                match sync_provider(db, "gemini", &models).await {
+                    Ok(()) => synced += 1,
+                    Err(e) => tracing::warn!(
+                        target: "nasiko::llm_router::catalog",
+                        provider = "gemini", error = %e, "model catalog sync: DB write failed"
+                    ),
+                }
+            }
             Some(_) => tracing::warn!(
                 target: "nasiko::llm_router::catalog",
                 provider = "gemini",
@@ -692,7 +698,8 @@ mod tests {
 
     #[test]
     fn gemini_last_page_has_no_token() {
-        let (models, next) = parse_gemini_models(&serde_json::json!({"models": [], "nextPageToken": ""}));
+        let (models, next) =
+            parse_gemini_models(&serde_json::json!({"models": [], "nextPageToken": ""}));
         assert!(models.is_empty());
         assert!(next.is_none());
     }
