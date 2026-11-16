@@ -205,6 +205,7 @@ impl AgentExecutor for Assistant {
                 let resp: reqwest::Response = match llm.chat_stream(&messages, &tools, &traceparent).await {
                     Ok(r) => r,
                     Err(e) => {
+                        store.put(&context_id, conv);
                         yield Ok(pause::status_event(&task_id, &context_id, TaskState::Failed, &e, None));
                         return;
                     }
@@ -218,6 +219,7 @@ impl AgentExecutor for Assistant {
                     let bytes = match chunk {
                         Ok(b) => b,
                         Err(e) => {
+                            store.put(&context_id, conv);
                             yield Ok(pause::status_event(&task_id, &context_id, TaskState::Failed, &format!("LLM stream error: {e}"), None));
                             return;
                         }

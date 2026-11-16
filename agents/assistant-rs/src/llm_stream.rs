@@ -16,7 +16,7 @@ struct ToolCallBuf {
 
 #[derive(Debug, Default)]
 pub struct StreamAccumulator {
-    line_buf: String,
+    line_buf: Vec<u8>,
     content: String,
     tool_calls: Vec<ToolCallBuf>,
     done: bool,
@@ -29,12 +29,13 @@ impl StreamAccumulator {
 
     /// Consumes a body chunk; returns the text deltas it completed.
     pub fn push_bytes(&mut self, bytes: &[u8]) -> Vec<String> {
-        self.line_buf.push_str(&String::from_utf8_lossy(bytes));
+        self.line_buf.extend_from_slice(bytes);
         let mut deltas: Vec<String> = Vec::new();
-        while let Some(pos) = self.line_buf.find('\n') {
-            let line: String = self.line_buf[..pos].trim_end_matches('\r').to_owned();
-            self.line_buf.drain(..=pos);
-            if let Some(d) = self.push_line(&line) {
+        while let Some(pos) = self.line_buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = self.line_buf.drain(..=pos).collect();
+            let line_raw = String::from_utf8_lossy(&line_bytes[..line_bytes.len() - 1]);
+            let line: &str = line_raw.trim_end_matches('\r');
+            if let Some(d) = self.push_line(line) {
                 deltas.push(d);
             }
         }
@@ -81,8 +82,9 @@ impl StreamAccumulator {
 
     /// The assistant message, shaped like a non-streamed `choices[0].message`.
     pub fn finish(mut self) -> Value {
-        if !self.line_buf.trim().is_empty() {
-            let rest: String = std::mem::take(&mut self.line_buf);
+        let rest_bytes: Vec<u8> = std::mem::take(&mut self.line_buf);
+        let rest: String = String::from_utf8_lossy(&rest_bytes).into_owned();
+        if !rest.trim().is_empty() {
             self.push_line(rest.trim());
         }
         let mut msg: Value = json!({"role": "assistant", "content": self.content});
