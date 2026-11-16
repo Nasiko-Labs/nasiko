@@ -1,7 +1,0 @@
-{
-  "extends": "@nasiko/config/tsconfig/library",
-  "include": ["src"],
-  "compilerOptions": {
-    "types": ["vite/client", "node"]
-  }
-}
