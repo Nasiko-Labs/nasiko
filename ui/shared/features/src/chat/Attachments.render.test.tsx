@@ -4,8 +4,12 @@
  */
 import { render, screen, within } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
+import { apiUrl } from '@nasiko/data-access/client'
 import { MessageAttachments } from './components/Attachments'
 import type { FilePart } from './types'
+
+// The API base (the page origin in tests): file URLs are absolute so they reach the API host.
+const ORIGIN = apiUrl('/').origin
 
 const part = (name: string, mime: string): FilePart => ({ id: `f-${name}`, name, size: 2048, mime })
 
@@ -17,7 +21,7 @@ describe('a sent message, by kind of media', () => {
     show([part('photo.png', 'image/png')])
     expect(screen.getByRole('img', { name: 'photo.png' })).toHaveAttribute(
       'src',
-      '/api/chat/files/f-photo.png/download',
+      `${ORIGIN}/api/chat/files/f-photo.png/download`,
     )
   })
 
@@ -27,15 +31,15 @@ describe('a sent message, by kind of media', () => {
     const video = container.querySelector('video')
     expect(audio).toHaveAttribute('controls')
     expect(video).toHaveAttribute('controls')
-    expect(audio).toHaveAttribute('src', '/api/chat/files/f-note.m4a/download')
-    expect(video).toHaveAttribute('src', '/api/chat/files/f-clip.mp4/download')
+    expect(audio).toHaveAttribute('src', `${ORIGIN}/api/chat/files/f-note.m4a/download`)
+    expect(video).toHaveAttribute('src', `${ORIGIN}/api/chat/files/f-clip.mp4/download`)
   })
 
   it('leaves a document or an unknown type as a download chip', () => {
     show([part('report.pdf', 'application/pdf'), part('mystery.dat', '')])
     for (const name of ['report.pdf', 'mystery.dat']) {
       const link = screen.getByText(name).closest('a')
-      expect(link).toHaveAttribute('href', `/api/chat/files/f-${name}/download`)
+      expect(link).toHaveAttribute('href', `${ORIGIN}/api/chat/files/f-${name}/download`)
       expect(link).toHaveAttribute('download')
     }
   })
@@ -44,7 +48,7 @@ describe('a sent message, by kind of media', () => {
     const block = show([part('clip.mov', 'video/quicktime')]).container
     expect(within(block).getByRole('link')).toHaveAttribute(
       'href',
-      '/api/chat/files/f-clip.mov/download',
+      `${ORIGIN}/api/chat/files/f-clip.mov/download`,
     )
   })
 
