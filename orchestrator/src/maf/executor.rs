@@ -1,5 +1,6 @@
 use crate::outbound::OutboundPrefix;
 use crate::target::{AgentTargetResolver, ForwardTarget, ResolveCaller, ResolveFailure};
+use nasiko_types::agent_clock::AgentClock;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -485,6 +486,7 @@ pub async fn run_maf(
     llm: &LlmClient,
     content: Option<&str>,
     outbound: &dyn OutboundPrefix,
+    clock: AgentClock,
 ) -> Result<StepOutcome, RunError> {
     // A MAF run is driven by a background worker, not a request, so there is
     // no inbound traceparent to continue — this span is legitimately a root.
@@ -518,6 +520,7 @@ pub async fn run_maf(
         llm,
         content,
         outbound,
+        clock,
     )
     .instrument(span)
     .await
@@ -536,6 +539,7 @@ async fn run_maf_inner(
     llm: &LlmClient,
     content: Option<&str>,
     outbound: &dyn OutboundPrefix,
+    clock: AgentClock,
 ) -> Result<StepOutcome, RunError> {
     // Resolved ONCE for the whole execution, not per step: a run is one unit of work, and a
     // change landing between step 2 and step 3 would otherwise leave a single execution governed
@@ -645,6 +649,7 @@ async fn run_maf_inner(
             &mut total_cost,
             llm,
             outbound_prefix.as_deref(),
+            clock,
         )
         .await
         {
@@ -742,6 +747,7 @@ pub async fn run_maf_from(
     resume_context_id: String,
     injected_answer: String,
     outbound: &dyn OutboundPrefix,
+    clock: AgentClock,
 ) -> Result<StepOutcome, RunError> {
     // Re-resolved on resume rather than carried across the pause. A paused execution can sit for
     // days, and the steps that run after a human answers should run under the policy in force
@@ -841,6 +847,7 @@ pub async fn run_maf_from(
             &mut total_cost,
             llm,
             outbound_prefix.as_deref(),
+            clock,
         )
         .await
         {
@@ -928,6 +935,8 @@ pub async fn execute_step(
     total_cost: &mut f64,
     llm: &LlmClient,
     outbound_prefix: Option<&str>,
+    // The current date and time, sent with the step's message after `outbound_prefix`.
+    clock: AgentClock,
 ) -> StepLoopOutcome {
     step_results[i].status = "running".to_string();
     persist_progress(db, execution_id, step_results, *total_tokens, *total_cost).await;
@@ -1162,6 +1171,7 @@ pub async fn execute_step(
                 &user_id.to_string(),
                 &actual_prompt,
                 outbound_prefix,
+                clock,
                 &traceparent,
             ),
         ),
@@ -2488,6 +2498,9 @@ async fn call_agent(
     // caller). Same representation `a2a_dispatch.rs`/`agent_proxy.rs`/`tool.rs` use for the exact
     // same reason: a second, independently-addressable part rather than a merged string.
     outbound_prefix: Option<&str>,
+    // The current date and time, its own part after the policy. A new step's message only: the
+    // human's answer on a resume (`call_agent_continuation`) goes out alone, like the policy.
+    clock: AgentClock,
     traceparent: &str,
 ) -> Result<AgentCallOutcome, AgentCallError> {
     let target = AgentCallTarget {
@@ -2496,8 +2509,10 @@ async fn call_agent(
         user_id,
         traceparent,
     };
+    let now = clock.note();
     let mut texts = vec![prompt];
     texts.extend(outbound_prefix);
+    texts.extend(now.as_deref());
     let started = Instant::now();
 
     for dialect in [Dialect::Proto, Dialect::JsonRpc] {
@@ -3178,6 +3193,7 @@ mod resume_tests {
             "ctx-1".into(),
             "the human's answer".into(),
             &crate::outbound::NoOutboundPrefix,
+            AgentClock::OFF,
         )
         .await;
 
@@ -3380,6 +3396,38 @@ mod resume_tests {
             "user-1",
             "do the thing",
             Some("POLICY"),
+            AgentClock::OFF,
+            "00-trace-span-01",
+        )
+        .await;
+
+        mock.assert_async().await;
+        assert!(matches!(result, Ok(AgentCallOutcome::Completed(_))));
+    }
+
+    /// The current date and time follows the policy as its own part. The step's prompt stays the
+    /// first part, unchanged: it is what `step_results[i].prompt` records.
+    #[tokio::test]
+    async fn call_agent_tells_the_time_after_the_policy() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/jsonrpc")
+            .match_request(|request| tells_the_time_after(request, "do the thing"))
+            .with_status(200)
+            .with_body(completed_agent_response())
+            .create_async()
+            .await;
+
+        let client = reqwest::Client::new();
+        let result = call_agent(
+            &client,
+            &ForwardTarget::from(server.url()),
+            None,
+            "ctx-1",
+            "user-1",
+            "do the thing",
+            Some("POLICY"),
+            AgentClock::ON,
             "00-trace-span-01",
         )
         .await;
@@ -3415,6 +3463,7 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
+            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3451,6 +3500,7 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
+            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3485,6 +3535,7 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
+            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await;
@@ -3496,6 +3547,29 @@ mod resume_tests {
     /// How many message parts a forwarded request carried. `mockito::Matcher::PartialJson` accepts
     /// extra trailing array elements, so on its own it cannot say "and nothing else was sent"; a
     /// test that claims an exact list pairs it with this.
+    /// The text of each part of the forwarded message, in order.
+    fn forwarded_texts(request: &mockito::Request) -> Vec<String> {
+        request
+            .body()
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
+            .and_then(|body| body.pointer("/params/message/parts").cloned())
+            .and_then(|parts| parts.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .map(|part| part["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// The model's message, then the policy, then the current time, each its own part.
+    fn tells_the_time_after(request: &mockito::Request, first: &str) -> bool {
+        let texts = forwarded_texts(request);
+        texts.len() == 3
+            && texts[0] == first
+            && texts[1] == "POLICY"
+            && texts[2].starts_with(nasiko_types::agent_clock::NOTE_LEAD)
+    }
+
     fn forwarded_part_count(request: &mockito::Request) -> usize {
         request
             .body()
@@ -3642,6 +3716,7 @@ mod resume_tests {
             "user-1",
             "do the thing",
             None,
+            AgentClock::OFF,
             "00-trace-span-01",
         )
         .await

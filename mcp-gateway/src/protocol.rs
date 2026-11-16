@@ -2157,31 +2157,32 @@ fn connector_disabled(
         .unwrap_or(false)
 }
 
-/// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to a normal tool
-/// response the agent expects.
-///
-/// MULTI_EXECUTE returns:
-/// ```json
-/// { "jsonrpc": "2.0", "id": 1, "result": {
-///     "content": [{ "type": "text", "text": "[{\"data\": {...}, ...}]" }]
-/// }}
-/// ```
-///
-/// We extract the inner JSON from the first `content[].text` entry and return
-/// it as a standard `result.content[].text` with the unwrapped payload.
+/// Follows a preview of a result Composio found too large to send inline. The full copy it keeps
+/// is a file in its own sandbox, which the agent cannot open, so asking for less is the only way
+/// to all of it.
+const PARTIAL_RESULT_NOTE: &str = "Partial result: the full output was too large to return, so \
+    this is only a preview of it. Ask for less (fewer items, a narrower time range, or without \
+    full message bodies) to get everything.";
+
+/// Stands in for a result Composio found too large to send inline and sent no preview of.
+const TOO_LARGE_RESULT_NOTE: &str = "The output was too large to return. Ask for less (fewer \
+    items, a narrower time range, or without full message bodies).";
+
 /// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to the clean tool
 /// result the agent expects.
 ///
 /// MULTI_EXECUTE returns:
 /// ```text
 /// result.content[0].text = JSON string of {
-///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }] },
+///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }],
+///             "remote_file_info": {…} only when the output was too large to send inline },
 ///   "successful": bool
 /// }
 /// ```
 ///
 /// We extract `data.results[0].response.data` (the actual tool output) and
-/// return it as a clean `result.content[0].text`.
+/// return it as a clean `result.content[0].text`. An output too large to send
+/// inline comes as `response.data_preview` instead: see [`successful_output`].
 fn unwrap_multi_execute_response(response: Value) -> Value {
     let text = response
         .get("result")
@@ -2207,7 +2208,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
         .and_then(|r| r.as_array())
         .and_then(|arr| arr.first());
 
-    let inner_text = match first_result {
+    let parts: Vec<String> = match first_result {
         Some(result) => {
             let tool_response = result.get("response");
             let successful = tool_response
@@ -2216,12 +2217,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                 .unwrap_or(false);
 
             if successful {
-                // Success: return response.data (the actual tool output).
-                let data = tool_response
-                    .and_then(|r| r.get("data"))
-                    .cloned()
-                    .unwrap_or(json!({"success": true}));
-                serde_json::to_string(&data).unwrap_or_else(|_| text.to_string())
+                successful_output(result, &parsed)
             } else {
                 // Failure: return a clean error message.
                 let error = result
@@ -2234,21 +2230,57 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                             .and_then(|m| m.as_str())
                     })
                     .unwrap_or("tool execution failed");
-                serde_json::to_string(&json!({"error": error})).unwrap_or_else(|_| text.to_string())
+                vec![
+                    serde_json::to_string(&json!({"error": error}))
+                        .unwrap_or_else(|_| text.to_string()),
+                ]
             }
         }
-        None => text.to_string(),
+        None => vec![text.to_string()],
     };
 
     // Rebuild as a standard MCP tool response.
+    let content: Vec<Value> = parts
+        .into_iter()
+        .map(|text| json!({ "type": "text", "text": text }))
+        .collect();
     let mut out = response.clone();
-    out["result"] = json!({
-        "content": [{
-            "type": "text",
-            "text": inner_text
-        }]
-    });
+    out["result"] = json!({ "content": content });
     out
+}
+
+/// A successful tool's output, as content parts: `response.data`; or, when Composio found the
+/// output too large to send inline, its `response.data_preview` followed by a note that it is
+/// partial; or only that note when it sent no preview either. Composio's pointer to the full copy
+/// (`remote_file_info`, a file in its sandbox) is not passed on: the agent cannot open it.
+fn successful_output(result: &Value, envelope: &Value) -> Vec<String> {
+    let tool_response = result.get("response");
+    if let Some(data) = tool_response.and_then(|r| r.get("data")) {
+        return vec![data.to_string()];
+    }
+    let tool = result
+        .get("tool_slug")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(preview) = tool_response.and_then(|r| r.get("data_preview")) {
+        tracing::info!(
+            tool,
+            "composio sent a preview of an output too large to return inline"
+        );
+        return vec![preview.to_string(), PARTIAL_RESULT_NOTE.to_string()];
+    }
+    if envelope
+        .get("data")
+        .and_then(|d| d.get("remote_file_info"))
+        .is_some()
+    {
+        tracing::info!(
+            tool,
+            "composio kept an output too large to return inline and sent no preview"
+        );
+        return vec![TOO_LARGE_RESULT_NOTE.to_string()];
+    }
+    vec![json!({ "success": true }).to_string()]
 }
 
 #[cfg(test)]
@@ -3313,6 +3345,94 @@ mod tests {
         });
         let unwrapped = unwrap_multi_execute_response(response.clone());
         assert_eq!(unwrapped, response);
+    }
+
+    /// A MULTI_EXECUTE response carrying `tool_response` as its one result, shaped as Composio
+    /// answers (`remote_file_info` only with an output too large to send inline).
+    fn multi_execute(tool_response: Value, remote_file_info: Option<Value>) -> Value {
+        let mut data = json!({
+            "results": [{ "response": tool_response, "tool_slug": "GMAIL_FETCH_EMAILS", "index": 0 }],
+            "total_count": 1, "success_count": 1, "error_count": 0
+        });
+        if let Some(info) = remote_file_info {
+            data["remote_file_info"] = info;
+        }
+        let envelope =
+            json!({ "successful": true, "data": data, "error": null, "log_id": "log_test" });
+        json!({ "jsonrpc": "2.0", "id": "test", "result": {
+            "content": [{ "type": "text", "text": envelope.to_string() }]
+        }})
+    }
+
+    fn texts(unwrapped: &Value) -> Vec<String> {
+        unwrapped["result"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|part| part["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn large_output_info() -> Value {
+        json!({
+            "message": "Complete response was large (40329 tokens). Full data saved to sandbox in /mnt/files/mex/wind.json.",
+            "file_path": "/mnt/files/mex/wind.json",
+            "filename": "wind.json"
+        })
+    }
+
+    #[test]
+    fn unwrap_returns_the_data_alone_when_it_was_sent_inline() {
+        let response = multi_execute(
+            json!({ "successful": true, "data": { "messages": [{ "subject": "Hi" }] } }),
+            None,
+        );
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts.len(), 1);
+        let parsed: Value = serde_json::from_str(&parts[0]).unwrap();
+        assert_eq!(parsed["messages"][0]["subject"], "Hi");
+    }
+
+    #[test]
+    fn unwrap_passes_a_preview_of_an_output_too_large_to_send_inline() {
+        let response = multi_execute(
+            json!({ "successful": true, "data_preview": {
+                "messages": [{ "subject": "One" }, { "subject": "Two" }, { "subject": "Three" }],
+                "resultSizeEstimate": 9
+            }}),
+            Some(large_output_info()),
+        );
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        let preview: Value = serde_json::from_str(&parts[0]).unwrap();
+        assert_eq!(preview["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(parts[1], PARTIAL_RESULT_NOTE);
+        assert!(
+            parts.iter().all(|p| !p.contains("/mnt/files")),
+            "the sandbox file is not the agent's to open: {parts:?}"
+        );
+    }
+
+    #[test]
+    fn unwrap_says_so_when_an_output_was_too_large_and_came_without_a_preview() {
+        let response = multi_execute(json!({ "successful": true }), Some(large_output_info()));
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts, [TOO_LARGE_RESULT_NOTE]);
+    }
+
+    #[test]
+    fn unwrap_reports_success_for_a_tool_with_no_output() {
+        let response = multi_execute(json!({ "successful": true }), None);
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts, [r#"{"success":true}"#]);
     }
 
     // ─── nasiko_call_tool: the executor for fixed-menu clients ─────────────────
