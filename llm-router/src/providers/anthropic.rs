@@ -2401,13 +2401,13 @@ mod tests {
 
     #[test]
     fn a_document_anthropic_cannot_read_is_refused_by_name() {
-        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        let message = rejection(&one_part(file_part(docx, b"PK\x03\x04", "report.docx")));
+        let doc = "application/msword";
+        let message = rejection(&one_part(file_part(doc, b"\xd0\xcf\x11\xe0", "report.doc")));
         assert!(
             message.starts_with("Anthropic does not accept this input"),
             "{message}"
         );
-        assert!(message.contains(docx), "{message}");
+        assert!(message.contains(doc), "{message}");
     }
 
     #[test]

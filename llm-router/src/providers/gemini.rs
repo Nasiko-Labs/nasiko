@@ -1975,11 +1975,11 @@ mod tests {
             "File: data.csv\n\nregion,q2\nEMEA,913"
         );
 
-        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let doc = "application/msword";
         let message = gemini_rejection(&with_parts(vec![json!({ "type": "file", "file": {
-            "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
+            "file_data": format!("data:{doc};base64,0M8R4A=="), "filename": "r.doc"
         }})]));
-        assert!(message.contains(docx), "{message}");
+        assert!(message.contains(doc), "{message}");
     }
 
     #[test]

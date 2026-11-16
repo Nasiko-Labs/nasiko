@@ -182,6 +182,8 @@ tempfile = "3"
 # ─── Archive ────────────────────────────────────────────────────────────────
 zip = { version = "2", default-features = false, features = ["deflate"] }
 zstd = "0.13"
+# Word/Excel XML parts (llm-router). 0.42 is the copy the lock already holds.
+quick-xml = { version = "0.42", default-features = false }
 
 # ─── Versioning ─────────────────────────────────────────────────────────────
 semver = "1"
