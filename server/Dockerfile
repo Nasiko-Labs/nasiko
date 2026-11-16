@@ -39,10 +39,8 @@ RUN node scripts/app.ts build oss
 # ── Stage 2: build ──────────────────────────────────────────────────────────
 FROM rust:latest AS builder
 
-# `lance` (event-store/) compiles protobufs at build time and needs `protoc`,
-# plus the well-known types it imports (google/protobuf/empty.proto), which
-# come from libprotobuf-dev: only a recommend of protobuf-compiler.
-RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
+# `lance` (event-store/) compiles protobufs at build time and needs `protoc`.
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
