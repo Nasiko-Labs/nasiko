@@ -1,8 +1,8 @@
 /**
- * Type-to-confirm field for destructive dialogs: the phrase to type sits on its own line as a
- * selectable chip, then an empty input below it. The label carries the phrase in a screen-reader-only
- * span, so the input's name is "Type … to confirm:"; the chip is aria-hidden and sits outside the label,
- * so the phrase is neither read twice nor part of the label's text.
+ * Type-to-confirm field for destructive dialogs: "Type <phrase> to confirm" with the phrase as an
+ * inline code chip, then an empty input. The sentence names the input through aria-labelledby, so
+ * the phrase is read once, as part of it. A <p>, not a <label>: clicking a label focuses its input,
+ * which would undo selecting the phrase to copy it.
  *
  * No placeholder on purpose: a grey copy of the phrase inside the input reads as already filled in.
  */
@@ -31,24 +31,21 @@ export function TypeToConfirm({
 }) {
   const id = useId()
   return (
-    <div className={cn('flex flex-col gap-2', className)}>
-      <div className="flex flex-col gap-1.5">
-        <label htmlFor={id} className="text-sm text-muted-foreground">
-          {lead} <span className="sr-only">{phrase}</span> {tail}:
-        </label>
-        {/* Outside the label: clicking a label focuses its input, which would fight text selection here. */}
+    <div className={cn('grid gap-2', className)}>
+      <p id={`${id}-label`} className="text-sm">
+        {lead}{' '}
         <code
-          aria-hidden
           className={cn(
-            'block w-fit max-w-full rounded-md border bg-muted px-2 py-1 text-sm break-all text-foreground select-all',
-            mono ? 'font-mono' : 'font-sans font-medium',
+            'rounded bg-muted box-decoration-clone px-1.5 py-0.5 font-medium wrap-anywhere select-all',
+            mono ? 'font-mono text-[0.85em]' : 'font-sans',
           )}
         >
           {phrase}
-        </code>
-      </div>
+        </code>{' '}
+        {tail}
+      </p>
       <Input
-        id={id}
+        aria-labelledby={`${id}-label`}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         autoComplete="off"
