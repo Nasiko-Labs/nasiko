@@ -18,6 +18,8 @@
 //! onto the owner's config and keys is [`crate::payer::SharedCallPayer`] answering
 //! [`crate::payer::Payer::Owner`], which selects [`ConfigSubject::Sponsored`] instead: the
 //! owner's config and keys, and the platform's own key where the config stores none.
+//! [`ConfigSubject::Platform`] is a call the deployment covers outright: the platform defaults
+//! and the platform's own key, with no config, no agent pin and no requested model read.
 //!
 //! **When the agent resolves to a config it is authoritative** — the incoming request's
 //! `model`/provider are ignored (a configured agent is routed where its config says).
@@ -766,6 +768,11 @@ pub enum ConfigSubject<'a> {
     /// A user the agent is shared with: their own chosen-or-default config and keys. The agent's
     /// attached config and its owner's keys are never read for them.
     SharedUser(Uuid),
+    /// A call the deployment covers ([`crate::payer::Payer::Platform`]): the platform's default
+    /// provider and model on the platform's own key. No config, no agent pin and no user secret
+    /// is read, and the requested chat model is ignored: the agent is user code, and honouring
+    /// its choice would let it pick a pricier model on the platform's key.
+    Platform,
 }
 
 impl<'a> ConfigSubject<'a> {
@@ -786,6 +793,7 @@ impl<'a> ConfigSubject<'a> {
         match self {
             Self::Owner(owner_id) | Self::Sponsored(owner_id) => (*owner_id).to_string(),
             Self::SharedUser(user) => user.to_string(),
+            Self::Platform => String::new(),
         }
     }
 
@@ -793,7 +801,7 @@ impl<'a> ConfigSubject<'a> {
     /// the platform's own key for a sponsored call, else the one agents may fall back to.
     fn platform_key<'c>(&self, cfg: &'c GatewayConfig, provider: &str) -> &'c str {
         match self {
-            Self::Sponsored(_) => cfg.service_key_for(provider),
+            Self::Sponsored(_) | Self::Platform => cfg.service_key_for(provider),
             Self::Owner(_) | Self::SharedUser(_) => cfg.platform_key_for(provider),
         }
     }
@@ -826,6 +834,10 @@ pub async fn resolve_for(
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
     let agent_result = load_subject_config(store, cache, agent_uuid, agent_id, subject).await?;
+    let hint = match subject {
+        ConfigSubject::Platform => RequestHint::default(),
+        _ => hint,
+    };
     let key_holder = subject.key_holder();
     let owner_id = key_holder.as_str();
     let llm_config = agent_result.config;
@@ -911,6 +923,7 @@ pub async fn resolve_for(
         has_llm_config,
         shared_user = matches!(subject, ConfigSubject::SharedUser(_)),
         sponsored = matches!(subject, ConfigSubject::Sponsored(_)),
+        platform = matches!(subject, ConfigSubject::Platform),
         provider = %resolved.provider,
         model = %resolved.model,
         litellm_model = %resolved.litellm_model,
@@ -1175,7 +1188,7 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
 }
 
 /// The agent's flags plus the config `subject` runs on: the owner's through
-/// [`load_llm_config`], a shared user's own otherwise.
+/// [`load_llm_config`], a shared user's own, or none for a platform call.
 async fn load_subject_config(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -1190,7 +1203,27 @@ async fn load_subject_config(
         ConfigSubject::SharedUser(user) => {
             load_shared_user_config(store, agent_uuid, agent_id, user).await
         }
+        ConfigSubject::Platform => load_agent_flags_only(store, agent_uuid, agent_id).await,
     }
+}
+
+/// The agent's flags alone, for a platform-covered call: the config and the agent's model pin are
+/// cleared, since a platform call runs on the platform defaults.
+async fn load_agent_flags_only(
+    store: &dyn RegistryStore,
+    agent_uuid: Uuid,
+    agent_id: &str,
+) -> Result<AgentConfigResult, GatewayError> {
+    let flags = store
+        .fetch_agent_flags(agent_uuid)
+        .await
+        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
+        .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
+    Ok(AgentConfigResult {
+        config: None,
+        agent_pinned_model: None,
+        ..flags
+    })
 }
 
 /// A shared user's own config (their choice for this agent, else their default), with the agent's
@@ -1828,6 +1861,87 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::NoApiKey { .. }));
+    }
+
+    /// An agent whose owner attached a keyed config and pinned a model: a platform call must
+    /// read neither.
+    fn configured_and_pinned_agent() -> MockRegistry {
+        MockRegistry {
+            config: Some(Some(llm_config("gemini", "owner-model", Some("KEY")))),
+            secret: Some("user-key".into()),
+            agent_pinned_model: Some("pinned-pro".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_platform_call_runs_on_the_platform_defaults_and_its_own_key() {
+        let r = resolve_for(
+            &configured_and_pinned_agent(),
+            &cache(),
+            &free_plane_cfg(),
+            AGENT,
+            ConfigSubject::Platform,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "gemini-4-hydrogen");
+        assert_eq!(r.api_key, "sk-platform-gemini");
+        assert!(r.platform_paid);
+        assert!(!r.has_llm_config);
+        assert!(r.pinned_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_platform_call_ignores_the_requested_model() {
+        let hints = [
+            RequestHint {
+                provider: Some("gemini"),
+                model: Some("gemini-pro-x"),
+            },
+            RequestHint {
+                provider: None,
+                model: Some("anthropic/claude-x"),
+            },
+        ];
+        for hint in hints {
+            let r = resolve_for(
+                &configured_and_pinned_agent(),
+                &cache(),
+                &free_plane_cfg(),
+                AGENT,
+                ConfigSubject::Platform,
+                hint,
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.provider, "gemini");
+            assert_eq!(r.model, "gemini-4-hydrogen");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_platform_embedding_call_runs_on_the_platform_key() {
+        let cfg = GatewayConfig {
+            service_openai_api_key: "sk-platform-openai".into(),
+            ..free_plane_cfg()
+        };
+        let r = resolve_embeddings_for(
+            &configured_and_pinned_agent(),
+            &cache(),
+            &cfg,
+            AGENT,
+            ConfigSubject::Platform,
+            Some("text-embedding-3-small"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.model, "text-embedding-3-small");
+        assert_eq!(r.api_key, "sk-platform-openai");
+        assert!(r.platform_paid);
     }
 
     #[tokio::test]
