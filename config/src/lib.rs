@@ -499,6 +499,10 @@ pub struct Config {
     /// Turn it on only where every such user is trusted, e.g. an on-prem
     /// install whose external agents live on internal hosts.
     pub agent_allow_private_urls: bool,
+    /// Whether every new message the platform hands an agent carries the current date and time
+    /// as its own text part (`AGENT_CONTEXT_CURRENT_TIME`, default on;
+    /// `nasiko_types::agent_clock`). Off sends agent messages exactly as before.
+    pub agent_current_time: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -1034,6 +1038,7 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
+            agent_current_time: env_bool("AGENT_CONTEXT_CURRENT_TIME", true),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),

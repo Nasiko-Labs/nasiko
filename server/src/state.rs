@@ -155,6 +155,11 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether agent messages carry the current date and time (`AGENT_CONTEXT_CURRENT_TIME`).
+    pub fn agent_clock(&self) -> nasiko_types::agent_clock::AgentClock {
+        nasiko_types::agent_clock::AgentClock::new(self.config.agent_current_time)
+    }
+
     /// Handle over hot Postgres rows and the cold Lance tier (docs/LAKEHOUSE_TRD.md),
     /// tiering behind this state's `tiering_hold`. Cheap: a pool clone plus config;
     /// readers merging both tiers build one per call.

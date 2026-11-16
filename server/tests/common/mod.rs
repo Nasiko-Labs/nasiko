@@ -1024,6 +1024,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Tests register agents at loopback mock servers. The SSRF guard's own
         // test (`agent_url_ssrf`) turns this off.
         agent_allow_private_urls: true,
+        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,
