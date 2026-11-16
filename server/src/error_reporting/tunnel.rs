@@ -57,6 +57,8 @@ pub fn router<S: Clone + Send + Sync + 'static>(
             "replays_session_sample_rate": config.replay_session_sample_rate,
             "replays_on_error_sample_rate": config.replay_on_error_sample_rate,
             "tunnel": "/api/telemetry/sentry",
+            "workspace": config.workspace,
+            "logs": config.logs != super::LogsLevel::Off,
         }}),
         dsn,
     });
@@ -246,6 +248,22 @@ mod tests {
         assert_eq!(body["data"]["enabled"], true);
         assert_eq!(body["data"]["dsn"], DSN);
         assert_eq!(body["data"]["tunnel"], "/api/telemetry/sentry");
+        assert_eq!(body["data"]["logs"], true);
+        assert!(body["data"]["workspace"].is_null());
+    }
+
+    #[tokio::test]
+    async fn config_names_the_workspace_and_whether_logs_are_on() {
+        let config = ErrorReportingConfig {
+            browser_dsn: Some(DSN.parse().unwrap()),
+            workspace: Some("t-123".into()),
+            logs: super::super::LogsLevel::Off,
+            ..ErrorReportingConfig::disabled()
+        };
+        let app = router(&config, reqwest::Client::new());
+        let (_, body) = call(app, "GET", "/api/telemetry/config", String::new()).await;
+        assert_eq!(body["data"]["workspace"], "t-123");
+        assert_eq!(body["data"]["logs"], false);
     }
 
     #[tokio::test]

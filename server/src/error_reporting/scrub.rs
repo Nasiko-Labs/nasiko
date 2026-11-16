@@ -1,7 +1,8 @@
 //! What a request may tell Sentry. An allow-list, not a deny-list: a header or field added
 //! later stays out until someone decides it is safe to send.
 
-use sentry::protocol::{Event, Map, Request};
+use nasiko_utils::redact::{redact_field, redact_text};
+use sentry::protocol::{Event, Log, LogAttribute, Map, Request, Value};
 
 use crate::mcp::redact_credential_uri;
 
@@ -18,6 +19,23 @@ const SAFE_HEADERS: &[&str] = &[
 pub(super) fn event(mut event: Event<'static>) -> Option<Event<'static>> {
     event.request = event.request.take().map(request);
     Some(event)
+}
+
+/// `before_send_log`: a `tracing` line on its way to Sentry Logs. Log lines are free text written
+/// for operators, never reviewed for what Sentry may see, so credentials and email addresses are
+/// redacted by value in the message and in every string field; a field whose name looks secret
+/// keeps only a placeholder. Numbers and booleans pass (a `status_code` is not a secret).
+pub(crate) fn log(mut log: Log) -> Option<Log> {
+    log.body = redact_text(&log.body);
+    for (name, LogAttribute(value)) in log.attributes.iter_mut() {
+        if name.starts_with("sentry.") {
+            continue;
+        }
+        if let Value::String(text) = value {
+            redact_field(name, text);
+        }
+    }
+    Some(log)
 }
 
 /// The request as Sentry sees it, from the incoming HTTP request.
@@ -116,6 +134,33 @@ mod tests {
         assert!(!r.headers.contains_key("authorization"));
         assert!(!r.headers.contains_key("cookie"));
         assert!(!r.headers.contains_key("host"));
+    }
+
+    #[test]
+    fn a_log_line_loses_credentials_and_emails() {
+        let mut attributes = Map::new();
+        attributes.insert(
+            "user_email".into(),
+            LogAttribute(Value::from("ada@acme.com")),
+        );
+        attributes.insert("url".into(), LogAttribute(Value::from("/cb?code=abc&x=1")));
+        attributes.insert("status_code".into(), LogAttribute(Value::from(502)));
+        attributes.insert("sentry.release".into(), LogAttribute(Value::from("r@1")));
+        let line = Log {
+            level: sentry::protocol::LogLevel::Warn,
+            body: "invite for bob@acme.com failed: token=abc".into(),
+            trace_id: None,
+            timestamp: std::time::SystemTime::now(),
+            severity_number: None,
+            attributes,
+        };
+        let line = super::log(line).unwrap();
+        assert_eq!(line.body, "invite for [email] failed: token=[REDACTED]");
+        let attr = |k: &str| line.attributes[k].0.clone();
+        assert_eq!(attr("user_email"), Value::from("[REDACTED]"));
+        assert_eq!(attr("url"), Value::from("/cb?code=[REDACTED]&x=1"));
+        assert_eq!(attr("status_code"), Value::from(502));
+        assert_eq!(attr("sentry.release"), Value::from("r@1"));
     }
 
     #[test]

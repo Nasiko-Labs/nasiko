@@ -1,6 +1,8 @@
 pub mod display;
 pub mod image;
+pub mod logs_level;
 pub mod net;
+pub mod redact;
 pub mod source_files;
 pub mod term;
 pub mod version;

@@ -12,10 +12,13 @@ import {
 import { parseSettings } from './settings'
 import {
   isExpectedFailure,
+  redactText,
   redactUrl,
   scrubBreadcrumb,
   scrubEvent,
+  scrubLog,
   scrubSpan,
+  type LogRecord,
   type StreamedSpan,
 } from './scrub'
 
@@ -83,7 +86,18 @@ describe('parseSettings', () => {
       tracesSampleRate: 0.1,
       replaysSessionSampleRate: 0,
       replaysOnErrorSampleRate: 1,
+      logs: false,
+      workspace: null,
     })
+  })
+
+  it('reads whether logs are on and the workspace, and ignores anything else in their place', () => {
+    const s = parseSettings({ data: { ...on.data, logs: true, workspace: 't-123' } })
+    expect(s?.logs).toBe(true)
+    expect(s?.workspace).toBe('t-123')
+    const odd = parseSettings({ data: { ...on.data, logs: 'yes', workspace: 42 } })
+    expect(odd?.logs).toBe(false)
+    expect(odd?.workspace).toBeNull()
   })
 
   it('is off for "off", for anything malformed, and for a tunnel outside the API', () => {
@@ -191,6 +205,38 @@ describe('scrubbing', () => {
       data: { arguments: [1] },
     })
     expect(consoleLine).toEqual({ category: 'console', message: 'first', data: undefined })
+  })
+})
+
+describe('console lines sent as logs', () => {
+  it('redacts URLs and email addresses in free text', () => {
+    expect(redactText('load /api/auth/sso/session?token=jwt&page=2 for ada@acme.com failed')).toBe(
+      'load /api/auth/sso/session?token=[REDACTED]&page=2 for [email] failed',
+    )
+    expect(redactText('plain words stay')).toBe('plain words stay')
+  })
+
+  it("cleans the message and string attributes, keeping the SDK's own and the user id", () => {
+    const log = {
+      level: 'warn',
+      message: 'retrying https://x.example/cb?code=abc',
+      attributes: {
+        'sentry.release': 'r@1',
+        'user.id': 'u-1',
+        auth_token: 'abc',
+        url: '/p?session=s&x=1',
+        attempt: 3,
+      },
+    } as LogRecord
+    const out = scrubLog(log)
+    expect(out.message).toBe('retrying https://x.example/cb?code=[REDACTED]')
+    expect(out.attributes).toEqual({
+      'sentry.release': 'r@1',
+      'user.id': 'u-1',
+      auth_token: '[REDACTED]',
+      url: '/p?session=[REDACTED]&x=1',
+      attempt: 3,
+    })
   })
 })
 

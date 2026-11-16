@@ -153,3 +153,31 @@ export function scrubBreadcrumb(crumb: Breadcrumb): Breadcrumb | null {
   }
   return { ...crumb, data }
 }
+
+/** What `beforeSendLog` receives: one console line on its way to Sentry Logs. */
+export type LogRecord = Parameters<NonNullable<BrowserOptions['beforeSendLog']>>[0]
+
+const EMAIL = /[^\s@<>()"',;]+@[^\s@<>()"',;]+\.[a-z]{2,}/gi
+const URL_IN_TEXT = /(?:https?:\/\/|\/)[^\s"'<>()]*\?[^\s"'<>()]*|https?:\/\/[^\s"'<>()]+/gi
+
+/** Free text with every URL redacted (the same rule as everywhere else) and email addresses replaced. */
+export function redactText(text: string): string {
+  return text.replace(URL_IN_TEXT, (url) => redactUrl(url)).replace(EMAIL, '[email]')
+}
+
+/**
+ * `beforeSendLog`. Console lines are free text nobody reviewed for what Sentry may see: URLs and email addresses are
+ * redacted in the message and in every string attribute, and an attribute whose name looks secret keeps only a
+ * placeholder. The SDK's own `sentry.*` attributes and the user id it adds are left alone.
+ */
+export function scrubLog(log: LogRecord): LogRecord {
+  const attributes: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(log.attributes ?? {})) {
+    if (typeof value !== 'string' || key.startsWith('sentry.') || key === 'user.id')
+      attributes[key] = value
+    else attributes[key] = isSensitiveKey(key) ? REDACTED : redactText(value)
+  }
+  const message =
+    typeof log.message === 'string' ? redactText(log.message) : redactText(String(log.message))
+  return { ...log, message, attributes }
+}

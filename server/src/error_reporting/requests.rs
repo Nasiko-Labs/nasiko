@@ -14,10 +14,13 @@ use super::scrub;
 /// Routes never recorded: probes and the tunnel itself, which would only trace the reporting.
 const UNTRACED_ROUTES: &[&str] = &["/health", "/api/telemetry/sentry", "/api/telemetry/config"];
 
-/// Middleware: record the request as a transaction named `<METHOD> <route template>` and give
-/// its events their own scope. Layered on the whole app with `Router::layer`, so it runs after
-/// routing and the template is known. A request no route matched (UI pages and assets, which
-/// the browser traces itself) is passed through, as is everything when nothing is reported.
+/// Middleware: give the request its own Sentry scope, and record it as a transaction named
+/// `<METHOD> <route template>`. Layered on the whole app with `Router::layer`, so it runs after
+/// routing and the template is known. The scope is what keeps per-request context (the user
+/// [`super::identify`] names) on this request's events only, so every routed request gets one,
+/// probes included; only the transaction is skipped for [`UNTRACED_ROUTES`]. A request no route
+/// matched (UI pages and assets, which the browser traces itself) is passed through, as is
+/// everything when nothing is reported.
 pub async fn trace_requests(req: Request, next: Next) -> Response {
     let Some(route) = req
         .extensions()
@@ -26,11 +29,14 @@ pub async fn trace_requests(req: Request, next: Next) -> Response {
     else {
         return next.run(req).await;
     };
-    if Hub::current().client().is_none() || UNTRACED_ROUTES.contains(&route.as_str()) {
+    if Hub::current().client().is_none() {
         return next.run(req).await;
     }
 
     let hub = Arc::new(Hub::new_from_top(Hub::current()));
+    if UNTRACED_ROUTES.contains(&route.as_str()) {
+        return next.run(req).bind_hub(hub).await;
+    }
     let request = scrub::from_http(&req);
     let headers = req
         .headers()

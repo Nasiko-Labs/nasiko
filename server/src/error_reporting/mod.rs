@@ -7,7 +7,10 @@
 //!
 //! Four pieces, wired at the composition roots:
 //! - [`init`]: this server's client, called first thing in `main`. Captures panics, `error!`
-//!   events (with `warn!` lines as breadcrumbs), and a sample of requests as transactions.
+//!   events (with `warn!` lines as breadcrumbs), a sample of requests as transactions, and
+//!   `SENTRY_LOGS_LEVEL`'s lines (default warnings and errors) as Sentry Logs. Every event names
+//!   the workspace (`TENANT_ID`) and, inside a request, the signed-in user's id ([`identify`]):
+//!   an id, never a name or an email.
 //! - [`tracing_layer`]: joins `tracing` to that client; `telemetry::init_telemetry` installs it
 //!   beside the OTLP layer, which keeps working unchanged.
 //! - [`trace_requests`]: middleware recording a request as a transaction named by its route
@@ -29,6 +32,7 @@ mod tunnel;
 use std::sync::OnceLock;
 
 pub use config::ErrorReportingConfig;
+pub use nasiko_utils::logs_level::LogsLevel;
 pub use requests::trace_requests;
 pub use tunnel::router;
 
@@ -52,10 +56,31 @@ pub fn init(
         .send_default_pii(false)
         .attach_stacktrace(true)
         .before_send(scrub::event);
+    options.before_send_log = Some(std::sync::Arc::new(scrub::log));
     options.dsn = Some(dsn);
     let guard = sentry::init(options);
-    sentry::configure_scope(|scope| scope.set_tag("edition", edition));
+    let workspace = config.workspace.clone();
+    sentry::configure_scope(|scope| {
+        scope.set_tag("edition", edition);
+        if let Some(workspace) = workspace {
+            scope.set_tag("workspace", workspace);
+        }
+    });
     Some(guard)
+}
+
+/// Name the signed-in user on what the current request reports, by account id only. Called by
+/// the auth middleware once a caller is known; [`trace_requests`] gives every routed request a
+/// scope of its own, so the id never outlives the request or reaches another one. A no-op when
+/// nothing is reported.
+pub fn identify(user_id: &str) {
+    let id = user_id.to_owned();
+    sentry::configure_scope(|scope| {
+        scope.set_user(Some(sentry::User {
+            id: Some(id),
+            ..Default::default()
+        }))
+    });
 }
 
 /// What [`init`] was given; nothing is reported before it runs (and in tests that never call it).
@@ -64,20 +89,72 @@ pub fn current_config() -> &'static ErrorReportingConfig {
 }
 
 /// `error!` becomes an event, `warn!` a breadcrumb on the next event, and spans join the
-/// request's transaction. `info!` and below are left out: they are high-volume and carry
-/// request detail that has not been reviewed for what it may contain. `None` (a no-op layer)
-/// unless this server reports to Sentry.
+/// request's transaction. Lines at or above `SENTRY_LOGS_LEVEL` are also sent as logs, through
+/// [`scrub::log`]. `debug!` and `trace!` never leave. `None` (a no-op layer) unless this server
+/// reports to Sentry.
 pub fn tracing_layer<S>() -> Option<sentry::integrations::tracing::SentryLayer<S>>
 where
     S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
 {
-    use sentry::integrations::tracing::EventFilter;
-    current_config().server_dsn.as_ref()?;
+    let config = current_config();
+    config.server_dsn.as_ref()?;
+    let logs = config.logs;
     Some(
-        sentry::integrations::tracing::layer().event_filter(|metadata| match *metadata.level() {
-            tracing::Level::ERROR => EventFilter::Event,
-            tracing::Level::WARN => EventFilter::Breadcrumb,
-            _ => EventFilter::Ignore,
-        }),
+        sentry::integrations::tracing::layer()
+            .event_filter(move |metadata| event_filter(logs, metadata.level())),
     )
+}
+
+/// What one `tracing` line becomes in Sentry.
+fn event_filter(
+    logs: LogsLevel,
+    level: &tracing::Level,
+) -> sentry::integrations::tracing::EventFilter {
+    use sentry::integrations::tracing::EventFilter;
+    let base = match *level {
+        tracing::Level::ERROR => EventFilter::Event,
+        tracing::Level::WARN => EventFilter::Breadcrumb,
+        _ => EventFilter::Ignore,
+    };
+    if logs.includes(level) {
+        base | EventFilter::Log
+    } else {
+        base
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sentry::integrations::tracing::EventFilter;
+
+    #[test]
+    fn errors_are_events_warnings_breadcrumbs_and_logs_follow_the_level() {
+        let bits = |logs, level| event_filter(logs, level).bits();
+        let warn = LogsLevel::Warn;
+        assert_eq!(
+            bits(warn, &tracing::Level::ERROR),
+            (EventFilter::Event | EventFilter::Log).bits()
+        );
+        assert_eq!(
+            bits(warn, &tracing::Level::WARN),
+            (EventFilter::Breadcrumb | EventFilter::Log).bits()
+        );
+        assert_eq!(
+            bits(warn, &tracing::Level::INFO),
+            EventFilter::Ignore.bits()
+        );
+        assert_eq!(
+            bits(LogsLevel::Info, &tracing::Level::INFO),
+            EventFilter::Log.bits()
+        );
+        assert_eq!(
+            bits(LogsLevel::Off, &tracing::Level::ERROR),
+            EventFilter::Event.bits()
+        );
+        assert_eq!(
+            bits(LogsLevel::Info, &tracing::Level::DEBUG),
+            EventFilter::Ignore.bits()
+        );
+    }
 }

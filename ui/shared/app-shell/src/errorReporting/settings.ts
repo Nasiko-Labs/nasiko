@@ -12,6 +12,10 @@ export interface ErrorReportingSettings {
   tracesSampleRate: number
   replaysSessionSampleRate: number
   replaysOnErrorSampleRate: number
+  /** Warnings and errors from the console go to Sentry Logs too (the server's `SENTRY_LOGS_LEVEL` is not `off`). */
+  logs: boolean
+  /** The workspace this control plane serves (its `TENANT_ID`), tagged on every report; null on a self-hosted install. */
+  workspace: string | null
 }
 
 /** The settings, or null when reporting is off. Throws when the server can't be asked (the caller then stays off). */
@@ -37,6 +41,8 @@ export function parseSettings(body: unknown): ErrorReportingSettings | null {
     tracesSampleRate: rate(data.traces_sample_rate),
     replaysSessionSampleRate: rate(data.replays_session_sample_rate),
     replaysOnErrorSampleRate: rate(data.replays_on_error_sample_rate),
+    logs: data.logs === true,
+    workspace: typeof data.workspace === 'string' && data.workspace ? data.workspace : null,
   }
 }
 

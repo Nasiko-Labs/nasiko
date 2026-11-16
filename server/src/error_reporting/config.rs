@@ -1,5 +1,6 @@
 use std::str::FromStr;
 
+use nasiko_utils::logs_level::LogsLevel;
 use sentry::types::Dsn;
 
 /// Where errors go and how much is sampled, read once at startup.
@@ -26,12 +27,20 @@ pub struct ErrorReportingConfig {
     /// `SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE`: share of sessions with an error whose last
     /// minute is kept.
     pub replay_on_error_sample_rate: f32,
+    /// `SENTRY_LOGS_LEVEL`: which `tracing` lines (and, in the UI, console lines) also go to
+    /// Sentry Logs, searchable and linked to their trace. Default `warn`.
+    pub logs: LogsLevel,
+    /// `TENANT_ID`, the workspace this control plane serves when the multi-tenant management
+    /// plane provisioned it: a `workspace` tag on every event, so an alert says whether one
+    /// workspace or all of them are affected. Unset on a self-hosted install.
+    pub workspace: Option<String>,
 }
 
 const DEFAULT_ENVIRONMENT: &str = "production";
 const DEFAULT_TRACES_SAMPLE_RATE: f32 = 0.1;
 const DEFAULT_REPLAY_SESSION_SAMPLE_RATE: f32 = 0.0;
 const DEFAULT_REPLAY_ON_ERROR_SAMPLE_RATE: f32 = 1.0;
+const DEFAULT_LOGS_LEVEL: LogsLevel = LogsLevel::Warn;
 
 impl ErrorReportingConfig {
     pub fn from_env() -> Self {
@@ -90,6 +99,16 @@ impl ErrorReportingConfig {
                 "SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE",
                 DEFAULT_REPLAY_ON_ERROR_SAMPLE_RATE,
             ),
+            logs: match set("SENTRY_LOGS_LEVEL") {
+                None => DEFAULT_LOGS_LEVEL,
+                Some(raw) => LogsLevel::parse(&raw).unwrap_or_else(|| {
+                    eprintln!(
+                        "SENTRY_LOGS_LEVEL must be off, error, warn or info, got {raw:?}; using warn"
+                    );
+                    DEFAULT_LOGS_LEVEL
+                }),
+            },
+            workspace: set("TENANT_ID").map(|id| id.trim().to_owned()),
         }
     }
 }
@@ -136,6 +155,39 @@ mod tests {
         let c = config(&[("SENTRY_DSN", "  "), ("SENTRY_BROWSER_DSN", "not a dsn")]);
         assert_eq!(c.server_dsn, None);
         assert_eq!(c.browser_dsn, None);
+    }
+
+    #[test]
+    fn logs_default_to_warnings_and_errors() {
+        let c = ErrorReportingConfig::disabled();
+        assert_eq!(c.logs, LogsLevel::Warn);
+        assert!(c.logs.includes(&tracing::Level::ERROR));
+        assert!(c.logs.includes(&tracing::Level::WARN));
+        assert!(!c.logs.includes(&tracing::Level::INFO));
+        assert!(!c.logs.includes(&tracing::Level::DEBUG));
+    }
+
+    #[test]
+    fn logs_level_is_read_and_a_bad_value_keeps_the_default() {
+        assert_eq!(
+            config(&[("SENTRY_LOGS_LEVEL", " INFO ")]).logs,
+            LogsLevel::Info
+        );
+        let off = config(&[("SENTRY_LOGS_LEVEL", "off")]).logs;
+        assert!(!off.includes(&tracing::Level::ERROR));
+        assert_eq!(
+            config(&[("SENTRY_LOGS_LEVEL", "loud")]).logs,
+            LogsLevel::Warn
+        );
+    }
+
+    #[test]
+    fn the_workspace_comes_from_tenant_id() {
+        assert_eq!(ErrorReportingConfig::disabled().workspace, None);
+        assert_eq!(
+            config(&[("TENANT_ID", " t-123 ")]).workspace.as_deref(),
+            Some("t-123")
+        );
     }
 
     #[test]
