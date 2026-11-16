@@ -51,6 +51,11 @@ export const SAVED_BARS = 7
 export const SAVINGS_ROWS = 200
 /** How often Needs you's "Checked …" label re-ages on an open tab. */
 export const CHECKED_TICK_MS = 30_000
+/**
+ * How often an open map refetches the estate. Each read is the platform's heaviest query set, and every open Home tab
+ * polls, so a minute put the Free plane's database at its limit near 11K open tabs; five minutes leaves room for 50K.
+ */
+export const ESTATE_REFRESH_MS = 5 * 60_000
 /** Returning to the page after this long refetches the inbox (design review 8A, the TokenOps rule). */
 export const RETURN_REFRESH_MS = 60_000
 /** Links to Sessions open on the Overview's own 7-day window: a 30-day window runs past Tempo's 7-day search limit (QA ISSUE-003). */
