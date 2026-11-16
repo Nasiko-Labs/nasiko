@@ -185,6 +185,7 @@ impl MafRun {
             agent_calls: &self.meter,
             targets,
             outbound: &nasiko_orchestrator::outbound::NoOutboundPrefix,
+            clock: nasiko_types::agent_clock::AgentClock::OFF,
             db: &server.db,
             flow_guard: &self.flow_guard,
             llm: &self.llm,

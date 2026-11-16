@@ -242,6 +242,8 @@ where
                 outbound: std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
                     state.prompt_context.clone(),
                 )),
+                // Each step's message carries the current date and time, as every other path's does.
+                clock: state.agent_clock(),
                 // Wakes a parked agent before its step is sent, like the proxy and dispatch do.
                 targets: std::sync::Arc::new(crate::agent_resolver::ServerTargetResolver::new(
                     state.clone(),
