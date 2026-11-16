@@ -89,10 +89,11 @@ impl ConversationStore {
 
     pub fn put(&self, context_id: &str, conv: Conversation) {
         let mut map = self.inner.lock().unwrap();
-        if map.len() >= self.max && !map.contains_key(context_id) {
-            if let Some(k) = map.keys().next().cloned() {
-                map.remove(&k);
-            }
+        if map.len() >= self.max
+            && !map.contains_key(context_id)
+            && let Some(k) = map.keys().next().cloned()
+        {
+            map.remove(&k);
         }
         map.insert(context_id.to_owned(), conv);
     }

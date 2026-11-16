@@ -339,21 +339,6 @@ fn tool_status_text(name: &str, args: &str) -> String {
     format!("{name}: {preview}")
 }
 
-#[cfg(test)]
-mod tool_status_tests {
-    use super::tool_status_text;
-
-    #[test]
-    fn tool_status_text_has_name_colon_preview_shape() {
-        assert_eq!(
-            tool_status_text("GMAIL_FETCH_EMAILS", "{\"max_results\": 5}"),
-            "GMAIL_FETCH_EMAILS: {\"max_results\": 5}"
-        );
-        assert_eq!(tool_status_text("x", ""), "x: {}");
-        assert!(tool_status_text("x", &"a".repeat(500)).ends_with('…'));
-    }
-}
-
 #[tokio::main]
 async fn main() {
     telemetry::init();
@@ -389,4 +374,19 @@ async fn main() {
         .await
         .expect("bind");
     axum::serve(listener, app).await.expect("server failed");
+}
+
+#[cfg(test)]
+mod tool_status_tests {
+    use super::tool_status_text;
+
+    #[test]
+    fn tool_status_text_has_name_colon_preview_shape() {
+        assert_eq!(
+            tool_status_text("GMAIL_FETCH_EMAILS", "{\"max_results\": 5}"),
+            "GMAIL_FETCH_EMAILS: {\"max_results\": 5}"
+        );
+        assert_eq!(tool_status_text("x", ""), "x: {}");
+        assert!(tool_status_text("x", &"a".repeat(500)).ends_with('…'));
+    }
 }
