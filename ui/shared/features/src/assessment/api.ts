@@ -1,4 +1,4 @@
-/** The assessment form's one write: `POST /api/assessments` (`oss/server/src/assessment.rs`), stored in S3. */
+/** The assessment form's one write: `POST /api/assessments` (`oss/server/src/assessment.rs`), stored in Neon by the assessment intake (`scripts/sales-intake/api/assessments.js`), which also sends it to Clay. */
 import { useMutation } from '@tanstack/react-query'
 import { apiData } from '@nasiko/data-access/client'
 import type { Answers } from './AssessmentPage'

@@ -123,7 +123,7 @@ services:
       COMPOSIO_CALLBACK_BASE_URL: http://localhost:${NASIKO_LOCAL_PORT:-8080}/api/mcp
       # The free-assessment form goes to Nasiko's public intake, which holds the only storage
       # credential; this stack carries none (`server/src/assessment.rs`).
-      ASSESSMENT_INTAKE_URL: ${ASSESSMENT_INTAKE_URL-https://yelsilh253pidzyo7chd2tb3mu0ngwmf.lambda-url.us-west-2.on.aws/}
+      ASSESSMENT_INTAKE_URL: ${ASSESSMENT_INTAKE_URL-https://nasiko-sales-intake.vercel.app/api/assessments}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:

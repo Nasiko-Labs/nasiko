@@ -1,8 +1,8 @@
 /**
  * The free TokenOps assessment (`/assessment`; the sidebar card that replaced the waitlist's): a hero, a short form
  * about how the visitor runs agents, then the last step, booking a slot on the team's calendar.
- * Submitting POSTs the answers (api.ts, stored in S3) before the last step. A failed save — a server without a bucket
- * configured, or S3 down — still reaches the last step, which then asks for the answers in the booking note instead.
+ * Submitting POSTs the answers (api.ts, stored in Neon and sent to Clay) before the last step. A failed save — a server
+ * without an intake configured, or the intake down — still reaches the last step, which then asks for the answers in the booking note instead.
  */
 import { ArrowUpRight, Check, ChartNoAxesColumn, MessagesSquare, Waypoints } from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
