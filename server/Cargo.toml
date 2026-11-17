@@ -2,6 +2,9 @@
 name = "nasiko-server"
 edition.workspace = true
 version.workspace = true
+# Three binaries share this package (the server and two demo seeders); `default-run` makes
+# `cargo run -p nasiko-server` mean the server.
+default-run = "nasiko-server"
 
 [lib]
 path = "src/lib.rs"
@@ -19,6 +22,9 @@ name = "seed-fleet-demo"
 path = "src/bin/seed_fleet_demo.rs"
 
 [dependencies]
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+tower = { workspace = true }
 dotenvy.workspace = true
 nasiko-coding-policy.workspace = true
 nasiko-agent-proxy.workspace = true
@@ -30,6 +36,7 @@ nasiko-secrets.workspace = true
 nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
 nasiko-pricing.workspace = true
+nasiko-event-store.workspace = true
 nasiko-runtime = { workspace = true, features = ["docker", "simulated"] }
 nasiko-react-agent.workspace = true
 # IP-3's turn-level savings row (src/telemetry/tool_result_savings.rs)
@@ -61,6 +68,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
+nasiko-redis = { workspace = true }
 rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
@@ -85,6 +93,7 @@ nasiko-spa = { workspace = true }
 rust-embed = { workspace = true }
 mime_guess = { workspace = true }
 hex = { workspace = true }
+hmac = { workspace = true }
 dashmap = { workspace = true }
 async-trait = { workspace = true }
 rand = { workspace = true }
@@ -95,20 +104,29 @@ opentelemetry_sdk = { version = "0.28", features = ["rt-tokio", "metrics"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["grpc-tonic", "metrics", "trace"] }
 tracing-opentelemetry = "0.29"
 tonic = "0.12"
+sentry = { workspace = true }
 
 [dev-dependencies]
+rcgen = { workspace = true }
+tokio-rustls = { workspace = true }
+rustls-pki-types = { workspace = true }
 serial_test = { workspace = true }
+tower = { workspace = true, features = ["util"] }
 reqwest = { workspace = true, features = ["multipart"] }
 uuid = { workspace = true }
 tokio = { workspace = true }
 async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
-hmac = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# assertion_sign_in generates its own Ed25519 key per run, so no private key is ever committed.
+ring = { workspace = true }
 mockito = { workspace = true }
+zstd = { workspace = true }
 criterion = { workspace = true }
 nasiko-bench-support = { workspace = true }
+# The harness turn e2e runs the real shim in-process.
+nasiko-harness-shim = { workspace = true }
 
 [[bench]]
 name = "control_plane"

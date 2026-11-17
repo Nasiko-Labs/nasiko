@@ -17,7 +17,8 @@ use crate::state::AppState;
 /// left.
 const COOKIE_MAX_AGE: u64 = nasiko_auth::TOKEN_EXPIRY_SECS;
 
-/// Routes shared by OSS and EE: initialize-admin and token validation.
+/// Routes shared by OSS and EE: initialize-admin, token validation, the SSO
+/// session hand-off and the two-step browser sign-in by assertion.
 /// Does not include /api/auth/login — each edition registers its own login
 /// handler via `public_router`.
 ///
@@ -35,6 +36,15 @@ pub fn non_login_public_router(login_limiter: crate::rate_limit::RateLimiter) ->
         .merge(credential_routes)
         .route("/api/auth/tokens/validate", post(token_validate))
         .route("/api/auth/sso/session", get(sso_session))
+        // A browser sign-in vouched for by the dashboard: `start` binds a state
+        // to this browser, `login` takes the assertion that carries it. Both
+        // answer 404 unless the workspace has its own audience. Outside the login
+        // bucket like `sso_session`: the assertion is the credential.
+        .route(
+            "/api/auth/assertion/start",
+            get(super::assertion::sign_in_start),
+        )
+        .route("/api/auth/assertion/login", get(super::assertion::sign_in))
 }
 
 pub fn public_router(login_limiter: crate::rate_limit::RateLimiter) -> Router<AppState> {
@@ -167,6 +177,11 @@ async fn login(
         Err(nasiko_auth::AuthError::Disabled) => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "account disabled"})),
+        )
+            .into_response(),
+        Err(nasiko_auth::AuthError::NotInvited) => (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({"error": "this account has not been invited"})),
         )
             .into_response(),
         Err(nasiko_auth::AuthError::AccountLocked { retry_after_secs }) => (
