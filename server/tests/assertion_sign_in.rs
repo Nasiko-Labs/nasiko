@@ -475,6 +475,44 @@ async fn a_valid_assertion_signs_the_person_in_once() {
     server.cleanup().await;
 }
 
+/// Over plain http the return cookie has no `__Host-` prefix, so a sibling host can plant one. The
+/// workspace re-checks it against its allowed origins at login, instead of trusting what `start`
+/// stored: a forged target (or one that does not even decode) lands on the dashboard's own page.
+#[tokio::test]
+#[serial]
+async fn a_forged_return_cookie_is_not_followed_at_login() {
+    let server = start_server().await;
+    let dashboard = &dashboard().url;
+
+    for (forged, what) in [
+        (
+            URL_SAFE_NO_PAD.encode("https://evil.test/x"),
+            "an unlisted origin",
+        ),
+        (
+            URL_SAFE_NO_PAD.encode(format!("{dashboard}@evil.test/x")),
+            "a look-alike origin",
+        ),
+        ("!!not-base64!!".to_owned(), "a value that does not decode"),
+    ] {
+        let started = start(&server, None, false).await;
+        let claims = login_claims("forged.cookie@corp.test", &started.state);
+        let cookies = format!("{STATE_COOKIE}={}; {RETURN_COOKIE}={forged}", started.state);
+        let response = present(&server, Some(&sign(&claims)), &cookies, false).await;
+
+        assert_eq!(response.status(), StatusCode::FOUND, "{what}");
+        assert_eq!(location(&response), format!("{dashboard}/"), "{what}");
+        let set = set_cookies(&response);
+        assert!(
+            cookie_named(&set, "access_token").is_some(),
+            "{what}: {set:?}"
+        );
+        assert_cleared(&set, false);
+    }
+
+    server.cleanup().await;
+}
+
 /// The same assertion presented twice at once (a double click, a retrying proxy): the single-use
 /// marker lets exactly one through, whichever arrives first.
 #[tokio::test]

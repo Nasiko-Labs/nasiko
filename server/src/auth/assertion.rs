@@ -627,8 +627,16 @@ async fn complete_sign_in(
         }
         Err(nasiko_auth::AuthError::NotInvited) => SignInOutcome::Refused("not_invited"),
         Err(nasiko_auth::AuthError::Disabled) => SignInOutcome::Refused("account_deactivated"),
-        // `%e`, not `?e`: Display is scrubbed, while a unique-violation's Debug
-        // carries the address it rejected.
+        // No error text: `Conflict` says "no free username derived from '<username>'",
+        // and the username here is the full address. A soft-deleted row that still
+        // holds the address makes every insert conflict.
+        Err(nasiko_auth::AuthError::Conflict(_)) => {
+            tracing::error!("assertion sign-in: no free username for the new user (conflict)");
+            SignInOutcome::Refused("user_save_failed")
+        }
+        // `%e`, not `?e`: every other variant's Display is a fixed message or a
+        // reason code (`Database` and `Internal` are scrubbed on purpose), while a
+        // unique-violation's Debug carries the address it rejected.
         Err(e) => {
             tracing::error!(error = %e, "assertion sign-in: upsert_oauth_user failed");
             SignInOutcome::Refused("user_save_failed")

@@ -80,6 +80,7 @@ const SENSITIVE_QUERY_KEY_PARTS: &[&str] = &[
     "session",
     "credential",
     "jwt",
+    "assertion",
 ];
 
 /// Redact credentials from a request URI before it reaches a tracing span, a
@@ -206,6 +207,10 @@ pub fn router() -> Router<AppState> {
             get(handlers::upload::list_my_uploads),
         )
         .route(
+            "/mcp/connectors/uploads/{upload_id}",
+            get(handlers::upload::upload_status),
+        )
+        .route(
             "/mcp/connectors/{id}",
             get(handlers::connectors::get)
                 .patch(handlers::connectors::update)
@@ -265,6 +270,10 @@ pub fn router() -> Router<AppState> {
         .route(
             "/mcp/agents/{agent_id}/connectors",
             get(handlers::permissions::list_connectors),
+        )
+        .route(
+            "/mcp/agents/{agent_id}/my-connections",
+            get(handlers::permissions::list_caller_connections),
         )
         .route(
             "/mcp/agents/{agent_id}/connectors/{connector_id}",
@@ -551,6 +560,15 @@ mod redaction_tests {
         let redacted =
             redact_credential_uri(&uri("/api/auth/sso/session?token=eyJhbGciOi.payload.sig"));
         assert_eq!(redacted, "/api/auth/sso/session?token=[REDACTED]");
+    }
+
+    /// The browser sign-in's assertion is a signed JWT whose payload holds the person's address.
+    #[test]
+    fn redacts_the_sign_in_assertion_in_the_query() {
+        let redacted = redact_credential_uri(&uri(
+            "/api/auth/assertion/login?assertion=eyJhbGciOi.eyJlbWFpbCI6ImFAYi50ZXN0In0.sig",
+        ));
+        assert_eq!(redacted, "/api/auth/assertion/login?assertion=[REDACTED]");
     }
 
     #[test]

@@ -213,11 +213,14 @@ pub const UNKNOWN_KID: &str = "unknown kid";
 /// Pure verification: signature by a key in `jwks` (selected by the header's
 /// `kid`), EdDSA only, `iss` and `aud` exact, `exp` literal, `token_type`
 /// equal to `expected_type`, a lifetime of at most [`ASSERTION_MAX_TTL_SECS`],
-/// verified email.
+/// an `exp` no more than that far from now, verified email.
 ///
-/// The lifetime bound is what keeps single use true: the consumed-`jti` marker
-/// lives exactly [`ASSERTION_MAX_TTL_SECS`], so a longer-lived token could be
-/// replayed once the marker expired, whatever the signer intended.
+/// The two bounds together are what keep single use true: the consumed-`jti`
+/// marker lives [`ASSERTION_MAX_TTL_SECS`] from first use, so a token must not
+/// stay acceptable longer than that after it is first seen. A short lifetime
+/// alone is not enough (a signer whose clock runs ahead, or an `iat` set in the
+/// future, can still push `exp` past the marker), hence the check on `exp`
+/// against this server's clock too.
 pub fn verify_assertion(
     token: &str,
     jwks: &Jwks,
@@ -249,6 +252,9 @@ pub fn verify_assertion(
     }
     if c.exp <= c.iat || c.exp - c.iat > ASSERTION_MAX_TTL_SECS {
         return Err("assertion lifetime is out of bounds".into());
+    }
+    if c.exp > now_secs().saturating_add(ASSERTION_MAX_TTL_SECS) {
+        return Err("assertion expires too far ahead".into());
     }
     if !c.email_verified {
         return Err("asserted email is not verified".into());
@@ -454,6 +460,25 @@ mod tests {
         }
         // The boundary itself is allowed: exactly 60 s.
         let t = sign("k1", claims(ASSERTION_MAX_TTL_SECS as i64));
+        assert!(verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).is_ok());
+    }
+
+    /// A lifetime of exactly 60 s passes the lifetime rule, but an `iat` in the future puts `exp`
+    /// past the replay marker (60 s from first use): refused for that reason alone.
+    #[test]
+    fn an_expiry_more_than_the_marker_lifetime_from_now_is_refused() {
+        let now = chrono::Utc::now().timestamp();
+        let mut c = claims(60);
+        c["iat"] = serde_json::json!(now + 30);
+        c["exp"] = serde_json::json!(now + 30 + ASSERTION_MAX_TTL_SECS as i64);
+        assert_eq!(
+            verify_as(&sign("k1", c), "k1", ASSERTION_TOKEN_TYPE).unwrap_err(),
+            "assertion expires too far ahead"
+        );
+        // The horizon itself is allowed: exp = now + 60, here with an iat 10 s ahead.
+        let mut c = claims(60);
+        c["iat"] = serde_json::json!(now + 10);
+        let t = sign("k1", c);
         assert!(verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).is_ok());
     }
 
