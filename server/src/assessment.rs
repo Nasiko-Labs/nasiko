@@ -6,10 +6,16 @@
 //! user's computer from a public installer, so any key it carried would be public. With
 //! no intake configured the route answers 503 and the UI falls back to its
 //! copy-into-the-booking-note step.
+//!
+//! `POST /api/assessments/{id}/booking` — the Calendly booking made on the form's last step
+//! (the page hears Calendly's `calendly.event_scheduled`). Forwarded to the same intake URL as
+//! `{"booking": {lead_id, user_id, event_uri, invitee_uri}}`, one URL so the old Lambda, which
+//! forwards bodies unchanged, carries it too. The intake marks that user's assessment booked
+//! and sends it to Clay once.
 
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::post,
@@ -34,6 +40,7 @@ const INTAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 pub fn router(limiter: RateLimiter) -> Router<AppState> {
     Router::new()
         .route("/assessments", post(submit_assessment))
+        .route("/assessments/{id}/booking", post(record_booking))
         .layer(axum::middleware::from_fn_with_state(limiter, limit_by_user))
 }
 
@@ -68,6 +75,52 @@ struct IntakeRequest {
     user_id: Uuid,
     #[serde(flatten)]
     answers: AssessmentSubmission,
+}
+
+/// Calendly's resource URIs, as the embed's `calendly.event_scheduled` message carries them.
+const CALENDLY_EVENTS: &str = "https://api.calendly.com/scheduled_events/";
+/// Calendly ids are short; anything longer isn't one.
+const MAX_CALENDLY_ID_CHARS: usize = 64;
+
+/// The booking, as the page sends it.
+#[derive(Debug, Deserialize)]
+pub struct BookingReport {
+    pub event_uri: String,
+    pub invitee_uri: String,
+}
+
+/// What the intake receives for a booking: the assessment, its sender and Calendly's URIs.
+#[derive(Debug, Serialize)]
+struct IntakeBooking<'a> {
+    booking: BookingFields<'a>,
+}
+
+#[derive(Debug, Serialize)]
+struct BookingFields<'a> {
+    lead_id: Uuid,
+    user_id: Uuid,
+    event_uri: &'a str,
+    invitee_uri: &'a str,
+}
+
+/// `…/scheduled_events/<id>` and `…/scheduled_events/<id>/invitees/<id>`, the invitee under that event.
+fn is_calendly_booking(r: &BookingReport) -> bool {
+    let id = |s: &str| {
+        !s.is_empty()
+            && s.len() <= MAX_CALENDLY_ID_CHARS
+            && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    };
+    let Some(event) = r.event_uri.strip_prefix(CALENDLY_EVENTS) else {
+        return false;
+    };
+    let Some(invitee) = r
+        .invitee_uri
+        .strip_prefix(&r.event_uri)
+        .and_then(|rest| rest.strip_prefix("/invitees/"))
+    else {
+        return false;
+    };
+    id(event) && id(invitee)
 }
 
 #[derive(Debug, Deserialize)]
@@ -168,6 +221,73 @@ async fn submit_assessment(
     }
 }
 
+async fn record_booking(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(lead_id): Path<Uuid>,
+    Json(report): Json<BookingReport>,
+) -> Response {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if !is_calendly_booking(&report) {
+        return error(
+            StatusCode::BAD_REQUEST,
+            "not a Calendly booking",
+            "invalid_booking",
+        );
+    }
+    let Some(url) = state.config.assessment_intake_url.as_deref() else {
+        return error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "assessment intake is not configured",
+            "assessments_not_configured",
+        );
+    };
+    let body = IntakeBooking {
+        booking: BookingFields {
+            lead_id,
+            user_id,
+            event_uri: &report.event_uri,
+            invitee_uri: &report.invitee_uri,
+        },
+    };
+    let sent = state
+        .http_client
+        .post(url)
+        .timeout(INTAKE_TIMEOUT)
+        .json(&body)
+        .send()
+        .await;
+    match sent.map(|r| r.status()) {
+        Ok(s) if s.is_success() => {
+            (StatusCode::OK, Json(json!({ "data": { "id": lead_id } }))).into_response()
+        }
+        Ok(StatusCode::NOT_FOUND) => error(
+            StatusCode::NOT_FOUND,
+            "no such assessment",
+            "assessment_not_found",
+        ),
+        Ok(s) => {
+            tracing::error!(status = %s, %lead_id, "the intake refused an assessment booking");
+            error(
+                StatusCode::BAD_GATEWAY,
+                "could not record the booking",
+                "assessment_store_failed",
+            )
+        }
+        Err(e) => {
+            tracing::error!(error = %e, %lead_id, "failed to forward an assessment booking");
+            error(
+                StatusCode::BAD_GATEWAY,
+                "could not record the booking",
+                "assessment_store_failed",
+            )
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +358,67 @@ mod tests {
         assert_eq!(body["user_id"], "00000000-0000-0000-0000-000000000000");
         assert_eq!(body["applying_as"], "individual");
         assert_eq!(body["agents"], "2-5");
+    }
+
+    const EVENT: &str = "https://api.calendly.com/scheduled_events/AB12-cd34";
+
+    fn report(event_uri: &str, invitee_uri: String) -> BookingReport {
+        BookingReport {
+            event_uri: event_uri.into(),
+            invitee_uri,
+        }
+    }
+
+    #[test]
+    fn a_calendly_booking_is_its_event_and_an_invitee_under_it() {
+        assert!(is_calendly_booking(&report(
+            EVENT,
+            format!("{EVENT}/invitees/EF56-gh78")
+        )));
+        let long = "a".repeat(MAX_CALENDLY_ID_CHARS + 1);
+        for (event, invitee) in [
+            (
+                "https://evil.example/scheduled_events/AB12",
+                format!("{EVENT}/invitees/a"),
+            ),
+            (
+                EVENT,
+                "https://api.calendly.com/scheduled_events/OTHER/invitees/EF56".into(),
+            ),
+            (EVENT, format!("{EVENT}/invitees/")),
+            (EVENT, format!("{EVENT}/invitees/a?b=c")),
+            (
+                "https://api.calendly.com/scheduled_events/",
+                "https://api.calendly.com/scheduled_events//invitees/a".into(),
+            ),
+            (
+                &*format!("https://api.calendly.com/scheduled_events/{long}"),
+                format!("https://api.calendly.com/scheduled_events/{long}/invitees/a"),
+            ),
+        ] {
+            assert!(
+                !is_calendly_booking(&report(event, invitee.clone())),
+                "{event} {invitee}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_intake_gets_the_booking_under_its_own_key() {
+        let body = serde_json::to_value(IntakeBooking {
+            booking: BookingFields {
+                lead_id: Uuid::nil(),
+                user_id: Uuid::nil(),
+                event_uri: EVENT,
+                invitee_uri: "x",
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            body["booking"]["lead_id"],
+            "00000000-0000-0000-0000-000000000000"
+        );
+        assert_eq!(body["booking"]["event_uri"], EVENT);
+        assert!(body.get("name").is_none());
     }
 }

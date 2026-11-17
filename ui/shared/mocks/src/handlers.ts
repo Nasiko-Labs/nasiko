@@ -19,6 +19,7 @@ import {
   dashboard,
   dayDrilldown,
   MockHttpError,
+  modelRouting,
   savings,
   spendCalendar,
   spendTimeseries,
@@ -66,6 +67,7 @@ import {
   listRow,
   liveStatus,
   logLines,
+  withFleetSize,
   type AgentsState,
   type MockAgent,
 } from './agents'
@@ -82,6 +84,7 @@ import {
   listCustom,
   listSecrets,
   deleteSecret,
+  myChoice,
   patchRouting,
   touchSecret,
   upsertSecret,
@@ -111,11 +114,13 @@ import {
   queueUpload,
   readMultipart,
   recordAt,
+  registerImport,
   settleUploads,
   uploadAt,
   type DeployState,
   type MockBuild,
 } from './deploy'
+import { composioHandlers, resetComposioMock } from './composio'
 import { buildMcpState, mcpHandlers, type McpState } from './mcp'
 import { optimizationHandlers, resetOptimizationMock } from './optimization'
 import { buildWorkflowsState, workflowHandlers, type WorkflowsState } from './workflows'
@@ -129,6 +134,8 @@ import {
 } from './codingAgents'
 import { checkZip, MAX_ZIP_BYTES } from '@nasiko/features/deploy/zipcheck'
 import { nameProblem } from '@nasiko/features/deploy/name'
+import { readDone, type TryRunKind } from '@nasiko/features/overview/tryRun'
+import { tryRunAgent, tryRunSavings, tryRunTraces } from './tryRun'
 import { parseVersion } from '@nasiko/features/deploy/version'
 import { DEFAULT_REGISTRY, parseReference } from '@nasiko/features/deploy/registry'
 import type { BuildStatus, UploadPipelineStatus } from '@nasiko/features/deploy/types'
@@ -139,7 +146,10 @@ import { PERSONAS, type Persona } from '@nasiko/features/onboarding/types'
 
 // Built on first use, so mock mode doesn't block first paint on seed generation.
 let seed: Seed | null = null
-const getSeed = (): Seed => (seed ??= generateSeed())
+const getSeed = (): Seed => {
+  const base = (seed ??= generateSeed())
+  return hasVariant('try-run') ? tryRunSeed(base) : base
+}
 let nowFn: () => number = () => Date.now()
 let loggedIn = true
 /** Browser mock only: remembers sign-in across reloads, like the server's cookie (QA ISSUE-003). */
@@ -158,6 +168,7 @@ const setLoggedIn = (value: boolean) => {
  * - `probe-500`: the Sessions → Open chat probe fails with a 500 (§5.10).
  * - `waiting`: the opt-in pending requests (§5.11); `pending-fail` fails every poll, `pending-flaky` answers
  *   once, fails the next 3 polls, then works again (DX3).
+ * - `transcribe-unconfigured`: dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does.
  */
 /** `/api/agents/<segment>` routes that aren't an agent id (`agents/mod.rs` router). */
 const AGENTS_STATIC = new Set(['uploads', 'deployments'])
@@ -170,6 +181,7 @@ export const CHAT_PAGE_VARIANTS = [
   'waiting',
   'pending-fail',
   'pending-flaky',
+  'transcribe-unconfigured',
 ] as const
 
 /**
@@ -229,6 +241,11 @@ const PAGE_VARIANTS: readonly string[] = [
   ...BUDGETS_PAGE_VARIANTS,
   ...AGENTS_ONBOARDING_VARIANTS,
   'village-unlimited',
+  'overview-bare',
+  'fleet-empty',
+  'fleet-100',
+  'fleet-1000',
+  'try-run',
 ]
 
 /**
@@ -252,6 +269,8 @@ export const MOCK_VARIANTS = [
   'usage-500',
   'all-unpriced',
   'no-activity',
+  // No coding harness connected at all (no registrations, no sessions): Home's harness preview (2026-11-06).
+  'no-harnesses',
   // TokenOps: no spend in the last two months (its first-run state); `?mock=no-spend,desktop-running` is that state
   // while coding agents sync, when the page shows the loading state instead.
   'no-spend',
@@ -277,16 +296,17 @@ export const MOCK_VARIANTS = [
   'mcp-toolkits-fail',
   'mcp-upload-fails',
   // Workflows (plans/feat-workflows.md §8): no workflows or runs; answers as OSS `main` (no drafts, promote, metrics);
-  // the planner has no API key (503) or fails (422).
+  // the planner has no API key (503), the provider rejects it (502 `llm_key_rejected`) or planning fails (422).
   'workflows-empty',
   'workflows-classic',
   'workflows-no-key',
+  'workflows-key-rejected',
   'workflows-planner-fails',
   // Onboarding (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §5): a server without
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
   'onboarding-absent',
   'onboarding-done',
-  // The free assessment: a server with no ASSESSMENT_S3_BUCKET (503), so the form's answers aren't saved.
+  // The free assessment: a server with no ASSESSMENT_INTAKE_URL (503), so the form's answers aren't saved.
   'assessment-unconfigured',
   // Context optimization (plans/feat-context-optimization.md §3): answers as today's server (no off switch, no tier
   // values, no last-chat preview: the proposed CX-5, CX-T1 and CX-6 are bare 404s or absent).
@@ -317,8 +337,21 @@ export const MOCK_VARIANTS = [
   // the page builds its smaller map), or a quiet estate with no problems (the healthy state).
   'overview-absent',
   'overview-quiet',
+  // Overview: agents deployed and nothing else yet (the village's and the Map's empty states). Combines with others
+  // (`?mock=onboarding-done,overview-bare,no-spend`), so it is a page variant.
+  'overview-bare',
+  // No agents at all: Home's first-run layout (hero, setup guide, "Works before your first agent"). Combines with
+  // `router-empty`, `mcp-empty` and `no-harnesses` for a brand-new user (NAS-1448).
+  'fleet-empty',
+  // A fleet of 100 or 1,000 agents (NAS-1519; the seed has 19), copies of the seed's (agents.ts `withFleetSize`). Read
+  // when the agents state is built, so load a page with it; they combine (`?mock=onboarding-done,fleet-1000`).
+  'fleet-100',
+  'fleet-1000',
   // The village on a paid plan (plans/feat-village-overview.md V17): every plot a district has is open.
   'village-unlimited',
+  // Home's try-a-run card (mocks/tryRun.ts): a workspace with no activity until the card's simulated runs, each of
+  // which then shows in the spend, token and savings reads. Combines: `?mock=onboarding-done,try-run`.
+  'try-run',
   ...CHAT_PAGE_VARIANTS,
   ...ROUTER_PAGE_VARIANTS,
   ...BUDGETS_PAGE_VARIANTS,
@@ -367,8 +400,10 @@ let fixedPageVariants = new Set<string>()
 
 // Harnesses: its own seed (T1) and the viewer persona (`?as=<seed-username>`, mock only).
 let harnessSeed: HarnessSeed | null = null
-const getHarnessSeed = (): HarnessSeed =>
-  (harnessSeed ??= generateHarnessSeed({ anchor: new Date(nowFn()) }))
+const getHarnessSeed = (): HarnessSeed => {
+  const base = (harnessSeed ??= generateHarnessSeed({ anchor: new Date(nowFn()) }))
+  return hasVariant('try-run') ? freshHarnessSeed(base) : base
+}
 let fixedPersona: string | null = null
 let personaLocked = false
 
@@ -424,17 +459,25 @@ function onboardingSeed(base: HarnessSeed): HarnessSeed {
 const variantSeeds = new Map<string, HarnessSeed>()
 function harnessData(): HarnessSeed {
   const base = onboardingSeed(getHarnessSeed())
-  const v = variant()
-  if (v !== 'all-unpriced' && v !== 'no-activity') return base
+  // `no-activity` and `no-harnesses` combine with `no-spend` (`?mock=no-spend,no-activity`): the Overview with nothing
+  // at all to show.
+  const v = hasVariant('no-harnesses')
+    ? 'no-harnesses'
+    : hasVariant('no-activity')
+      ? 'no-activity'
+      : variant()
+  if (v !== 'all-unpriced' && v !== 'no-activity' && v !== 'no-harnesses') return base
   const hit = variantSeeds.get(v)
   if (hit && hit.anchor === base.anchor) return hit
   const next =
-    v === 'no-activity'
-      ? { ...base, sessions: [] }
-      : {
-          ...base,
-          sessions: base.sessions.map((x) => ({ ...x, unpriced_turns: x.turns, cost_usd: 0 })),
-        }
+    v === 'no-harnesses'
+      ? { ...base, agents: [], sessions: [] }
+      : v === 'no-activity'
+        ? { ...base, sessions: [] }
+        : {
+            ...base,
+            sessions: base.sessions.map((x) => ({ ...x, unpriced_turns: x.turns, cost_usd: 0 })),
+          }
   variantSeeds.set(v, next)
   return next
 }
@@ -454,7 +497,11 @@ function freshlyImported(state: AgentsState): AgentsState {
 // Agents pages: mutable state derived from both seeds, rebuilt on reset (plan §8).
 let agentsState: AgentsState | null = null
 const getAgents = (): AgentsState => {
-  agentsState ??= freshlyImported(buildAgentsState(getSeed(), getHarnessSeed(), nowFn()))
+  if (!agentsState) {
+    const built = buildAgentsState(getSeed(), getHarnessSeed(), nowFn())
+    const size = hasVariant('fleet-1000') ? 1000 : hasVariant('fleet-100') ? 100 : 0
+    agentsState = freshlyImported(size ? withFleetSize(built, size) : built)
+  }
   // Uploads that finished since the last read change their agent rows (plans/feat-deploy.md §9).
   if (deployState?.pending.length) settleUploads(deployState, agentsState, nowFn())
   return agentsState
@@ -466,8 +513,42 @@ const getFinopsSeed = (): Seed => {
   const hs = getHarnessSeed()
   if (!finops || finops.seed !== base || finops.hs !== hs)
     finops = { seed: base, hs, merged: withHarnessTurns(base, hs) }
-  if (variant() === 'no-spend') return (finops.empty ??= { ...finops.merged, traces: [] })
+  if (hasVariant('no-spend')) return (finops.empty ??= { ...finops.merged, traces: [] })
   return finops.merged
+}
+/** When this mock first saw each try-a-run run done: its trace's time, kept so a refresh never moves it. */
+let tryRunAt: Partial<Record<TryRunKind, number>> = {}
+let tryRunMemo: { base: Seed; key: string; seed: Seed } | null = null
+const tryRunDone = () => readDone(viewer().id)
+/**
+ * The `try-run` workspace (mocks/tryRun.ts): a user who just finished setup, so the fleet is the one agent they picked
+ * and its activity is only the try-a-run card's runs. Memoised per base seed and set of runs, so reads agree.
+ */
+function tryRunSeed(base: Seed): Seed {
+  const done = tryRunDone()
+  for (const k of done) tryRunAt[k] ??= nowFn()
+  const key = done.join()
+  if (tryRunMemo?.base !== base || tryRunMemo.key !== key) {
+    const agent = tryRunAgent(base)
+    tryRunMemo = {
+      base,
+      key,
+      seed: {
+        ...base,
+        agents: agent ? [agent] : [],
+        traces: tryRunTraces(base, done, tryRunAt),
+        sessions: base.sessions.filter((x) => x.agent_id === agent?.id),
+      },
+    }
+  }
+  return tryRunMemo.seed
+}
+/** No coding harnesses yet in the `try-run` workspace: its users stay (the viewer is one), their harnesses don't. */
+let tryRunHarness: { base: HarnessSeed; seed: HarnessSeed } | null = null
+function freshHarnessSeed(base: HarnessSeed): HarnessSeed {
+  if (tryRunHarness?.base !== base)
+    tryRunHarness = { base, seed: { ...base, agents: [], sessions: [] } }
+  return tryRunHarness.seed
 }
 // Deploy: builds and uploads derived from the agents state, rebuilt with it (plans/feat-deploy.md §9).
 let deployState: DeployState | null = null
@@ -510,11 +591,11 @@ export const mcpMockState = (): McpState => getMcp()
 let workflowsState: WorkflowsState | null = null
 let workflowsKey = ''
 function getWorkflows(): WorkflowsState {
-  const key = String(hasVariant('workflows-empty'))
+  // A workspace fresh from setup (`try-run`) has no workflows yet, and none of the seed agents they'd call.
+  const empty = hasVariant('workflows-empty') || hasVariant('try-run')
+  const key = String(empty)
   if (!workflowsState || workflowsKey !== key) {
-    workflowsState = buildWorkflowsState(getAgents(), getSeed(), ADMIN_ID, nowFn(), {
-      empty: hasVariant('workflows-empty'),
-    })
+    workflowsState = buildWorkflowsState(getAgents(), getSeed(), ADMIN_ID, nowFn(), { empty })
     workflowsKey = key
   }
   return workflowsState
@@ -537,16 +618,19 @@ let settingsRow: Record<string, unknown> | null = null
 // Secret values the mock was sent (the router state keeps names only); a seed secret reads as a fake key.
 let secretValues = new Map<string, string>()
 let mockPassword: string | null = null
-/** settings.rs `get_settings` with no row: its hard-coded defaults (not the env's, ST-1). */
-const SETTINGS_DEFAULTS = {
-  router_model: 'deepseek-v4-pro',
+/** settings.rs `get_settings` with no row: nothing stored. */
+const SETTINGS_DEFAULTS = { registry_url: null, catalog_tabs: null }
+/** `SettingsResponse`'s running values, from the server's environment and never stored: `OPENAI_MODEL`, `ROUTER_MODEL`
+ * (distinct so tests can tell the two rows apart; a cloud workspace runs `gpt-4o-mini` for both), `DEFAULT_PROVIDER`
+ * and the `NASIKO_FLOW_*` defaults. */
+const SETTINGS_RUNNING = {
+  orchestrator_model: 'gpt-4o-mini',
+  router_model: 'gpt-4.1-mini',
   default_provider: 'openai',
   max_flow_depth: 5,
   max_flow_fan_out: 20,
   max_flow_tokens: 100_000,
-  flow_timeout_secs: 120,
-  registry_url: null,
-  catalog_tabs: null,
+  flow_timeout_secs: 600,
 }
 // Budgets are Enterprise only (docs/requirements/budgets.md): their whole mock — the engine, the world, the golden
 // scenario and every route — lives in the Enterprise layer and registers through `editionHandlers`.
@@ -596,6 +680,9 @@ let persistOnboarding: ((row: MockOnboarding) => void) | null = null
 /** Bodies `POST /api/assessments` accepted, oldest first. */
 let assessments: unknown[] = []
 export const assessmentsMockState = (): readonly unknown[] => assessments
+/** Bookings `POST /api/assessments/{id}/booking` accepted, oldest first. */
+let assessmentBookings: { id: string; body: unknown }[] = []
+export const assessmentBookingsMockState = (): readonly { id: string; body: unknown }[] => assessmentBookings
 
 /** An edition's own mock state, dropped with the core's (EE: the SSO settings and SCIM tokens). */
 const editionResets = new Set<() => void>()
@@ -611,14 +698,19 @@ export function resetAgentsMock() {
   workflowsState = null
   flowsState = null
   settingsRow = null
+  resetComposioMock()
   secretValues = new Map()
   mockPassword = null
   onboardingRow = ONBOARDED
   assessments = []
+  assessmentBookings = []
   codingAgentsState = null
   resetOptimizationMock()
   resetChatMock()
   resetOverviewMock()
+  tryRunAt = {}
+  tryRunMemo = null
+  tryRunHarness = null
   // The chat knobs tests can turn (v1c DX3).
   fixedSuperuser = null
   fixedPageVariants = new Set()
@@ -750,6 +842,7 @@ function recordedSessionRow(r: ChatSessionRow, agentName: string): SessionSummar
     num_traces: turns || null,
     status: turns ? 'ok' : null,
     failed_flows: 0,
+    flow_count: 0,
     start_time: r.created_at,
     end_time: end,
     duration_ms: turns ? Date.parse(end) - Date.parse(r.created_at) : null,
@@ -946,7 +1039,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return HttpResponse.json({ is_first_time_user: false, persona })
     }),
   ],
-  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without a bucket.
+  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without an intake; the booking, 200.
   assessment: [
     http.post('/api/assessments', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -957,6 +1050,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         )
       assessments.push(await request.json())
       return HttpResponse.json({ data: { id: crypto.randomUUID() } }, { status: 201 })
+    }),
+    http.post('/api/assessments/:id/booking', async ({ params, request }) => {
+      if (!loggedIn) return unauthorized()
+      const id = String(params.id)
+      assessmentBookings.push({ id, body: await request.json() })
+      return HttpResponse.json({ data: { id } })
     }),
   ],
   auth: [
@@ -1034,8 +1133,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       const asLive = personaLocked && !!p.owner
       if (asLive) liveOwner = p.owner!
       const owner = asLive ? ADMIN_ID : p.owner
-      const rows = getAgents()
-        .agents.filter((a) => !a.deleted && (!owner || a.owner_id === owner))
+      // `?mock=fleet-empty`: a workspace with no agents yet (Home's first-run layout).
+      const rows = (hasVariant('fleet-empty') ? [] : getAgents().agents)
+        .filter((a) => !a.deleted && (!owner || a.owner_id === owner))
         .sort((a, b) => b.created_at.localeCompare(a.created_at))
       // `?mock=no-agents` (v1c): nothing is running, so Chat has no agent to offer.
       const stopped = hasVariant('no-agents')
@@ -1072,7 +1172,14 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         metadata?: Record<string, unknown>
         compress_enabled?: boolean
         minimal_code_enabled?: boolean
+        parking_policy?: string
       }
+      if (
+        body.parking_policy !== undefined &&
+        body.parking_policy !== 'auto' &&
+        body.parking_policy !== 'resident'
+      )
+        return text('parking_policy must be one of: auto, resident', 400)
       // COALESCE per field (catalog/routes.rs update); `metadata` replaces the whole column.
       if (typeof body.display_name === 'string') a.display_name = body.display_name
       if (typeof body.description === 'string') a.description = body.description
@@ -1080,6 +1187,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       if (typeof body.compress_enabled === 'boolean') a.compress = body.compress_enabled
       if (typeof body.minimal_code_enabled === 'boolean')
         a.minimal_code_enabled = body.minimal_code_enabled
+      if (body.parking_policy) a.parking_policy = body.parking_policy
       a.updated_at = new Date(nowFn()).toISOString()
       return HttpResponse.json(listRow(a, nowFn()))
     }),
@@ -1164,6 +1272,17 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     http.get('/api/agents/:id/secrets', ({ params: prm }) => {
       const a = managed(String(prm.id))
       return a instanceof Response ? a : HttpResponse.json(a.secrets)
+    }),
+    // agent_secrets.rs list_inherited_secrets: the owner's user-secret names, marked where the agent has its own.
+    http.get('/api/agents/:id/secrets/inherited', ({ params: prm }) => {
+      const a = managed(String(prm.id))
+      if (a instanceof Response) return a
+      return HttpResponse.json(
+        listSecrets(getRouter(), a.owner_id).map((s) => ({
+          name: s.name,
+          overridden: a.secrets.some((x) => x.name === s.name),
+        })),
+      )
     }),
     http.post('/api/agents/:id/secrets', async ({ params: prm, request }) => {
       const a = managed(String(prm.id))
@@ -1468,11 +1587,44 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     ),
   ],
   savings: [
+    // NAS-1263 (`model_routing.rs`): how the router chose each call's model. In the savings group
+    // because the card that reads it sits in TokenOps' Optimization section, beside /finops/savings.
+    http.get(`${FINOPS}/model-routing`, () => respond(() => modelRouting())),
     http.get(`${FINOPS}/savings`, ({ request }) =>
       respond(() => {
         // savings.rs `coverage`: counted over every live agent (no ACL), from the agents mock, so the Optimization
         // page's Mechanisms counts follow the same switches as its other blocks. The rest is the fixed sample.
-        const s = savings()
+        const demo = hasVariant('try-run')
+        const s = demo ? tryRunSavings(savings(), getSeed(), tryRunDone()) : savings()
+        // `no-spend` has no traces, so nothing was optimized and nothing could be: zero, so the Overview's lead card
+        // shows its "Did you know?" instead of the band.
+        if (hasVariant('no-spend'))
+          return {
+            ...s,
+            total: {
+              ...s.total,
+              saved_tokens: 0,
+              saved_input_tokens: 0,
+              saved_output_tokens: 0,
+              saved_cost_usd: 0,
+              actual_tokens: 0,
+              actual_cost_usd: 0,
+              baseline_tokens: 0,
+              baseline_cost_usd: 0,
+              token_reduction_pct: null,
+              cost_reduction_pct: null,
+            },
+            by_program: [],
+            by_agent: [],
+            by_session: [],
+            coverage: {
+              ...s.coverage,
+              calls_in_window: 0,
+              calls_with_any_layer_enabled: 0,
+              optimized_spend_usd: 0,
+              unoptimized_spend_usd: 0,
+            },
+          }
         const live = getAgents().agents.filter((a) => !a.deleted)
         const comments = (a: (typeof live)[number]) =>
           (a.metadata?.features as Record<string, unknown> | undefined)?.prompt_comments ===
@@ -1481,7 +1633,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return {
           ...s,
           by_agent: savingsByAgent(
-            [...s.by_agent, ...seedSavingsRows(params(request))],
+            demo ? s.by_agent : [...s.by_agent, ...seedSavingsRows(params(request))],
             params(request),
           ),
           coverage: {
@@ -1786,6 +1938,26 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         ),
       )
     }),
+    // agents/llm_config.rs my-llm-config: the caller's own choice on an agent they can use but do not own.
+    http.get('/api/agents/:id/my-llm-config', ({ params: prm }) =>
+      routed(() => envelope(myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID))),
+    ),
+    http.put('/api/agents/:id/my-llm-config', async ({ params: prm, request }) => {
+      const body = (await request.json().catch(() => ({}))) as { llm_config_id?: string }
+      return routed(() =>
+        envelope(
+          myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, {
+            configId: body.llm_config_id ?? null,
+          }),
+        ),
+      )
+    }),
+    http.delete('/api/agents/:id/my-llm-config', ({ params: prm }) =>
+      routed(() => {
+        myChoice(getRouter(), usableAgent(String(prm.id)), ADMIN_ID, { configId: null })
+        return HttpResponse.json({ data: null, status_code: 200, message: 'ok' })
+      }),
+    ),
     // secrets/routes.rs list_secrets: names and timestamps only.
     http.get('/api/secrets', () =>
       routed(() => {
@@ -1866,7 +2038,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
             ...Array.from({ length: SPEND_LIMIT }, (_, i) => ({
               agent_id: null,
               agent_name: null,
-              request_count: 1,
+              traces: 1,
               total_input_tokens: 10,
               total_output_tokens: 5,
               total_tokens: 15 - (i % 5),
@@ -1971,9 +2143,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   settings: [
     // settings.rs at 43833316: a bare object; with no row yet, its hard-coded defaults.
     http.get('/api/settings', () =>
-      loggedIn ? HttpResponse.json(settingsRow ?? SETTINGS_DEFAULTS) : unauthorized(),
+      loggedIn
+        ? HttpResponse.json({ ...(settingsRow ?? SETTINGS_DEFAULTS), ...SETTINGS_RUNNING })
+        : unauthorized(),
     ),
-    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2).
+    // `update_settings`: superuser-only, and it writes EVERY column, so a field left out becomes null (ST-2). The
+    // running values in a body (models, provider, flow limits) are ignored: they come from the server's environment.
     http.put('/api/settings', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (!sessionUser().is_superuser) return text('requires superuser', 403)
@@ -1981,8 +2156,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       settingsRow = Object.fromEntries(
         Object.keys(SETTINGS_DEFAULTS).map((k) => [k, body[k] ?? null]),
       )
-      return HttpResponse.json(settingsRow)
+      return HttpResponse.json({ ...settingsRow, ...SETTINGS_RUNNING })
     }),
+    ...composioHandlers({ loggedIn: () => loggedIn, superuser: () => sessionUser().is_superuser }),
   ],
 }
 
@@ -2040,6 +2216,17 @@ function routingAgent(ref: string): MockAgent {
   const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
   if (!a) throw new MockHttpError(404, 'agent not found')
   if (a.owner_id !== ADMIN_ID && !superuser()) throw new MockHttpError(403, 'not the agent owner')
+  return a
+}
+
+/** acl.rs `can_access_agent` (owner, public, a user grant, or a superuser): 404 `agent not found` otherwise. */
+function usableAgent(ref: string): MockAgent {
+  const a = getAgents().agents.find((x) => !x.deleted && x.id === ref)
+  if (
+    !a ||
+    !(a.owner_id === ADMIN_ID || superuser() || a.is_public || a.userGrants.includes(ADMIN_ID))
+  )
+    throw new MockHttpError(404, 'agent not found')
   return a
 }
 
@@ -2299,8 +2486,10 @@ const chatCtx: ChatMockContext = {
     )
     return h ? { id: h.id, name: h.name } : null
   },
+  // The chat page's variants, and the `try-run` workspace (no seeded chats).
   hasVariant: (v) =>
-    (CHAT_PAGE_VARIANTS as readonly string[]).includes(v) && hasVariant(v as MockVariant),
+    ([...CHAT_PAGE_VARIANTS, 'try-run'] as readonly string[]).includes(v) &&
+    hasVariant(v as MockVariant),
   superuser,
 }
 handlerGroups.chat = chatHandlers(chatCtx)
@@ -2312,6 +2501,7 @@ handlerGroups.overview = overviewHandlers({
   now: () => nowFn(),
   absent: () => hasVariant('overview-absent'),
   quiet: () => hasVariant('overview-quiet'),
+  bare: () => hasVariant('overview-bare'),
   unlimited: () => hasVariant('village-unlimited'),
   agents: () => getAgents().agents,
   harness: harnessData,
@@ -2437,7 +2627,12 @@ function deployHandlers(): HttpHandler[] {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
         return HttpResponse.json(
-          { success: false, message: 'GitHub OAuth not configured', status: 'disconnected' },
+          {
+            success: false,
+            message:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+            status: 'disconnected',
+          },
           { status: 503 },
         )
       return githubConnected()
@@ -2456,7 +2651,13 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/login', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return HttpResponse.json({ error: 'GitHub OAuth not configured' }, { status: 503 })
+        return HttpResponse.json(
+          {
+            error:
+              'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          },
+          { status: 503 },
+        )
       const d = getDeploy()
       // Tests complete the popup themselves (`deployMockState().setGithubConnected`).
       if (import.meta.env.MODE !== 'test')
@@ -2468,7 +2669,10 @@ function deployHandlers(): HttpHandler[] {
     http.get('/api/github/repositories', () => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 404)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const repos =
@@ -2488,7 +2692,10 @@ function deployHandlers(): HttpHandler[] {
     http.post('/api/github/clone', async ({ request }) => {
       if (!loggedIn) return unauthorized()
       if (variant() === 'deploy-github-unconfigured')
-        return text('GitHub OAuth not configured', 503)
+        return text(
+          'GitHub OAuth is not configured on this server (set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET)',
+          503,
+        )
       if (!githubConnected())
         return text('GitHub not connected — visit /agents.html?view=import to connect', 403)
       const body = (await request.json().catch(() => ({}))) as {
@@ -2540,7 +2747,7 @@ function deployHandlers(): HttpHandler[] {
       )
     }),
     // catalog/import.rs import_registry: synchronous (the mock takes a few seconds in the browser, none in tests).
-    // Allowed hosts: registry.nasiko.dev and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
+    // Allowed hosts: registry.nasiko.com and localhost:5000. A `<host>/nasiko/...` reference is an agent package (built);
     // anything else is a plain image (pulled, no build). The name is the last path part, the version the x.y.z tag.
     http.post('/api/import/registry', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -2573,6 +2780,8 @@ function deployHandlers(): HttpHandler[] {
           `version ${version} already exists in this agent's history — choose a new version`,
           409,
         )
+      // The row is there, `deploying`, while the import runs (NAS-1450).
+      registerImport(agents, { name, version, ownerId: ADMIN_ID, now: nowFn() })
       if (import.meta.env.MODE !== 'test') await new Promise((r) => setTimeout(r, 6_000))
       const running = variant() !== 'deploy-registry-not-running'
       const ids = completeImport(getDeploy(), agents, {
@@ -2644,6 +2853,21 @@ function deployHandlers(): HttpHandler[] {
       const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
       const r = b ? recordAt(b, nowFn()) : null
       return r ? HttpResponse.json(r) : new HttpResponse(null, { status: 404 })
+    }),
+    // The captured build output (build/routes.rs get_build_logs): plain text, or 404 when none was
+    // kept. The source-build install path persists it on the row (catalog/import.rs).
+    http.get('/api/builds/:id/logs', ({ params: p }) => {
+      if (!loggedIn) return unauthorized()
+      if (variant() === 'deploy-no-rights') return noRights()
+      const b = getDeploy().builds.find((x) => x.record.id === String(p.id))
+      const r = b ? recordAt(b, nowFn()) : null
+      if (!r) return text('no logs available', 404)
+      return text(
+        r.status === 'failed'
+          ? `Step 3/4 : RUN pip install -r requirements.txt\nERROR: Could not find a version that satisfies the requirement nasiko-sdk\nThe command '/bin/sh -c pip install -r requirements.txt' returned a non-zero code: 1`
+          : `Step 1/4 : FROM python:3.12-slim\nStep 2/4 : COPY . /app\nStep 3/4 : RUN pip install -r requirements.txt\nStep 4/4 : CMD ["python", "main.py"]\nSuccessfully tagged ${r.image_reference}`,
+        200,
+      )
     }),
     http.get('/api/agents/uploads', ({ request }) => {
       if (!loggedIn) return unauthorized()

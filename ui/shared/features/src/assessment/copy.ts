@@ -45,13 +45,19 @@ export const copy = {
     saved: "We've received your answers.",
     notSaved: "We couldn't save your answers, so paste them into the booking note.",
     line: 'Last step: pick a 30-minute slot with the Nasiko team.',
-    book: 'Book your assessment',
+    frameTitle: 'Pick a time for your assessment',
+    loading: 'Loading available times',
     pasteHint: 'Paste your answers into the booking note so the team can prepare.',
     copyAnswers: 'Copy your answers',
     summary: 'Your answers',
     edit: 'Edit answers',
   },
-  newTab: '(opens in a new tab)',
+  /** After Calendly reports the booking. */
+  booked: {
+    title: 'You’re booked',
+    body: (email: string) =>
+      `Calendly has sent the invite to ${email}. We’ll come with a first look at your token spend.`,
+  },
 }
 
 export const APPLYING_AS = [
