@@ -4,7 +4,11 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy as shell } from '@nasiko/app-core/shell/copy'
 import { DOCS_URL, SALES_CALL_URL, SUPPORT_MAIL_URL } from '@nasiko/app-core/links'
-import { assessmentBookingsMockState, assessmentsMockState, configureMocks } from '@nasiko/mocks/handlers'
+import {
+  assessmentBookingsMockState,
+  assessmentsMockState,
+  configureMocks,
+} from '@nasiko/mocks/handlers'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { copy } from './copy'
@@ -135,7 +139,9 @@ describe('assessment', () => {
     expect(assessmentsMockState()).toEqual([])
     // Nothing to tag the booking with, so the answers are shown to paste into its note, and a booking isn't reported.
     expect((await bookingFrame()).searchParams.get('utm_content')).toBeNull()
-    expect(screen.getByText(/Applying as: Individual developer/)).toHaveTextContent('Monthly token spend: Under $100')
+    expect(screen.getByText(/Applying as: Individual developer/)).toHaveTextContent(
+      'Monthly token spend: Under $100',
+    )
     calendlyBooks()
     await screen.findByRole('heading', { name: copy.booked.title })
     expect(assessmentBookingsMockState()).toEqual([])

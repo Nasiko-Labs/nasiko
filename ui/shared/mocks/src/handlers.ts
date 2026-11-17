@@ -682,7 +682,8 @@ let assessments: unknown[] = []
 export const assessmentsMockState = (): readonly unknown[] => assessments
 /** Bookings `POST /api/assessments/{id}/booking` accepted, oldest first. */
 let assessmentBookings: { id: string; body: unknown }[] = []
-export const assessmentBookingsMockState = (): readonly { id: string; body: unknown }[] => assessmentBookings
+export const assessmentBookingsMockState = (): readonly { id: string; body: unknown }[] =>
+  assessmentBookings
 
 /** An edition's own mock state, dropped with the core's (EE: the SSO settings and SCIM tokens). */
 const editionResets = new Set<() => void>()
