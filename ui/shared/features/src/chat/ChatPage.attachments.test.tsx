@@ -121,9 +121,7 @@ describe('attaching media to a chat', () => {
     // bytes come from the one cookie-authenticated file route (no third-party fetch).
     const block = await screen.findByTestId('message-attachments', undefined, { timeout: 10_000 })
     const img = await within(block).findByRole('img')
-    expect(img.getAttribute('src')).toMatch(
-      /^(https?:\/\/[^/]+)?\/api\/chat\/files\/[^/]+\/download$/,
-    )
+    expect(img.getAttribute('src')).toMatch(/^(https?:\/\/[^/]+)?\/api\/chat\/files\/[^/]+\/download$/)
     // And it is reachable as a download too, for a format the browser won't show.
     expect(within(block).getByRole('link')).toHaveAttribute('href', img.getAttribute('src'))
   })
