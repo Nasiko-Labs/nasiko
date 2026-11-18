@@ -39,7 +39,9 @@ pub struct ErrorReportingConfig {
 const DEFAULT_ENVIRONMENT: &str = "production";
 const DEFAULT_TRACES_SAMPLE_RATE: f32 = 0.1;
 const DEFAULT_REPLAY_SESSION_SAMPLE_RATE: f32 = 0.0;
-const DEFAULT_REPLAY_ON_ERROR_SAMPLE_RATE: f32 = 1.0;
+/// Off unless an operator turns it on: a replay records the screen (masked) around an error, and
+/// a deployment has to tell its users that before recording anything.
+const DEFAULT_REPLAY_ON_ERROR_SAMPLE_RATE: f32 = 0.0;
 const DEFAULT_LOGS_LEVEL: LogsLevel = LogsLevel::Warn;
 
 impl ErrorReportingConfig {
@@ -141,6 +143,15 @@ mod tests {
         assert_eq!(c.browser_dsn, None);
         assert_eq!(c.environment, "production");
         assert!(c.server_release.starts_with("nasiko-server@"));
+    }
+
+    #[test]
+    fn replays_are_off_unless_turned_on() {
+        let c = ErrorReportingConfig::disabled();
+        assert_eq!(c.replay_session_sample_rate, 0.0);
+        assert_eq!(c.replay_on_error_sample_rate, 0.0);
+        let on = config(&[("SENTRY_REPLAY_ON_ERROR_SAMPLE_RATE", "1")]);
+        assert_eq!(on.replay_on_error_sample_rate, 1.0);
     }
 
     #[test]
