@@ -287,7 +287,7 @@ pub struct SavingsQuery<'a> {
     /// Restricts every aggregate to these callers' own calls (bug found 2026-10-22: this panel
     /// never had this filter at all, only `accessible_agent_ids` — a public agent's savings looked
     /// the same for every viewer who could see it, not just the person who actually made the calls).
-    /// `None` means unrestricted (an admin, or a request scoped to an agent the caller owns); `Some`
+    /// `None` means unrestricted (a user manager); `Some`
     /// mirrors `accessible_agent_ids`'s shape exactly, same handler-level resolution.
     pub user_ids: Option<&'a [uuid::Uuid]>,
 }
