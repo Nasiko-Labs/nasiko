@@ -1077,6 +1077,7 @@ server/src/coding_agent_turn_summary_backfill.rs
 server/src/coding_agent_usage.rs
 server/src/composio_settings.rs
 server/src/context_selection.rs
+server/src/current_time.rs
 server/src/embedding_change.rs
 server/src/error_reporting/config.rs
 server/src/error_reporting/mod.rs
@@ -1203,6 +1204,7 @@ server/src/users/mod.rs
 server/src/users/routes.rs
 server/tests/admin_authz.rs
 server/tests/agent_compress_toggle.rs
+server/tests/agent_current_time.rs
 server/tests/agent_delete.rs
 server/tests/agent_deploy_parkable.rs
 server/tests/agent_deploy_replicas.rs
@@ -1400,6 +1402,7 @@ tool-compact/tests/properties.rs
 types/Cargo.toml
 types/src/a2a.rs
 types/src/agent_call.rs
+types/src/agent_clock.rs
 types/src/coding_agent.rs
 types/src/lib.rs
 types/src/maf.rs
