@@ -420,8 +420,8 @@ pub async fn register_connector(
     // the gateway's own `initialize` forwards later, not a description
     // substitute. The description itself: the caller's own always wins; a
     // missing one falls back to `serverInfo.description`, never to
-    // `instructions` — those are written for the model ("If Firecrawl
-    // reports that credits ran out…"), and shown on a connector card they
+    // `instructions` — those are written for the model (Firecrawl's tell it
+    // what to do when a limit is reached), and shown on a connector card they
     // read as a leaked prompt (user feedback, 2026-11-18).
     // Never blocks or fails registration — a server requiring auth even for
     // `initialize` (e.g. Notion) or one that simply doesn't set `instructions`
