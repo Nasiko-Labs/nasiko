@@ -149,9 +149,11 @@ export function SummaryHero({
               kpis ? (
                 <>
                   {fmtInt(kpis.active_agents.current)}
+                  {/* Every agent the reader can use, shared ones included: a bare "of 7" read as
+                      a contradiction of Home's "6 of 6 running" (user feedback, 2026-11-18). */}
                   {data ? (
                     <span className="ml-1.5 text-sm font-normal text-muted-foreground">
-                      of {fmtInt(data.summary.total_agents)}
+                      of {fmtInt(data.summary.total_agents)} you can use
                     </span>
                   ) : null}
                 </>

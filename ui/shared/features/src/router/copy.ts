@@ -79,7 +79,10 @@ export const copy = {
   couldntRead: 'Couldn’t read routing',
   retry: 'Retry',
   noAgents: 'You don’t own any agents yet',
-  noAgentsText: 'Other users’ agents show their routing on their agent page.',
+  // Says why shared agents are missing (user feedback, 2026-11-18: "All 0" beside Home's "6 of 6
+  // running" read as a contradiction). Not who pays for them: that is the payer's call (payer.rs).
+  noAgentsText:
+    'Only agents you own are listed here. Agents shared with you, like the workspace agents on Home, are not.',
   toAgents: 'Go to Agents',
   noneInFilter: 'No agents match this filter',
   noneInFilterText: 'None of your agents has this kind of routing.',

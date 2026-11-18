@@ -74,7 +74,8 @@ const MORE: KpiDef[] = [
   },
   {
     label: 'Active agents',
-    value: (d) => `${fmtInt(d.kpis.active_agents.current)} of ${fmtInt(d.summary.total_agents)}`,
+    value: (d) =>
+      `${fmtInt(d.kpis.active_agents.current)} of ${fmtInt(d.summary.total_agents)} you can use`,
     kpi: (d) => d.kpis.active_agents,
     polarity: POLARITY.agents,
   },
