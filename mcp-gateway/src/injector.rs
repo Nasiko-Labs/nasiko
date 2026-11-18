@@ -139,6 +139,7 @@ mod tests {
     fn test_ctx() -> AgentContext {
         AgentContext {
             agent_id: "agent-1".into(),
+            agent_uuid: None,
             tenant_id: None,
             version: None,
             capture_content: false,

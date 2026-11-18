@@ -26,12 +26,12 @@ tokio = { workspace = true, features = ["sync", "time"] }
 nasiko-runtime = { workspace = true }
 nasiko-pricing = { workspace = true }
 futures = { workspace = true }
+uuid = { workspace = true }
 
 [dev-dependencies]
 # `simulated` provides the fake sandbox provider the decorator tests record against.
 nasiko-runtime = { workspace = true, features = ["simulated"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
-uuid = { workspace = true }
 mockito = { workspace = true }
 # Only the RUN-1 forwarding guard for `read_workspace_file` needs to build a
 # byte stream; the decorator itself just hands the stream through.

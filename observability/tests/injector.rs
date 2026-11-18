@@ -9,6 +9,7 @@ const TEST_ENDPOINT: &str = "http://otel-collector.nasiko-infra:4318";
 fn make_ctx(agent_id: &str) -> AgentContext {
     AgentContext {
         agent_id: agent_id.to_owned(),
+        agent_uuid: None,
         tenant_id: None,
         version: None,
         capture_content: false,
@@ -127,6 +128,7 @@ fn inject_resource_attrs_contains_agent_id() {
 fn inject_resource_attrs_with_all_optional_fields() {
     let ctx = AgentContext {
         agent_id: "full-agent".to_owned(),
+        agent_uuid: Some("7ba15cc6-c94f-4bfa-9c41-6d13b4a5c219".to_owned()),
         tenant_id: Some("tenant-42".to_owned()),
         version: Some("v2.1.0".to_owned()),
         capture_content: false,
@@ -148,12 +150,17 @@ fn inject_resource_attrs_with_all_optional_fields() {
         attrs.contains("service.version=v2.1.0"),
         "should contain service.version; got: {attrs}"
     );
+    assert!(
+        attrs.contains("nasiko.agent.uuid=7ba15cc6-c94f-4bfa-9c41-6d13b4a5c219"),
+        "should carry the agent's UUID, which its name alone cannot identify; got: {attrs}"
+    );
 }
 
 #[test]
 fn inject_resource_attrs_tenant_id_only() {
     let ctx = AgentContext {
         agent_id: "agent-x".to_owned(),
+        agent_uuid: None,
         tenant_id: Some("acme-corp".to_owned()),
         version: None,
         capture_content: false,
@@ -174,6 +181,7 @@ fn inject_resource_attrs_tenant_id_only() {
 fn inject_resource_attrs_version_only() {
     let ctx = AgentContext {
         agent_id: "versioned-agent".to_owned(),
+        agent_uuid: None,
         tenant_id: None,
         version: Some("1.0.0".to_owned()),
         capture_content: false,
@@ -231,6 +239,7 @@ fn inject_preserves_existing_env_vars() {
 fn inject_uses_custom_otel_collector_endpoint() {
     let ctx = AgentContext {
         agent_id: "agent".to_owned(),
+        agent_uuid: None,
         tenant_id: None,
         version: None,
         capture_content: false,

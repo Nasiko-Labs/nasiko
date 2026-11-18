@@ -1,9 +1,19 @@
 use std::collections::HashMap;
 
+/// The resource attribute carrying the emitting workload's UUID. Read back by
+/// the Tempo parser onto each span's attributes, so the materializer can tell
+/// same-named agents apart.
+pub const AGENT_UUID_RESOURCE_ATTR: &str = "nasiko.agent.uuid";
+
 /// Context passed to [`InstrumentationInjector::inject`] when deploying an agent.
 pub struct AgentContext {
     /// The agent's stable identifier (used as `OTEL_SERVICE_NAME`).
     pub agent_id: String,
+    /// The workload's UUID, added to `OTEL_RESOURCE_ATTRIBUTES` as
+    /// [`AGENT_UUID_RESOURCE_ATTR`]. `agent_id` is the agent's name, which is
+    /// unique only per owner, so it cannot say which of two same-named agents
+    /// emitted a span; this can.
+    pub agent_uuid: Option<String>,
     /// Optional tenant identifier, added to `OTEL_RESOURCE_ATTRIBUTES`.
     pub tenant_id: Option<String>,
     /// Optional image version, added to `OTEL_RESOURCE_ATTRIBUTES` as `service.version`.
@@ -43,6 +53,9 @@ impl InstrumentationInjector for OtelInjector {
         env_vars.insert("OTEL_SERVICE_NAME".into(), ctx.agent_id.clone());
 
         let mut resource_attrs = format!("agent.id={}", ctx.agent_id);
+        if let Some(uuid) = &ctx.agent_uuid {
+            resource_attrs.push_str(&format!(",{AGENT_UUID_RESOURCE_ATTR}={uuid}"));
+        }
         if let Some(tenant) = &ctx.tenant_id {
             resource_attrs.push_str(&format!(",tenant.id={tenant}"));
         }

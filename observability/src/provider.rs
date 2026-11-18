@@ -419,6 +419,11 @@ impl TempoLokiProvider {
             tool_spans: Vec<crate::types::ToolCallSpan>,
             /// Tool calls the model asked for, as the LLM router saw them in its replies.
             requested_tool_calls: u32,
+            /// Which agent the token spans under this name vouched for (`span_agent_uuid`).
+            uuid: Option<uuid::Uuid>,
+            /// Set when they vouched for more than one: the name is then left to the
+            /// materializer rather than pinned to whichever span came first.
+            mixed_uuid: bool,
         }
 
         let mut by_agent: HashMap<String, AgentAcc> = HashMap::new();
@@ -486,6 +491,14 @@ impl TempoLokiProvider {
             acc.cache_creation += cc;
             if is_router_llm_span(span) {
                 acc.requested_tool_calls += requested_tool_calls(span);
+            }
+            if let Some(uuid) = span_agent_uuid(span) {
+                if acc.uuid.is_none() && !acc.mixed_uuid {
+                    acc.uuid = Some(uuid);
+                } else if acc.uuid != Some(uuid) {
+                    acc.uuid = None;
+                    acc.mixed_uuid = true;
+                }
             }
             if acc.model.is_none() && !acc.mixed_model {
                 acc.model = model.clone();
@@ -584,6 +597,7 @@ impl TempoLokiProvider {
             rows.push(crate::types::TraceUsageRow {
                 trace_id: trace_id.to_string(),
                 agent_name,
+                agent_uuid: acc.uuid,
                 session_id: session_id.clone(),
                 model: acc.model,
                 provider: if acc.mixed_provider {
@@ -1710,6 +1724,24 @@ fn tool_span_agent<'a>(span: &'a Span, attributed: &HashMap<&'a str, &'a str>) -
         .filter(|service| !service.is_empty())
 }
 
+/// The agent a token span vouches for, by UUID.
+///
+/// A router span carries `gen_ai.agent.id`, the agent whose credential the LLM router verified
+/// for the call, and the call is booked to that agent's row. Any other span carries the
+/// workload UUID its deploy put on its OTel resource (copied onto the span by the Tempo
+/// parser). A value that is not a UUID vouches for nothing.
+fn span_agent_uuid(span: &Span) -> Option<uuid::Uuid> {
+    let key = if is_router_llm_span(span) {
+        "gen_ai.agent.id"
+    } else {
+        crate::injector::AGENT_UUID_RESOURCE_ATTR
+    };
+    span.attributes
+        .get(key)
+        .and_then(|v| v.as_str())
+        .and_then(|s| uuid::Uuid::parse_str(s).ok())
+}
+
 /// The agent a span that is not the router's is booked to: its own service, except the
 /// Orchestrator's model calls, which the control plane also writes live as `orchestrator`.
 fn own_span_agent(span: &Span) -> &str {
@@ -1989,6 +2021,56 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].agent_name, "meeting-notes");
         assert_eq!((rows[0].input_tokens, rows[0].output_tokens), (913, 3_000));
+    }
+
+    /// The row says *which* `meeting-notes` served the call: the router verified the caller's
+    /// credential and stamped its UUID, and two users may each own an agent of that name.
+    #[tokio::test]
+    async fn a_router_served_call_carries_the_verified_agent_uuid() {
+        const AGENT: &str = "f546d9c0-78d6-4a0c-ac83-002b82ea3615";
+        let mut llm = model_span("chat", None, "gpt-4o-mini", (913, 3_000, 0, 0));
+        llm.service_name = "meeting-notes".into();
+        let mut router = model_span("r1", Some("chat"), "gpt-5", (913, 3_000, 0, 0));
+        router.service_name = "nasiko-cp".into();
+        router
+            .attributes
+            .insert("gen_ai.agent.id".into(), serde_json::json!(AGENT));
+
+        let rows = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![llm, router]))
+            .await;
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].agent_name, "meeting-notes");
+        assert_eq!(rows[0].agent_uuid, uuid::Uuid::parse_str(AGENT).ok());
+    }
+
+    /// An agent calling its provider directly has no router span; its deploy-time resource
+    /// UUID identifies it instead. Two different UUIDs under one name identify nothing.
+    #[tokio::test]
+    async fn an_agents_own_spans_carry_its_resource_uuid_unless_they_disagree() {
+        const ONE: &str = "f546d9c0-78d6-4a0c-ac83-002b82ea3615";
+        const OTHER: &str = "7ba15cc6-c94f-4bfa-9c41-6d13b4a5c219";
+        let own = |id: &str, uuid: &str| {
+            let mut span = model_span(id, None, "gpt-4o-mini", (10, 5, 0, 0));
+            span.service_name = "meeting-notes".into();
+            span.attributes.insert(
+                crate::injector::AGENT_UUID_RESOURCE_ATTR.into(),
+                serde_json::json!(uuid),
+            );
+            span
+        };
+
+        let one = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![own("a", ONE), own("b", ONE)]))
+            .await;
+        assert_eq!(one[0].agent_uuid, uuid::Uuid::parse_str(ONE).ok());
+
+        let mixed = offline_provider()
+            .aggregate_trace_usage(&trace_of(vec![own("a", ONE), own("b", OTHER)]))
+            .await;
+        assert_eq!(mixed.len(), 1);
+        assert_eq!(mixed[0].agent_uuid, None);
     }
 
     #[tokio::test]

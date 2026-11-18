@@ -352,6 +352,14 @@ fn parse_otlp_trace(
             .as_ref()
             .map(|r| extract_service_name(&r.attributes))
             .unwrap_or_default();
+        // A resource attribute, so it is copied onto each span: `Span` keeps only the service
+        // name from the resource, and the service name is the agent's name, not unique.
+        let agent_uuid = batch.resource.as_ref().and_then(|r| {
+            r.attributes
+                .iter()
+                .find(|a| a.key == crate::injector::AGENT_UUID_RESOURCE_ATTR)
+                .and_then(|a| a.value.string_value.clone())
+        });
 
         for scope_spans in batch.scope_spans.as_deref().unwrap_or(&[]) {
             for span in &scope_spans.spans {
@@ -365,13 +373,18 @@ fn parse_otlp_trace(
                 let duration_ms =
                     ended_at.map(|e| (e - started_at).num_milliseconds().max(0) as u64);
 
-                let attributes: HashMap<String, Value> = span
+                let mut attributes: HashMap<String, Value> = span
                     .attributes
                     .as_deref()
                     .unwrap_or(&[])
                     .iter()
                     .map(|a| (a.key.clone(), otlp_attr_to_json(&a.value)))
                     .collect();
+                if let Some(uuid) = &agent_uuid {
+                    attributes
+                        .entry(crate::injector::AGENT_UUID_RESOURCE_ATTR.to_string())
+                        .or_insert_with(|| Value::String(uuid.clone()));
+                }
 
                 let events: Vec<SpanEvent> = span
                     .events
@@ -494,5 +507,33 @@ mod tests {
 
         assert_eq!(trace.spans.len(), 1);
         assert_eq!(trace.token_totals(), (25, 5, None));
+    }
+
+    #[test]
+    fn the_workload_uuid_on_the_resource_reaches_each_span() {
+        let otlp: OtlpTraceResponse = serde_json::from_value(json!({
+            "batches": [{
+                "resource": {"attributes": [
+                    {"key": "service.name", "value": {"stringValue": "meeting-notes"}},
+                    {"key": "nasiko.agent.uuid", "value": {"stringValue": "f546d9c0-78d6-4a0c-ac83-002b82ea3615"}}
+                ]},
+                "scopeSpans": [{"spans": [{
+                    "spanId": "span-1",
+                    "name": "chat",
+                    "startTimeUnixNano": "1724068800000000000",
+                    "attributes": [],
+                    "events": []
+                }]}]
+            }]
+        }))
+        .unwrap();
+
+        let trace = parse_otlp_trace("trace-1", otlp).unwrap();
+
+        assert_eq!(trace.spans[0].service_name, "meeting-notes");
+        assert_eq!(
+            trace.spans[0].attributes["nasiko.agent.uuid"],
+            json!("f546d9c0-78d6-4a0c-ac83-002b82ea3615")
+        );
     }
 }

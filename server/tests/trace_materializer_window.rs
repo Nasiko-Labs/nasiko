@@ -122,6 +122,7 @@ fn usage(trace_id: &str, input_tokens: u64) -> TraceUsageRow {
     TraceUsageRow {
         trace_id: trace_id.into(),
         agent_name: "window-test-agent".into(),
+        agent_uuid: None,
         session_id: None,
         model: Some("gpt-4o".into()),
         provider: Some("openai".into()),
@@ -251,4 +252,90 @@ async fn a_rescan_stamps_materialized_at_only_when_the_row_changed() {
         materialized_at(&server.db, &trace_id).await > aged + chrono::Duration::minutes(30),
         "a rescan that changed the totals must reach the budget ledger"
     );
+}
+
+async fn insert_user(db: &PgPool, username: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO users (username, email, is_superuser) VALUES ($1, $1 || '@test.local', false) \
+         RETURNING id",
+    )
+    .bind(username)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn insert_agent(db: &PgPool, name: &str, owner: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO agents (name, owner_id, image, status) \
+         VALUES ($1, $2, 'nasiko/echo:1.0.0', 'running') RETURNING id",
+    )
+    .bind(name)
+    .bind(owner)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
+async fn materialize_row(db: &PgPool, row: TraceUsageRow) -> Option<Uuid> {
+    let trace_id = row.trace_id.clone();
+    let tempo = FakeTempo {
+        traces: vec![trace_id.clone()],
+        usage: Mutex::new(Some(row)),
+        ..FakeTempo::default()
+    };
+    set_cursor(db, Utc::now()).await;
+    pass(db, &tempo).await;
+    sqlx::query_scalar("SELECT agent_id FROM trace_usage WHERE trace_id = $1")
+        .bind(&trace_id)
+        .fetch_one(db)
+        .await
+        .unwrap()
+}
+
+/// Two users each own an agent named `meeting-notes-processor`. A call the spans vouch for by
+/// UUID is booked to that agent; one known only by its shared name is booked to neither, never
+/// to whichever row the database returned first (bug found 2026-11-18).
+#[tokio::test]
+#[serial]
+async fn a_name_two_agents_share_resolves_by_uuid_or_not_at_all() {
+    let server = common::TestServer::start().await;
+    let name = format!("shared-name-{}", Uuid::new_v4().simple());
+    let alice = insert_user(&server.db, &format!("alice-{}", Uuid::new_v4().simple())).await;
+    let bob = insert_user(&server.db, &format!("bob-{}", Uuid::new_v4().simple())).await;
+    let alices = insert_agent(&server.db, &name, alice).await;
+    let _bobs = insert_agent(&server.db, &name, bob).await;
+
+    let vouched = TraceUsageRow {
+        agent_name: name.clone(),
+        agent_uuid: Some(alices),
+        ..usage(&Uuid::new_v4().simple().to_string(), 100)
+    };
+    assert_eq!(materialize_row(&server.db, vouched).await, Some(alices));
+
+    let unvouched = TraceUsageRow {
+        agent_name: name.clone(),
+        ..usage(&Uuid::new_v4().simple().to_string(), 100)
+    };
+    assert_eq!(
+        materialize_row(&server.db, unvouched).await,
+        None,
+        "an ambiguous name must not be pinned to an arbitrary owner's agent"
+    );
+}
+
+/// A name only one live agent has resolves by name, as before.
+#[tokio::test]
+#[serial]
+async fn a_unique_name_still_resolves_without_a_uuid() {
+    let server = common::TestServer::start().await;
+    let name = format!("unique-name-{}", Uuid::new_v4().simple());
+    let owner = insert_user(&server.db, &format!("owner-{}", Uuid::new_v4().simple())).await;
+    let agent = insert_agent(&server.db, &name, owner).await;
+
+    let row = TraceUsageRow {
+        agent_name: name,
+        ..usage(&Uuid::new_v4().simple().to_string(), 100)
+    };
+    assert_eq!(materialize_row(&server.db, row).await, Some(agent));
 }

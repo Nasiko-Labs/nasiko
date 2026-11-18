@@ -233,7 +233,7 @@ pub(crate) async fn upsert_rows(
 ) -> Result<(), String> {
     let mut merged: Vec<(Option<uuid::Uuid>, TraceUsageRow)> = Vec::new();
     for row in rows {
-        let (agent_id, agent_name) = resolve_agent(db, &row.agent_name).await;
+        let (agent_id, agent_name) = resolve_agent(db, &row.agent_name, row.agent_uuid).await;
         let row = TraceUsageRow {
             agent_name,
             ..row.clone()
@@ -280,31 +280,51 @@ fn merge_usage_rows(into: &mut TraceUsageRow, other: &TraceUsageRow) {
 
 /// Resolve what the provider called the agent (a name, or the UUID the router
 /// stamps) to its id and name.
-async fn resolve_agent(db: &PgPool, reported: &str) -> (Option<uuid::Uuid>, String) {
-    let by_name: Option<uuid::Uuid> =
-        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 1")
+///
+/// `vouched` is the UUID the agent's own spans carried (`TraceUsageRow::agent_uuid`), and wins
+/// when it names a live agent. Without it, a name resolves only when exactly one live agent has
+/// it: names are unique per owner, not per deployment, and picking one of several booked a
+/// user's calls to another user's private agent of the same name (bug found 2026-11-18, a Free
+/// plane user's spend vanished from his own TokenOps). An ambiguous name keeps its name and no
+/// id — spend still counts for the user and the workspace, just against no agent.
+async fn resolve_agent(
+    db: &PgPool,
+    reported: &str,
+    vouched: Option<uuid::Uuid>,
+) -> (Option<uuid::Uuid>, String) {
+    if let Some(id) = vouched
+        && let Some(name) = live_agent_name(db, id).await
+    {
+        return (Some(id), name);
+    }
+    let by_name: Vec<uuid::Uuid> =
+        sqlx::query_scalar("SELECT id FROM agents WHERE name = $1 AND deleted_at IS NULL LIMIT 2")
             .bind(reported)
-            .fetch_optional(db)
+            .fetch_all(db)
             .await
-            .ok()
-            .flatten();
-    if let Some(id) = by_name {
-        return (Some(id), reported.to_string());
+            .unwrap_or_default();
+    match by_name.as_slice() {
+        [id] => return (Some(*id), reported.to_string()),
+        [_, _] => return (None, reported.to_string()),
+        _ => {}
     }
     let Ok(uuid) = uuid::Uuid::parse_str(reported) else {
         return (None, reported.to_string());
     };
-    let name: Option<String> =
-        sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL LIMIT 1")
-            .bind(uuid)
-            .fetch_optional(db)
-            .await
-            .ok()
-            .flatten();
-    match name {
+    match live_agent_name(db, uuid).await {
         Some(name) => (Some(uuid), name),
         None => (None, reported.to_string()),
     }
+}
+
+/// The name of the live agent with this id, if there is one.
+async fn live_agent_name(db: &PgPool, id: uuid::Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT name FROM agents WHERE id = $1 AND deleted_at IS NULL LIMIT 1")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
 }
 
 /// Write one merged row with its owners resolved.
@@ -658,6 +678,7 @@ mod merge_tests {
         TraceUsageRow {
             trace_id: "t".into(),
             agent_name: "calendar-agent-1".into(),
+            agent_uuid: None,
             session_id: None,
             model: model.map(str::to_owned),
             provider: None,

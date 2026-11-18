@@ -394,6 +394,7 @@ async fn tempo_pass_keeps_router_spend() {
     let tempo = nasiko_observability::TraceUsageRow {
         trace_id: TRACE.into(),
         agent_name: name.clone(),
+        agent_uuid: None,
         session_id: None,
         model: Some("other-model".into()),
         provider: Some("other".into()),
@@ -570,6 +571,7 @@ async fn failed_calls_count_as_errors_without_inventing_spend() {
     let tempo = nasiko_observability::TraceUsageRow {
         trace_id: TRACE.into(),
         agent_name: name,
+        agent_uuid: None,
         session_id: None,
         model: Some("gpt-4o".into()),
         provider: Some("openai".into()),
@@ -752,6 +754,7 @@ async fn coding_turn_row_nets_out_calls_the_router_booked() {
     let turn = nasiko_observability::TraceUsageRow {
         trace_id: "turn-trace".into(),
         agent_name: name.clone(),
+        agent_uuid: None,
         session_id: None,
         model: None,
         provider: None,

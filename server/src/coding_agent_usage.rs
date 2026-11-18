@@ -65,6 +65,8 @@ pub(crate) async fn turn_usage_row(
     Some(TraceUsageRow {
         trace_id: trace_id_for_event(event),
         agent_name: event.source.agent_name.clone(),
+        // A local coding agent's row is named per user; the name alone resolves it.
+        agent_uuid: None,
         session_id: Some(event.session.id.clone()),
         model: calls
             .iter()
@@ -252,6 +254,7 @@ mod tests {
         TraceUsageRow {
             trace_id: "t".into(),
             agent_name: "claude".into(),
+            agent_uuid: None,
             session_id: None,
             model: None,
             provider: None,
