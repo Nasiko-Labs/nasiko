@@ -189,6 +189,8 @@ mcp-gateway/                        ← pure logic crate (no AppState, no axum h
     ├── authorizer.rs               ConnectorAuthorizer trait — the swappable "Layer 1"
     │                               reachability check (owner ∪ user/public grant)
     ├── permissions.rs              permission engine + management view functions
+    ├── entitlements.rs             ToolEntitlements trait: per-user tool entitlement, the
+    │                               swappable narrowing of Layer 2 (default: unrestricted)
     ├── session.rs                  credential injection + session resolution
     ├── aggregator.rs               tools/list fan-out, namespacing, merge, manifest cache
     ├── router.rs                   route_tool() — name → backend resolution
@@ -747,6 +749,44 @@ flowchart TD
 ```
 
 **Why the ordering is security-critical, not just logical:** Layer 2 must never be evaluated independently of Layer 1. If an implementation ever asks "is there an `enabled=true` row?" without first re-confirming that Layer 1 currently passes, a revoked grant that left behind a stale permissive row would continue to let someone in — precisely the failure mode a revocation flow must never have. Layer 1 gates whether Layer 2 is even consulted, on every single check, with no shortcut path.
+
+
+### Per-user tool entitlements
+
+An agent's Layer 2 rules apply to everyone who uses that agent. A deployment can also restrict tools per
+user, across all agents, through the `ToolEntitlements` trait (`entitlements.rs`) held on `McpState`.
+For each request the gateway loads the calling user's entitlement (Redis cached, `mcp:ent:{user_id}`, for the
+permission cache TTL; both `Unrestricted` and `Restricted` answers are cached, so an edition whose resolver reads
+the database pays that read once per TTL, not per request; whatever changes an answer invalidates it through
+`invalidate_user_entitlements`, which deletes keys in batched multi-key `DEL`s, and a change nothing hooks shows
+up after at most the TTL) and
+combines it with the agent's permissions in `EffectiveAccess`:
+
+- **Unrestricted** (the default implementation): the agent's permissions alone decide, exactly as above.
+- **Restricted**: a map from connector to either every tool or an explicit set of tool names. A tool the user
+  is not entitled to is denied before the agent's stance is consulted, so an entitlement can only narrow
+  access, never widen it, and an "approve for this session" grant cannot bypass it.
+
+The combined decision is applied on every path that exposes or invokes a tool: `tools/list` (including the
+manifest cache key), tool search and `nasiko_search_tools`, `initialize` instructions, direct calls, Composio
+calls and each `MULTI_EXECUTE` slug. Under a restricted entitlement a Composio tool whose toolkit maps to no
+connector, or an empty `MULTI_EXECUTE` slug, is denied. Composio's own meta-tools (toolkit `composio`) are an
+explicit allowlist for a restricted user: `COMPOSIO_SEARCH_TOOLS`, `COMPOSIO_GET_TOOL_SCHEMAS`,
+`COMPOSIO_MULTI_EXECUTE_TOOL` and `COMPOSIO_MANAGE_CONNECTIONS` (the last two still filtered per slug / toolkit).
+Any other meta-tool, such as a remote workbench or shell that can reach every connected toolkit, is hidden from
+listing and search and denied on call; names match exactly, so a differently-cased variant is denied too.
+Unrestricted users see and call every meta-tool as before.
+
+The per-agent management API (the agent's MCP tab) is filtered the same way for the person viewing it: a
+restricted viewer sees only their entitled connectors and tools, a bulk rule update from them merges instead
+of replacing so rules on tools they cannot see survive. For a connector where the viewer does not hold every
+tool, a rule is editable only if its pattern has no wildcard (`*` or `?`) and names a tool they are entitled to,
+since a wildcard would also govern tools they cannot see for every user of the agent. A reset, and the
+enable/disable toggle of such a connector, are refused (403) for the same reason; a viewer entitled to every tool
+of a connector keeps full control of it.
+
+The calling user is whoever the gateway resolves for the request (§7.2): the flow's user, the root flow's
+user for agent-to-agent calls, and the agent owner where no flow exists.
 
 ---
 

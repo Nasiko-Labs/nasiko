@@ -12,6 +12,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use nasiko_mcp_gateway::ConnectorAuthorizer;
+use nasiko_mcp_gateway::permissions::EffectiveAccess;
 use nasiko_mcp_gateway::protocol::handle_tools_list;
 use nasiko_mcp_gateway::repo::{self, McpConnector};
 use nasiko_mcp_gateway::search::{Bm25SearchIndex, ToolSearchIndex};
@@ -171,7 +172,7 @@ async fn a_search_listing_writes_what_it_left_out() {
         db.owner_user_id,
         &json!(1),
         &session(connector_id),
-        &db.perms(&[connector_id], vec![]),
+        &EffectiveAccess::unrestricted(&db.perms(&[connector_id], vec![])),
         None,
         Some(&flow_id),
     )
@@ -217,7 +218,7 @@ async fn a_listing_with_no_flow_query_writes_nothing() {
         db.owner_user_id,
         &json!(1),
         &session(connector_id),
-        &db.perms(&[connector_id], vec![]),
+        &EffectiveAccess::unrestricted(&db.perms(&[connector_id], vec![])),
         None,
         None,
     )

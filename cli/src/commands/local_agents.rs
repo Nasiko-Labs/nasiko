@@ -48,10 +48,6 @@ pub struct ConnectOptions {
     /// Don't give the agent your MCP connectors through the Nasiko gateway
     #[arg(long, conflicts_with = "no_routing", help_heading = HELP_HEADING)]
     pub no_mcp: bool,
-    /// A2A agents: the LLM providers whose calls to route (asked on a terminal; otherwise the
-    /// ones its env file already uses, else openai)
-    #[arg(long = "provider", value_enum, value_delimiter = ',', help_heading = HELP_HEADING)]
-    pub providers: Vec<integration::Provider>,
     /// Report sessions to Nasiko observability: usage (tokens, cost, latency, models, tools and
     /// subagents) always; chat history only to a cluster that keeps it, when asked or with --content
     #[arg(long, conflicts_with = "no_reporting", help_heading = HELP_HEADING)]
@@ -83,7 +79,6 @@ impl ConnectOptions {
             || self.no_routing
             || self.mcp
             || self.no_mcp
-            || !self.providers.is_empty()
             || self.reporting
             || self.no_reporting
             || self.content
@@ -2220,259 +2215,6 @@ fn reporting_agent_name(agent: &AgentPlan) -> Result<Option<String>> {
     Ok((router.summary)()?.map(|summary| summary.agent_name))
 }
 
-// ─── connecting an A2A agent ─────────────────────────────────────────────────
-
-/// The running A2A agent `target` names (see [`integration::select_a2a_agent`]), with
-/// everything running here (registration reports the whole machine). `None` when it names no
-/// running agent, so `connect` keeps treating it as a control plane; a URL is looked up only
-/// when it is on this machine.
-pub fn running_a2a_agent(
-    target: &str,
-) -> Result<Option<(integration::A2aAgent, integration::RunningA2aAgents)>> {
-    if is_coding_agent(target) || (target.contains("://") && !is_loopback_url(target)) {
-        return Ok(None);
-    }
-    let running = integration::running_a2a_agents();
-    Ok(integration::select_a2a_agent(target, &running)?.map(|agent| (agent, running)))
-}
-
-fn is_loopback_url(url: &str) -> bool {
-    let host = url
-        .split_once("://")
-        .map_or(url, |(_, rest)| rest)
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-    let host = match host.rsplit_once(':') {
-        Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => host,
-        _ => host,
-    };
-    matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "0.0.0.0")
-}
-
-/// `nasiko connect <a2a agent>`: register it and route its LLM calls through Nasiko. The
-/// variables go into the file it reads at startup when that file can be determined from its
-/// process, after the user sees the change and agrees; otherwise they are shown to set.
-pub fn connect_a2a(
-    agent: &integration::A2aAgent,
-    running: &integration::RunningA2aAgents,
-    options: &ConnectOptions,
-) -> Result<()> {
-    let prompter = prompter(options.yes);
-    ensure_logged_in(prompter.as_ref())?;
-    let mut connection = integration::prepare_a2a_connection(agent, running)?;
-    let providers = choose_providers(prompter.as_ref(), options, &connection)?;
-    let with_mcp = match options.mcp_choice() {
-        Some(choice) => choice,
-        None => prompter.confirm(
-            &format!(
-                "Give {} your MCP tools through the Nasiko gateway? (its code opens the client; Nasiko shows how)",
-                connection.card_name
-            ),
-            false,
-        )?,
-    };
-    connection.choose(&providers, with_mcp);
-    let cli = cli_name();
-    let name = quoted(&connection.card_name);
-    let written = match &connection.target {
-        integration::EnvTarget::File(file) => {
-            let header = format!(
-                "LLM routing for {}, added by `{cli} connect {name}`. Undo: `{cli} disconnect {name}`",
-                connection.card_name
-            );
-            let text = integration::a2a_connected_text(&connection, file, &header)?;
-            print_planned_write(&connection, file);
-            let agreed = options.yes
-                || prompter.confirm(
-                    &format!("Write these variables to {}?", file.display()),
-                    true,
-                )?;
-            if agreed {
-                integration::save_a2a_connection(&connection, Some((file, &text)))?;
-                term::print_success(&format!("Wrote the Nasiko variables to {}", file.display()));
-                term::print_info(&format!(
-                    "{} now holds this agent's Nasiko key; keep it out of version control.",
-                    file.display()
-                ));
-            }
-            agreed
-        }
-        integration::EnvTarget::Unknown(_) => false,
-    };
-    if !written {
-        integration::save_a2a_connection(&connection, None)?;
-    }
-    print_next_steps(&connection, written);
-    Ok(())
-}
-
-/// The providers whose calls `connect` routes: `--provider`, else asked with the ones the
-/// agent's env file already uses ticked (OpenAI when it uses none).
-fn choose_providers(
-    prompter: &dyn Prompter,
-    options: &ConnectOptions,
-    connection: &integration::A2aConnection,
-) -> Result<Vec<integration::Provider>> {
-    if !options.providers.is_empty() {
-        return Ok(options.providers.clone());
-    }
-    let all = integration::Provider::ALL;
-    let in_use = &connection.providers_in_use;
-    let defaults: Vec<bool> = all
-        .iter()
-        .map(|provider| {
-            in_use.contains(provider)
-                || (in_use.is_empty() && *provider == integration::Provider::OpenAi)
-        })
-        .collect();
-    let labels: Vec<String> = all
-        .iter()
-        .map(|provider| provider.label().to_string())
-        .collect();
-    let chosen = prompter.multi_select(
-        &format!(
-            "Which LLM providers does {} call? Their calls go through Nasiko (space selects, enter confirms)",
-            connection.card_name
-        ),
-        &labels,
-        &defaults,
-    )?;
-    if chosen.is_empty() {
-        bail!("no provider chosen, so nothing to route; run connect again and select at least one");
-    }
-    Ok(chosen.into_iter().map(|index| all[index]).collect())
-}
-
-fn print_planned_write(connection: &integration::A2aConnection, file: &std::path::Path) {
-    if let Some(folder) = &connection.folder {
-        println!("Agent folder: {}", folder.display());
-    }
-    println!(
-        "{} {} will set (your own lines for these are kept, commented out):",
-        if file.exists() {
-            "Updating"
-        } else {
-            "Creating"
-        },
-        file.display()
-    );
-    for (key, value) in &connection.vars {
-        println!("  {key}={}", planned_value(key, value));
-    }
-}
-
-/// A variable's value as the preview shows it: the secrets (the LLM key, the MCP gateway
-/// credential and the URL that carries it) only named, since the preview is often on a
-/// shared screen. Shown to set by hand, they are printed in full.
-fn planned_value<'a>(key: &str, value: &'a str) -> &'a str {
-    match key {
-        _ if key.ends_with("_KEY") => "<this agent's Nasiko key>",
-        "MCP_GATEWAY_TOKEN" => "<this agent's MCP credential>",
-        "MCP_GATEWAY_CONNECT_URL" => "<the gateway URL with this agent's MCP credential>",
-        _ => value,
-    }
-}
-
-/// What the user still has to do, as a numbered list: set the variables when Nasiko didn't
-/// write them, restart the agent, and — only for MCP tools — change its code once.
-fn print_next_steps(connection: &integration::A2aConnection, written: bool) {
-    let agent = &connection.card_name;
-    println!("\n{}", term::bold("What you need to do:"));
-    let mut step = 0;
-    let mut next = || {
-        step += 1;
-        step
-    };
-    if !written {
-        let why = match &connection.target {
-            integration::EnvTarget::Unknown(reason) => format!(" (Nasiko didn't: {reason})"),
-            integration::EnvTarget::File(_) => String::new(),
-        };
-        println!("  {}. Add these to {agent}'s environment{why}:", next());
-        for (key, value) in &connection.vars {
-            println!("       {key}={value}");
-        }
-    }
-    println!(
-        "  {}. Restart {agent}. No code change for LLM routing; {} shows it on after the first call.",
-        next(),
-        term::cyan(&format!("{} status", cli_name()))
-    );
-    match &connection.mcp {
-        integration::McpSetup::Added => {
-            println!(
-                "  {}. Code change, once, for MCP tools: {}",
-                next(),
-                mcp_snippet(connection.framework)
-            );
-            println!(
-                "  {}. Pick its tools in Nasiko: Agents → {} → MCP.",
-                next(),
-                connection.name
-            );
-        }
-        integration::McpSetup::NotRequested => println!(
-            "\nMCP tools: not added. To add them: {}",
-            term::cyan(&format!(
-                "{} connect {} --mcp",
-                cli_name(),
-                quoted(&connection.name)
-            ))
-        ),
-        integration::McpSetup::Unavailable(reason) => term::print_warning(&format!(
-            "MCP tools not added: the gateway is unavailable ({reason})"
-        )),
-    }
-}
-
-/// How code on `framework` opens Nasiko's MCP gateway from the `MCP_GATEWAY_*` variables.
-fn mcp_snippet(framework: Option<integration::AgentFramework>) -> &'static str {
-    match framework {
-        Some(integration::AgentFramework::LangGraph) => {
-            "use langchain-mcp-adapters:
-
-    import os
-    from langchain_mcp_adapters.client import MultiServerMCPClient
-
-    mcp = MultiServerMCPClient({\"nasiko\": {
-        \"transport\": \"streamable_http\",
-        \"url\": os.environ[\"MCP_GATEWAY_URL\"],
-        \"headers\": {\"Authorization\": f\"Bearer {os.environ['MCP_GATEWAY_TOKEN']}\"},
-    }})
-    tools = await mcp.get_tools()  # pass them to your graph's model or ToolNode
-"
-        }
-        Some(integration::AgentFramework::CrewAi) => {
-            "use CrewAI's own MCP support:
-
-    import os
-    from crewai.mcp import MCPServerHTTP
-
-    nasiko = MCPServerHTTP(
-        url=os.environ[\"MCP_GATEWAY_URL\"],
-        headers={\"Authorization\": f\"Bearer {os.environ['MCP_GATEWAY_TOKEN']}\"},
-    )
-    agent = Agent(..., mcps=[nasiko])
-"
-        }
-        None => {
-            "point any MCP client (streamable HTTP) at MCP_GATEWAY_URL with the header
-`Authorization: Bearer $MCP_GATEWAY_TOKEN`, or at MCP_GATEWAY_CONNECT_URL when it takes only a URL.
-"
-        }
-    }
-}
-
-/// `name` as a shell word: quoted when it has whitespace.
-fn quoted(name: &str) -> String {
-    if name.chars().any(char::is_whitespace) {
-        format!("\"{name}\"")
-    } else {
-        name.to_string()
-    }
-}
-
 // ─── disconnect ──────────────────────────────────────────────────────────────
 
 struct Removal {
@@ -2483,12 +2225,6 @@ struct Removal {
 
 /// `nasiko disconnect [agent]`: remove LLM routing (with the MCP gateway) and/or reporting.
 pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<()> {
-    if let Some(name) = target.filter(|name| !is_coding_agent(name))
-        && let Some(message) = integration::disconnect_a2a_agent(name)?
-    {
-        term::print_success(&format!("{message}. Restart {name} to apply."));
-        return Ok(());
-    }
     let prompter = prompter(options.yes);
     let views = load_views()?;
     let targets: Vec<AgentView> = match target {
@@ -2700,7 +2436,7 @@ fn syncs_chat_history(local: &LocalAgent) -> bool {
 }
 
 /// Where an installed reporting hook lives and where it delivers — what `agents discover`
-/// showed as its CONFIG column before coding agents moved to `status`, plus the cluster a rebind would move it from.
+/// used to show as its CONFIG column, plus the cluster a rebind would move it from.
 fn print_reporting_details(local: &LocalAgent) {
     if !local.reporting_installed {
         return;
@@ -2726,9 +2462,8 @@ pub fn print_overview() -> Result<()> {
     let views = load_views()?;
     println!("Coding agents:");
     print_agent_table(&views);
-    let cli = cli_name();
-    integration::print_discovered_a2a_agents();
     let pending = integration::pending_event_count()?;
+    let cli = cli_name();
     if pending > 0 {
         println!(
             "\nQueued session events: {pending} (deliver now: {})",
@@ -2740,8 +2475,6 @@ pub fn print_overview() -> Result<()> {
         term::cyan(&format!("{cli} connect [agent]")),
         term::cyan(&format!("{cli} status <agent>"))
     );
-    println!("Discover agents:            {cli} agents discover");
-    println!("Install session reporting:  {cli} connect <agent> --reporting");
     Ok(())
 }
 
@@ -5014,56 +4747,5 @@ mod tests {
         assert_eq!(names(&agents, &[0]), "a");
         assert_eq!(names(&agents, &[0, 1]), "a and b");
         assert_eq!(names(&agents, &[0, 1, 2]), "a, b and c");
-    }
-
-    #[test]
-    fn the_write_preview_names_secrets_rather_than_showing_them() {
-        assert_eq!(
-            planned_value("OPENAI_API_KEY", "jwt"),
-            "<this agent's Nasiko key>"
-        );
-        assert_eq!(
-            planned_value("MCP_GATEWAY_TOKEN", "ngt_x"),
-            "<this agent's MCP credential>"
-        );
-        assert!(
-            !planned_value("MCP_GATEWAY_CONNECT_URL", "http://cp/api/mcp/s/ngt_x").contains("ngt_")
-        );
-        assert_eq!(
-            planned_value("OPENAI_BASE_URL", "http://cp/v1"),
-            "http://cp/v1"
-        );
-    }
-
-    #[test]
-    fn the_mcp_snippets_are_the_code_the_e2e_runs() {
-        // The e2e (`oss/scripts/a2a-discovery-e2e`) runs each snippet's code against a real
-        // gateway; this keeps what `connect` prints the same code.
-        for (framework, script) in [
-            (
-                integration::AgentFramework::LangGraph,
-                include_str!("../../../scripts/a2a-discovery-e2e/mcp_langgraph.py"),
-            ),
-            (
-                integration::AgentFramework::CrewAi,
-                include_str!("../../../scripts/a2a-discovery-e2e/mcp_crewai.py"),
-            ),
-        ] {
-            let printed: Vec<&str> = mcp_snippet(Some(framework))
-                .lines()
-                .map(str::trim)
-                .collect();
-            let ran = script
-                .split("# ── as printed by `nasiko connect` ──")
-                .nth(1)
-                .and_then(|rest| rest.split("# ──").next())
-                .expect("the e2e script marks the printed code");
-            for line in ran.lines().map(str::trim).filter(|line| !line.is_empty()) {
-                assert!(
-                    printed.contains(&line),
-                    "{framework:?} snippet lacks: {line}"
-                );
-            }
-        }
     }
 }

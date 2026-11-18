@@ -1000,7 +1000,6 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
         }
     }
 

@@ -463,7 +463,6 @@ async fn translated_call(
         platform_paid: true,
         custom_endpoint: backend.endpoint.clone(),
         is_coding_agent: false,
-        is_discovered_agent: false,
     };
 
     let provider = provider_for(

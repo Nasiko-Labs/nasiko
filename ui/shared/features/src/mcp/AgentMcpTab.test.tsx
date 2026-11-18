@@ -41,24 +41,6 @@ describe("Agent detail's MCP tab (plans/feat-mcp.md §5.2)", () => {
     expect(screen.queryByRole('button', { name: copy.expand('SQL runner') })).toBeNull()
   })
 
-  it('an agent found on a user’s machine gets no Ask: its calls run outside any flow', async () => {
-    const id = seededAgent()
-    const res = await fetch(`/api/agents/${id}`, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ metadata: { source: 'nasiko-cli-discovery' } }),
-    })
-    expect(res.ok).toBe(true)
-    renderApp(`/agents/${id}?tab=mcp`)
-    expect(await screen.findByText(copy.agentMcpSubLocal, {}, T)).toBeInTheDocument()
-    await userEvent.click(await screen.findByRole('button', { name: copy.expand('GitHub') }, T))
-    const groups = await screen.findAllByRole('radiogroup', {}, T)
-    for (const g of groups) {
-      expect(within(g).getByRole('radio', { name: STANCE.allow.label })).toBeInTheDocument()
-      expect(within(g).queryByRole('radio', { name: STANCE.ask.label })).toBeNull()
-    }
-  })
-
   it('switches a server off for the agent at once', async () => {
     renderApp(`/agents/${seededAgent()}?tab=mcp`)
     const toggle = await screen.findByRole('switch', { name: copy.disable('Docs search') }, T)

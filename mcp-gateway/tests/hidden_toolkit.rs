@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 
+use nasiko_mcp_gateway::permissions::EffectiveAccess;
 use nasiko_mcp_gateway::protocol::handle_tools_call;
 use nasiko_mcp_gateway::repo::{self, NewConnector};
 use nasiko_mcp_gateway::session::ResolvedSession;
@@ -66,7 +67,7 @@ async fn call(db: &TestDb, params: Value) -> Value {
         &json!(1),
         &params,
         &composio_session(),
-        &db.perms(&[], vec![]),
+        &EffectiveAccess::unrestricted(&db.perms(&[], vec![])),
         None,
         None,
     )

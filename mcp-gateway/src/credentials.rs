@@ -570,6 +570,7 @@ mod tests {
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
+            entitlements: std::sync::Arc::new(crate::entitlements::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(crate::endpoint_refresh::NoopEndpointRefresher),
             llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
             search_index: Arc::new(crate::search::NoopSearchIndex),

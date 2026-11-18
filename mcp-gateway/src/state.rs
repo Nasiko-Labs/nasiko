@@ -17,6 +17,7 @@ use nasiko_orchestrator::providers::LLMProvider;
 use crate::authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 use crate::config::{McpConfig, ToolSearchMode};
 use crate::endpoint_refresh::{EndpointRefresher, NoopEndpointRefresher};
+use crate::entitlements::{OssToolEntitlements, ToolEntitlements};
 use crate::provider::{ComposioBackend, ComposioProvider, Providers};
 use crate::search::ToolSearchIndex;
 
@@ -39,6 +40,9 @@ pub struct McpState {
     /// Layer-1 connector reachability. Default = owner ∪ user/public grant; an
     /// edition can swap a richer impl at startup.
     pub authorizer: Arc<dyn ConnectorAuthorizer>,
+    /// Per-user tool entitlements. Default = unrestricted; an edition can swap
+    /// a restricting impl at startup, same pattern as `authorizer`.
+    pub entitlements: Arc<dyn ToolEntitlements>,
     /// Self-heal for `uploaded_build` connectors whose live container address
     /// drifted (restart/redeploy/reboot) — see `endpoint_refresh`'s module
     /// doc. Default is a no-op; `oss/server` swaps in a real,
@@ -120,6 +124,7 @@ impl McpState {
             config: mcp_config,
             providers,
             authorizer: Arc::new(OssConnectorAuthorizer),
+            entitlements: Arc::new(OssToolEntitlements),
             endpoint_refresher: Arc::new(NoopEndpointRefresher),
             llm,
             search_index,

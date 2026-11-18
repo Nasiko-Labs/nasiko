@@ -85,6 +85,29 @@ pub async fn delete(client: &nasiko_redis::SharedRedis, key: &str) {
     }
 }
 
+/// Delete many keys with multi-key `DEL`, in batches so one command never
+/// grows unbounded. Errors are logged and swallowed, like [`delete`].
+pub async fn delete_many(client: &nasiko_redis::SharedRedis, keys: &[String]) {
+    /// Keys per `DEL`: large enough to amortise the round trip, small enough to
+    /// keep each command (and the time Redis spends on it) short.
+    const BATCH: usize = 500;
+    if keys.is_empty() {
+        return;
+    }
+    let mut conn = match client.connection().await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, count = keys.len(), "redis unavailable (cache delete) - skipping");
+            return;
+        }
+    };
+    for batch in keys.chunks(BATCH) {
+        if let Err(e) = conn.del::<_, ()>(batch).await {
+            tracing::warn!(error = %e, count = batch.len(), "redis DEL failed");
+        }
+    }
+}
+
 /// Delete every key starting with `prefix`. Errors are logged and swallowed.
 pub async fn delete_prefix(client: &redis::Client, prefix: &str) {
     let mut conn = match client.get_multiplexed_async_connection().await {

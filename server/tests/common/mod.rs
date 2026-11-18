@@ -560,6 +560,7 @@ impl TestServer {
             None,
             None,
             None,
+            None,
         )
         .await
     }
@@ -572,6 +573,7 @@ impl TestServer {
             fake_runtime.clone(),
             fake_runtime,
             Some(oci_storage),
+            None,
             None,
             None,
         )
@@ -591,6 +593,7 @@ impl TestServer {
             None,
             None,
             Some(spend_gate),
+            None,
         )
         .await
     }
@@ -608,6 +611,27 @@ impl TestServer {
             None,
             Some(agent_wake),
             None,
+            None,
+        )
+        .await
+    }
+
+    /// Same as [`start`](Self::start), with `entitlements` installed on the
+    /// server's MCP state - how a test plays an edition that restricts users'
+    /// tools (the OSS default is unrestricted).
+    #[allow(dead_code)]
+    pub async fn start_with_entitlements(
+        entitlements: Arc<dyn nasiko_mcp_gateway::ToolEntitlements>,
+    ) -> Self {
+        let fake_runtime = Arc::new(FakeRuntime::default());
+        Self::start_with_runtime_and_handle(
+            |_| {},
+            fake_runtime.clone(),
+            fake_runtime,
+            None,
+            None,
+            None,
+            Some(entitlements),
         )
         .await
     }
@@ -629,6 +653,7 @@ impl TestServer {
             configure,
             runtime,
             Arc::new(FakeRuntime::default()),
+            None,
             None,
             None,
             None,
@@ -744,6 +769,7 @@ impl TestServer {
         oci_storage: Option<Arc<dyn nasiko_runtime::BlobStore>>,
         agent_wake: Option<Arc<dyn nasiko_server::agent_wake::AgentWake>>,
         spend_gate: Option<Arc<dyn nasiko_server::spend_gate::SpendGate>>,
+        entitlements: Option<Arc<dyn nasiko_mcp_gateway::ToolEntitlements>>,
     ) -> Self {
         let pg_admin = pg_admin_url();
         let db_name = format!("nasiko_test_{}", Uuid::new_v4().simple());
@@ -816,6 +842,9 @@ impl TestServer {
         state.agent_wake.install(
             agent_wake.unwrap_or_else(|| Arc::new(nasiko_server::agent_wake::NoAgentWake)),
         );
+        if let Some(entitlements) = entitlements {
+            state.mcp.entitlements = entitlements;
+        }
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();

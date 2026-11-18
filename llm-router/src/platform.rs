@@ -547,7 +547,6 @@ fn platform_chat_config(
         platform_paid: true,
         custom_endpoint: None,
         is_coding_agent: false,
-        is_discovered_agent: false,
         compress_enabled: false,
         agent_id: String::new(),
     })

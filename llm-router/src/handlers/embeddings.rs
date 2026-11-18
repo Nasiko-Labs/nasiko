@@ -234,7 +234,6 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
-                is_discovered_agent: false,
                 compress_enabled: false,
             }))
         }
@@ -302,7 +301,6 @@ mod tests {
             marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
-            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 

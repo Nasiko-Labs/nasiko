@@ -1272,7 +1272,8 @@ async fn load_user_entitlement_uses_the_installed_impl() {
     // The shared test state points Redis at a dead port; the cache behaviour
     // below needs a live one.
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".into());
-    db.state.redis = redis::Client::open(redis_url).expect("redis url");
+    db.state.redis =
+        nasiko_redis::SharedRedis::new(redis::Client::open(redis_url).expect("redis url"));
     let user = Uuid::new_v4();
     assert_eq!(
         load_user_entitlement(&db.state, user).await.unwrap(),

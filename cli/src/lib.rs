@@ -838,7 +838,8 @@ already finished are left as they are and listed. Only runs of your own workflow
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
-    /// Discover coding agents installed and A2A agents running on this machine
+    /// Discover coding agents installed on this machine (now: `status`)
+    #[command(hide = true)]
     Discover,
     /// Install session reporting for a local coding agent (now: `connect <agent> --reporting`)
     #[command(hide = true)]
@@ -1537,7 +1538,8 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Discover => {
-                commands::integration::discover(commands::local_agents::cli_name())
+                commands::local_agents::note_renamed("agents discover", "status");
+                commands::local_agents::print_overview()
             }
             AgentsCommands::Install { agent, no_content } => {
                 install_reporting_renamed("agents", &agent, no_content)

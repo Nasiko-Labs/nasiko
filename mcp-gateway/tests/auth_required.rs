@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use nasiko_mcp_gateway::OssConnectorAuthorizer;
-use nasiko_mcp_gateway::permissions::PermissionContext;
+use nasiko_mcp_gateway::permissions::{EffectiveAccess, PermissionContext};
 use nasiko_mcp_gateway::protocol::handle_tools_call;
 use nasiko_mcp_gateway::provider::{ComposioProvider, ComposioSlot};
 use nasiko_mcp_gateway::session::ResolvedSession;
@@ -79,7 +79,7 @@ async fn auth_required_persists_hitl_row_and_returns_auth_required_code() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -133,7 +133,7 @@ async fn auth_required_falls_back_to_raw_trace_id_when_no_session_trace_exists()
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -178,7 +178,7 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -189,7 +189,7 @@ async fn repeated_calls_for_the_same_connector_and_conversation_reuse_the_same_h
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -227,7 +227,7 @@ async fn missing_credential_reason_never_persists_a_hitl_row() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -361,7 +361,7 @@ async fn composio_tool_call_failure_with_inactive_connection_triggers_auth_requi
         &json!(1),
         &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent),
         Some(trace_id),
     )
@@ -461,7 +461,7 @@ async fn composio_tool_call_failure_with_active_connection_passes_through_unchan
         &json!(1),
         &json!({ "name": "GITHUB_LIST_REPOS", "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         None,
         None,
     )

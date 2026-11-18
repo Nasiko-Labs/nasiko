@@ -30,6 +30,7 @@ pub mod connectors;
 pub mod credentials;
 pub mod description_backfill;
 pub mod endpoint_refresh;
+pub mod entitlements;
 pub mod error;
 pub mod identity;
 pub mod injector;
@@ -54,6 +55,7 @@ pub use session::ResolvedSession;
 
 pub use authorizer::{ConnectorAuthorizer, OssConnectorAuthorizer};
 pub use config::McpConfig;
+pub use entitlements::{OssToolEntitlements, ToolEntitlements, ToolSet, UserEntitlement};
 pub use error::{McpError, Result};
 pub use injector::McpInjector;
 pub use provider::{Providers, ToolProvider};

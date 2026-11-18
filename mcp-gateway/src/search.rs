@@ -20,7 +20,7 @@ use uuid::Uuid;
 use nasiko_orchestrator::llm_backend::{LlmCallContext, SharedLlmBackend};
 
 use crate::error::Result;
-use crate::permissions::PermissionContext;
+use crate::permissions::EffectiveAccess;
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -37,19 +37,21 @@ pub struct ToolMatch {
 #[async_trait]
 pub trait ToolSearchIndex: Send + Sync {
     /// Search all tools matching `query`, filtered by accessible connectors and
-    /// agent permissions. Returns up to `limit` results ordered by relevance.
+    /// agent permissions and the user's entitlement. Returns up to `limit` results ordered by relevance.
     async fn search_tools(
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        perms: &PermissionContext,
+        access: &EffectiveAccess<'_>,
         limit: usize,
     ) -> Vec<ToolMatch>;
 
-    /// Every indexed tool of `connector_ids` the agent's permissions do not deny, unranked
+    /// Every indexed tool of `connector_ids` the agent's permissions and the user's entitlement
+    /// do not deny, unranked
     /// (`score` 0): what a listing without search is built from, measured against the search
     /// result by the savings ledger. Required, so an index cannot silently report no baseline.
-    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch>;
+    fn granted_tools(&self, connector_ids: &[Uuid], access: &EffectiveAccess<'_>)
+    -> Vec<ToolMatch>;
 
     /// Rebuild the in-memory index from current DB state.
     async fn rebuild(&self, db: &PgPool) -> Result<()>;
@@ -89,13 +91,13 @@ async fn load_all_tools(db: &PgPool) -> Result<Vec<ToolEntry>> {
 fn granted(
     tools: &[ToolEntry],
     connector_ids: &[Uuid],
-    perms: &PermissionContext,
+    access: &EffectiveAccess<'_>,
 ) -> Vec<ToolMatch> {
     tools
         .iter()
         .filter(|t| connector_ids.contains(&t.connector_id))
         .filter(|t| {
-            perms.decide(t.connector_id, &t.tool_name) != crate::permissions::ToolAccess::Denied
+            access.decide(t.connector_id, &t.tool_name) != crate::permissions::ToolAccess::Denied
         })
         .map(|t| ToolMatch {
             connector_id: t.connector_id,
@@ -214,7 +216,7 @@ impl ToolSearchIndex for Bm25SearchIndex {
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        perms: &PermissionContext,
+        access: &EffectiveAccess<'_>,
         limit: usize,
     ) -> Vec<ToolMatch> {
         let qtokens = tokenize(query);
@@ -233,7 +235,7 @@ impl ToolSearchIndex for Bm25SearchIndex {
             .enumerate()
             .filter(|(_, (tool, _))| accessible.contains(&tool.connector_id))
             .filter(|(_, (tool, _))| {
-                perms.decide(tool.connector_id, &tool.tool_name)
+                access.decide(tool.connector_id, &tool.tool_name)
                     != crate::permissions::ToolAccess::Denied
             })
             .map(|(i, (_, doc_tokens))| {
@@ -261,8 +263,12 @@ impl ToolSearchIndex for Bm25SearchIndex {
             .collect()
     }
 
-    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
-        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
+    fn granted_tools(
+        &self,
+        connector_ids: &[Uuid],
+        access: &EffectiveAccess<'_>,
+    ) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, access)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -445,7 +451,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
         &self,
         query: &str,
         accessible_connector_ids: &[Uuid],
-        perms: &PermissionContext,
+        access: &EffectiveAccess<'_>,
         limit: usize,
     ) -> Vec<ToolMatch> {
         // No vectors for the current embedding identity: semantic ranking is meaningless.
@@ -453,7 +459,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
         if !has_vectors {
             return self
                 .bm25
-                .search_tools(query, accessible_connector_ids, perms, limit)
+                .search_tools(query, accessible_connector_ids, access, limit)
                 .await;
         }
         let query_emb = match self.embed_query(query).await {
@@ -462,7 +468,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
                 tracing::warn!(error = %e, "semantic search: query embedding failed, falling back to BM25");
                 return self
                     .bm25
-                    .search_tools(query, accessible_connector_ids, perms, limit)
+                    .search_tools(query, accessible_connector_ids, access, limit)
                     .await;
             }
         };
@@ -477,7 +483,7 @@ impl ToolSearchIndex for SemanticSearchIndex {
             .enumerate()
             .filter(|(_, (tool, _))| accessible.contains(&tool.connector_id))
             .filter(|(_, (tool, _))| {
-                perms.decide(tool.connector_id, &tool.tool_name)
+                access.decide(tool.connector_id, &tool.tool_name)
                     != crate::permissions::ToolAccess::Denied
             })
             .map(|(i, (_, emb))| (i, cosine_similarity(&query_emb, emb) as f64))
@@ -501,8 +507,12 @@ impl ToolSearchIndex for SemanticSearchIndex {
             .collect()
     }
 
-    fn granted_tools(&self, connector_ids: &[Uuid], perms: &PermissionContext) -> Vec<ToolMatch> {
-        granted(&self.inner.read().unwrap().tools, connector_ids, perms)
+    fn granted_tools(
+        &self,
+        connector_ids: &[Uuid],
+        access: &EffectiveAccess<'_>,
+    ) -> Vec<ToolMatch> {
+        granted(&self.inner.read().unwrap().tools, connector_ids, access)
     }
 
     async fn rebuild(&self, db: &PgPool) -> Result<()> {
@@ -611,14 +621,18 @@ impl ToolSearchIndex for NoopSearchIndex {
         &self,
         _query: &str,
         _accessible_connector_ids: &[Uuid],
-        _perms: &PermissionContext,
+        _access: &EffectiveAccess<'_>,
         _limit: usize,
     ) -> Vec<ToolMatch> {
         Vec::new()
     }
 
     /// Search is off, so no listing is measured against a baseline.
-    fn granted_tools(&self, _connector_ids: &[Uuid], _perms: &PermissionContext) -> Vec<ToolMatch> {
+    fn granted_tools(
+        &self,
+        _connector_ids: &[Uuid],
+        _access: &EffectiveAccess<'_>,
+    ) -> Vec<ToolMatch> {
         Vec::new()
     }
 
@@ -680,6 +694,7 @@ async fn upsert_embeddings(db: &PgPool, rows: &[(Uuid, String, Vec<u8>, String)]
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::PermissionContext;
     use std::collections::HashSet;
 
     #[test]
@@ -826,7 +841,7 @@ mod tests {
             .search_tools(
                 "send an email",
                 &all_connector_ids(),
-                &permissive_perms(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
                 5,
             )
             .await;
@@ -871,7 +886,7 @@ mod tests {
             .search_tools(
                 "send an email",
                 &[connector_id("slack")],
-                &permissive_perms(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
                 5,
             )
             .await;
@@ -923,7 +938,12 @@ mod tests {
         };
 
         let results = index
-            .search_tools("send an email", &all_connector_ids(), &perms, 5)
+            .search_tools(
+                "send an email",
+                &all_connector_ids(),
+                &EffectiveAccess::unrestricted(&perms),
+                5,
+            )
             .await;
 
         for r in &results {
@@ -933,6 +953,52 @@ mod tests {
                 "gmail tools should be filtered by agent perms"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn bm25_hides_tools_outside_the_user_entitlement() {
+        use crate::entitlements::{ToolSet, UserEntitlement};
+        let index = Bm25SearchIndex::new();
+        {
+            let tools = sample_tools();
+            let tokens: Vec<Vec<String>> = tools
+                .iter()
+                .map(|t| tokenize(&tool_search_text(&t.tool_name, t.description.as_deref())))
+                .collect();
+            let mut df: HashMap<String, usize> = HashMap::new();
+            for doc_tokens in &tokens {
+                let unique: HashSet<&str> = doc_tokens.iter().map(|s| s.as_str()).collect();
+                for t in unique {
+                    *df.entry(t.to_string()).or_default() += 1;
+                }
+            }
+            let total_len: usize = tokens.iter().map(|t| t.len()).sum();
+            let avgdl = total_len as f64 / tools.len() as f64;
+            let mut inner = index.inner.write().unwrap();
+            inner.tools = tools;
+            inner.tokens = tokens;
+            inner.df = df;
+            inner.avgdl = avgdl;
+        }
+        let perms = permissive_perms();
+        // Entitled to nothing on gmail (no entry) and to Slack tools only.
+        let ent =
+            UserEntitlement::Restricted(HashMap::from([(connector_id("slack"), ToolSet::All)]));
+        let results = index
+            .search_tools(
+                "send an email message",
+                &all_connector_ids(),
+                &EffectiveAccess::new(&perms, &ent),
+                10,
+            )
+            .await;
+        assert!(!results.is_empty());
+        assert!(
+            results
+                .iter()
+                .all(|r| r.connector_id == connector_id("slack")),
+            "only entitled connectors may surface"
+        );
     }
 
     #[tokio::test]
@@ -961,7 +1027,12 @@ mod tests {
         }
 
         let results = index
-            .search_tools("email", &all_connector_ids(), &permissive_perms(), 2)
+            .search_tools(
+                "email",
+                &all_connector_ids(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
+                2,
+            )
             .await;
 
         assert!(results.len() <= 2, "should respect limit of 2");
@@ -971,7 +1042,12 @@ mod tests {
     async fn bm25_empty_query_returns_empty() {
         let index = Bm25SearchIndex::new();
         let results = index
-            .search_tools("", &all_connector_ids(), &permissive_perms(), 5)
+            .search_tools(
+                "",
+                &all_connector_ids(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
+                5,
+            )
             .await;
         assert!(results.is_empty(), "empty query should return empty");
     }
@@ -989,7 +1065,10 @@ mod tests {
             ..permissive_perms()
         };
 
-        let granted = index.granted_tools(&[connector_id("gmail"), connector_id("slack")], &perms);
+        let granted = index.granted_tools(
+            &[connector_id("gmail"), connector_id("slack")],
+            &EffectiveAccess::unrestricted(&perms),
+        );
 
         let names: HashSet<&str> = granted.iter().map(|m| m.tool_name.as_str()).collect();
         // gmail is asked for but not enabled; github is enabled but not asked for.
@@ -1000,7 +1079,10 @@ mod tests {
         assert!(granted.iter().all(|m| m.score == 0.0));
         assert!(
             NoopSearchIndex
-                .granted_tools(&all_connector_ids(), &permissive_perms())
+                .granted_tools(
+                    &all_connector_ids(),
+                    &EffectiveAccess::unrestricted(&permissive_perms()),
+                )
                 .is_empty()
         );
     }
@@ -1009,7 +1091,12 @@ mod tests {
     async fn noop_always_returns_empty() {
         let index = NoopSearchIndex;
         let results = index
-            .search_tools("anything", &all_connector_ids(), &permissive_perms(), 10)
+            .search_tools(
+                "anything",
+                &all_connector_ids(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
+                10,
+            )
             .await;
         assert!(results.is_empty());
     }
@@ -1101,7 +1188,7 @@ mod tests {
             .search_tools(
                 "send an email",
                 &all_connector_ids(),
-                &permissive_perms(),
+                &EffectiveAccess::unrestricted(&permissive_perms()),
                 5,
             )
             .await;

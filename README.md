@@ -251,11 +251,6 @@ nasiko status
 Under **Coding agents** it lists each harness with whether it is installed and whether LLM
 routing, MCP and reporting are connected. `nasiko status claude` shows one in detail.
 
-`nasiko agents discover` also finds A2A agents running on the machine, from any framework, by
-looking for an agent card on listening ports and Docker published ports. It probes those ports,
-which is why it is a separate command. `nasiko connect <agent>` then routes a discovered agent's
-LLM calls (and, if you ask, MCP tools) through Nasiko, and `nasiko disconnect <agent>` undoes it.
-
 ### Report sessions
 
 With the server running and the CLI signed in ([Quick start](#quick-start)), one command connects

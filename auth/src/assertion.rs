@@ -6,8 +6,6 @@
 //! through the ordinary [`crate::AuthService::issue_delegated_token`] policy.
 //! Verification is pure: no I/O, no clock injection beyond `exp`, so it is
 //! unit-tested exhaustively and the server only adds caching and replay checks.
-//! The same signing and verification also carry a browser sign-in; the two uses
-//! are told apart by `token_type` (see [`LOGIN_ASSERTION_TOKEN_TYPE`]).
 
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -15,24 +13,14 @@ use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, deco
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-/// `token_type` of an assertion that is exchanged for a delegated token.
+/// The only accepted `token_type` for an assertion.
 pub const ASSERTION_TOKEN_TYPE: &str = "bff-assertion";
-
-/// `token_type` of an assertion that signs a person in to a workspace's browser
-/// session. A separate type keeps a token minted for one purpose from being
-/// replayed for the other: each verifier names the type it expects.
-pub const LOGIN_ASSERTION_TOKEN_TYPE: &str = "bff-login";
 
 /// Assertion claims the BFF signs. `aud` is the target workspace's
 /// [`delegation audience`](https://datatracker.ietf.org/doc/html/rfc7519#section-4.1.3)
 /// (its public origin), so an assertion for one workspace is worthless at
 /// another; `ws` is informational (the dashboard's workspace id) and never
 /// trusted for authorization on the CP side.
-///
-/// `nonce` binds a browser sign-in to the browser that started it: the
-/// workspace hands out a random value, the BFF echoes it here, and the
-/// workspace accepts the assertion only from a browser holding the same value.
-/// Delegation assertions carry none.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AssertionClaims {
     pub iss: String,
@@ -45,8 +33,6 @@ pub struct AssertionClaims {
     pub iat: u64,
     pub exp: u64,
     pub token_type: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nonce: Option<String>,
 }
 
 /// Longest an assertion may live. The BFF signs for less; the CP keeps the
@@ -114,21 +100,14 @@ impl AssertionSigner {
             iat: now,
             exp: now + 5,
             token_type: ASSERTION_TOKEN_TYPE.into(),
-            nonce: None,
         };
         let token = self.sign(&probe)?;
         let jwks = Jwks {
             keys: vec![self.jwk.clone()],
         };
-        verify_assertion(
-            &token,
-            &jwks,
-            "self-check",
-            "self-check",
-            ASSERTION_TOKEN_TYPE,
-        )
-        .map(|_| ())
-        .map_err(|e| format!("delegation key pair does not match: {e}"))
+        verify_assertion(&token, &jwks, "self-check", "self-check")
+            .map(|_| ())
+            .map_err(|e| format!("delegation key pair does not match: {e}"))
     }
 }
 
@@ -203,7 +182,6 @@ pub struct VerifiedAssertion {
     pub portal_subject: String,
     pub expires_at: u64,
     pub issuer: String,
-    pub nonce: Option<String>,
 }
 
 /// Returned when the header names a `kid` the JWKS does not contain; the
@@ -211,22 +189,12 @@ pub struct VerifiedAssertion {
 pub const UNKNOWN_KID: &str = "unknown kid";
 
 /// Pure verification: signature by a key in `jwks` (selected by the header's
-/// `kid`), EdDSA only, `iss` and `aud` exact, `exp` literal, `token_type`
-/// equal to `expected_type`, a lifetime of at most [`ASSERTION_MAX_TTL_SECS`],
-/// an `exp` no more than that far from now, verified email.
-///
-/// The two bounds together are what keep single use true: the consumed-`jti`
-/// marker lives [`ASSERTION_MAX_TTL_SECS`] from first use, so a token must not
-/// stay acceptable longer than that after it is first seen. A short lifetime
-/// alone is not enough (a signer whose clock runs ahead, or an `iat` set in the
-/// future, can still push `exp` past the marker), hence the check on `exp`
-/// against this server's clock too.
+/// `kid`), EdDSA only, `iss` and `aud` exact, `exp` literal, verified email.
 pub fn verify_assertion(
     token: &str,
     jwks: &Jwks,
     expected_iss: &str,
     expected_aud: &str,
-    expected_type: &str,
 ) -> Result<VerifiedAssertion, String> {
     let header = jsonwebtoken::decode_header(token).map_err(|e| format!("header: {e}"))?;
     if header.alg != Algorithm::EdDSA {
@@ -247,14 +215,8 @@ pub fn verify_assertion(
     let data =
         decode::<AssertionClaims>(token, &key, &validation).map_err(|e| format!("verify: {e}"))?;
     let c = data.claims;
-    if c.token_type != expected_type {
-        return Err("assertion has the wrong type".into());
-    }
-    if c.exp <= c.iat || c.exp - c.iat > ASSERTION_MAX_TTL_SECS {
-        return Err("assertion lifetime is out of bounds".into());
-    }
-    if c.exp > now_secs().saturating_add(ASSERTION_MAX_TTL_SECS) {
-        return Err("assertion expires too far ahead".into());
+    if c.token_type != ASSERTION_TOKEN_TYPE {
+        return Err("not a BFF assertion".into());
     }
     if !c.email_verified {
         return Err("asserted email is not verified".into());
@@ -269,7 +231,6 @@ pub fn verify_assertion(
         portal_subject: c.sub,
         expires_at: c.exp,
         issuer: c.iss,
-        nonce: c.nonce,
     })
 }
 
@@ -346,21 +307,16 @@ mod tests {
         })
     }
 
-    /// Verifies `token` for the fixture issuer and audience, expecting `expected_type`.
-    fn verify_as(token: &str, kid: &str, expected_type: &str) -> Result<VerifiedAssertion, String> {
-        verify_assertion(
-            token,
-            &jwks(kid),
-            "https://app.nasiko.com",
-            "https://acme.app.nasiko.com",
-            expected_type,
-        )
-    }
-
     #[test]
     fn a_valid_assertion_verifies_and_lowercases_the_email() {
         let t = sign("k1", claims(60));
-        let v = verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).unwrap();
+        let v = verify_assertion(
+            &t,
+            &jwks("k1"),
+            "https://app.nasiko.com",
+            "https://acme.app.nasiko.com",
+        )
+        .unwrap();
         assert_eq!(v.email, "satya@acme.test");
         assert_eq!(v.jti, "j-1");
         assert_eq!(v.workspace, "ws-1");
@@ -374,8 +330,7 @@ mod tests {
                 &t,
                 &jwks("k1"),
                 "https://app.nasiko.com",
-                "https://other.app.nasiko.com",
-                ASSERTION_TOKEN_TYPE
+                "https://other.app.nasiko.com"
             )
             .is_err()
         );
@@ -384,27 +339,56 @@ mod tests {
                 &t,
                 &jwks("k1"),
                 "https://evil.dev",
-                "https://acme.app.nasiko.com",
-                ASSERTION_TOKEN_TYPE
+                "https://acme.app.nasiko.com"
             )
             .is_err()
         );
         assert_eq!(
-            verify_as(&t, "k2", ASSERTION_TOKEN_TYPE).unwrap_err(),
+            verify_assertion(
+                &t,
+                &jwks("k2"),
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
+            )
+            .unwrap_err(),
             UNKNOWN_KID
         );
         let expired = sign("k1", claims(-5));
-        assert!(verify_as(&expired, "k1", ASSERTION_TOKEN_TYPE).is_err());
+        assert!(
+            verify_assertion(
+                &expired,
+                &jwks("k1"),
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn unverified_email_and_wrong_type_are_refused() {
         let mut c = claims(60);
         c["email_verified"] = serde_json::json!(false);
-        assert!(verify_as(&sign("k1", c), "k1", ASSERTION_TOKEN_TYPE).is_err());
+        assert!(
+            verify_assertion(
+                &sign("k1", c),
+                &jwks("k1"),
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
+            )
+            .is_err()
+        );
         let mut c = claims(60);
         c["token_type"] = serde_json::json!("user");
-        assert!(verify_as(&sign("k1", c), "k1", ASSERTION_TOKEN_TYPE).is_err());
+        assert!(
+            verify_assertion(
+                &sign("k1", c),
+                &jwks("k1"),
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -415,86 +399,15 @@ mod tests {
             &EncodingKey::from_secret(b"s"),
         )
         .unwrap();
-        assert!(verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).is_err());
-    }
-
-    #[test]
-    fn a_login_assertion_is_refused_where_a_delegation_assertion_is_expected_and_the_reverse() {
-        let mut login = claims(60);
-        login["token_type"] = serde_json::json!(LOGIN_ASSERTION_TOKEN_TYPE);
-        let login = sign("k1", login);
-        let delegation = sign("k1", claims(60));
-
-        assert_eq!(
-            verify_as(&login, "k1", ASSERTION_TOKEN_TYPE).unwrap_err(),
-            "assertion has the wrong type"
+        assert!(
+            verify_assertion(
+                &t,
+                &jwks("k1"),
+                "https://app.nasiko.com",
+                "https://acme.app.nasiko.com"
+            )
+            .is_err()
         );
-        assert_eq!(
-            verify_as(&delegation, "k1", LOGIN_ASSERTION_TOKEN_TYPE).unwrap_err(),
-            "assertion has the wrong type"
-        );
-        // Positive controls: each type verifies where it is expected.
-        assert!(verify_as(&login, "k1", LOGIN_ASSERTION_TOKEN_TYPE).is_ok());
-        assert!(verify_as(&delegation, "k1", ASSERTION_TOKEN_TYPE).is_ok());
-    }
-
-    #[test]
-    fn a_lifetime_over_the_replay_marker_or_not_positive_is_refused() {
-        const OUT_OF_BOUNDS: &str = "assertion lifetime is out of bounds";
-        let now = chrono::Utc::now().timestamp();
-        // 61 s outlives the 60 s consumed-jti marker.
-        let t = sign("k1", claims(ASSERTION_MAX_TTL_SECS as i64 + 1));
-        assert_eq!(
-            verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).unwrap_err(),
-            OUT_OF_BOUNDS
-        );
-        // exp == iat and exp < iat, both still in the future so only the lifetime rule can refuse.
-        for (iat, exp) in [(now + 30, now + 30), (now + 30, now + 20)] {
-            let mut c = claims(60);
-            c["iat"] = serde_json::json!(iat);
-            c["exp"] = serde_json::json!(exp);
-            assert_eq!(
-                verify_as(&sign("k1", c), "k1", ASSERTION_TOKEN_TYPE).unwrap_err(),
-                OUT_OF_BOUNDS
-            );
-        }
-        // The boundary itself is allowed: exactly 60 s.
-        let t = sign("k1", claims(ASSERTION_MAX_TTL_SECS as i64));
-        assert!(verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).is_ok());
-    }
-
-    /// A lifetime of exactly 60 s passes the lifetime rule, but an `iat` in the future puts `exp`
-    /// past the replay marker (60 s from first use): refused for that reason alone.
-    #[test]
-    fn an_expiry_more_than_the_marker_lifetime_from_now_is_refused() {
-        let now = chrono::Utc::now().timestamp();
-        let mut c = claims(60);
-        c["iat"] = serde_json::json!(now + 30);
-        c["exp"] = serde_json::json!(now + 30 + ASSERTION_MAX_TTL_SECS as i64);
-        assert_eq!(
-            verify_as(&sign("k1", c), "k1", ASSERTION_TOKEN_TYPE).unwrap_err(),
-            "assertion expires too far ahead"
-        );
-        // The horizon itself is allowed: exp = now + 60, here with an iat 10 s ahead.
-        let mut c = claims(60);
-        c["iat"] = serde_json::json!(now + 10);
-        let t = sign("k1", c);
-        assert!(verify_as(&t, "k1", ASSERTION_TOKEN_TYPE).is_ok());
-    }
-
-    #[test]
-    fn the_nonce_round_trips() {
-        let mut c = claims(60);
-        c["token_type"] = serde_json::json!(LOGIN_ASSERTION_TOKEN_TYPE);
-        c["nonce"] = serde_json::json!("n-123");
-        let v = verify_as(&sign("k1", c), "k1", LOGIN_ASSERTION_TOKEN_TYPE).unwrap();
-        assert_eq!(v.nonce.as_deref(), Some("n-123"));
-    }
-
-    #[test]
-    fn a_token_without_a_nonce_still_verifies_as_a_delegation_assertion() {
-        let v = verify_as(&sign("k1", claims(60)), "k1", ASSERTION_TOKEN_TYPE).unwrap();
-        assert_eq!(v.nonce, None);
     }
 
     #[test]
@@ -515,7 +428,6 @@ mod tests {
             iat: now,
             exp: now + 30,
             token_type: ASSERTION_TOKEN_TYPE.into(),
-            nonce: None,
         };
         let token = signer.sign(&claims).unwrap();
         let ring = AssertionKeyRing {
@@ -527,7 +439,6 @@ mod tests {
             &ring.jwks(),
             "https://app.nasiko.com",
             "https://acme.app.nasiko.com",
-            ASSERTION_TOKEN_TYPE,
         )
         .unwrap();
         assert_eq!(v.jti, "j-2");

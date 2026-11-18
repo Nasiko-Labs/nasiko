@@ -67,23 +67,6 @@ pub(crate) async fn fetch_and_apply_agent_card(
         None => return false,
     };
 
-    if !apply_agent_card(db, agent_id, &card).await {
-        return false;
-    }
-    embed_updated_agent(db, backend, agent_id).await;
-
-    true
-}
-
-/// Persist the card fields clients depend on (display_name, description, skills, tags,
-/// capabilities, `transport_path`) and the agent's skill rows. Returns false when the
-/// write failed. Shared by the deploy-time fetch above and the registration of agents the
-/// CLI discovered, whose cards arrive in the request instead of being fetched.
-pub(crate) async fn apply_agent_card(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-    card: &serde_json::Value,
-) -> bool {
     if let Err(e) = sqlx::query(
         r#"UPDATE agents SET
              display_name = COALESCE($2, display_name),
@@ -123,7 +106,7 @@ pub(crate) async fn apply_agent_card(
         if tags.is_empty() { None } else { Some(tags) }
     })
     .bind(card.get("capabilities"))
-    .bind(nasiko_types::a2a::extract_transport_path(card))
+    .bind(nasiko_types::a2a::extract_transport_path(&card))
     .execute(db)
     .await
     {
@@ -134,6 +117,8 @@ pub(crate) async fn apply_agent_card(
     if let Some(skills_json) = card.get("skills") {
         crate::catalog::skills::sync_agent_skills_json(db, agent_id, skills_json).await;
     }
+
+    embed_updated_agent(db, backend, agent_id).await;
 
     true
 }

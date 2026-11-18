@@ -1253,7 +1253,6 @@ mod tests {
                 }),
                 agent_pinned_model: None,
                 is_coding_agent: true,
-                is_discovered_agent: false,
             }))
         }
 
@@ -1320,7 +1319,6 @@ mod tests {
             marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
-            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 
@@ -1775,7 +1773,6 @@ mod tests {
             platform_paid: false,
             custom_endpoint: None,
             is_coding_agent: false,
-            is_discovered_agent: false,
             compress_enabled: false,
         };
         let routed = RoutedRequest {
@@ -2282,7 +2279,6 @@ mod tests {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
-                is_discovered_agent: false,
                 compress_enabled: false,
             },
             flow_id: None,
@@ -2333,7 +2329,6 @@ mod tests {
                 platform_paid: true,
                 custom_endpoint: None,
                 is_coding_agent: false,
-                is_discovered_agent: false,
                 compress_enabled: false,
             },
             flow_id: None,
