@@ -3135,3 +3135,127 @@ async fn context_savings_show_a_member_only_their_own_requests_on_a_shared_agent
 
     server.cleanup().await;
 }
+
+/// The agent stats card counts only the caller's own calls on an agent shared with them, and leaves
+/// out the cache figures it cannot narrow (absent, not a false $0); a superuser sees every caller.
+#[tokio::test]
+#[serial]
+async fn agent_stats_count_only_the_callers_own_calls_on_a_shared_agent() {
+    let mut tempo = mockito::Server::new_async().await;
+    tempo
+        .mock("GET", mockito::Matcher::Any)
+        .with_status(200)
+        .with_body(r#"{"traces":[]}"#)
+        .create_async()
+        .await;
+    let tempo_url = tempo.url();
+    let server = common::TestServer::start_with(move |config| {
+        config.loki_url = tempo_url.clone();
+        config.tempo_url = tempo_url;
+        config.observability_enabled = true;
+    })
+    .await;
+    let _admin = init_admin(&server).await;
+    let caller = seed_user(&server, "stats-caller").await;
+    let owner = seed_user(&server, "stats-owner").await;
+    let admin = seed_user(&server, "stats-admin").await;
+    let shared = seed_agent(&server, owner, "stats-shared-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(shared)
+    .bind(caller.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    spend_row(&server, "stats-shared-agent", caller, 1.0).await;
+    spend_row(&server, "stats-shared-agent", owner, 2.0).await;
+
+    let stats = |token: String| {
+        let server = &server;
+        async move {
+            let response = server
+                .client
+                .get(server.url(&format!("/api/observability/agent/{shared}/stats")))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            body["data"]["project"].clone()
+        }
+    };
+
+    let mine = stats(common::sign_token(
+        &caller.to_string(),
+        "stats-caller",
+        false,
+        "member",
+    ))
+    .await;
+    assert_eq!(
+        mine["trace_count"], 1,
+        "another user's call was counted: {mine}"
+    );
+    assert_eq!(mine["cost_summary"]["total"]["cost"], 1.0);
+    assert!(
+        mine["cost_summary"].get("cache_read").is_none(),
+        "an unnarrowable cache figure must be absent, not $0: {mine}"
+    );
+
+    let all = stats(common::sign_token(
+        &admin.to_string(),
+        "stats-admin",
+        true,
+        "admin",
+    ))
+    .await;
+    assert_eq!(all["trace_count"], 2);
+    assert_eq!(all["cost_summary"]["total"]["cost"], 3.0);
+    assert!(all["cost_summary"].get("cache_read").is_some());
+
+    server.cleanup().await;
+}
+
+/// `my_agent` matches spend by agent name. For a user manager (who sees every caller), another
+/// owner's agent of the same name must not be added up as theirs.
+#[tokio::test]
+#[serial]
+async fn my_agents_for_a_user_manager_does_not_count_another_owners_same_named_agent() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let manager = seed_user(&server, "twin-manager").await;
+    let other = seed_user(&server, "twin-other").await;
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(manager)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    seed_agent(&server, manager, "twin").await;
+    seed_agent(&server, other, "twin").await;
+    spend_row(&server, "twin", manager, 5.0).await;
+    spend_row(&server, "twin", other, 7.0).await;
+
+    let response = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard?range=30d&view=agent&my_agent=true"))
+        .bearer_auth(common::sign_token(
+            &manager.to_string(),
+            "twin-manager",
+            false,
+            "member",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let total = body["data"]["summary"]["total_cost"].as_f64().unwrap();
+    assert!(
+        (total - 5.0).abs() < 1e-6,
+        "my agents counted another owner's same-named agent, got {total}"
+    );
+
+    server.cleanup().await;
+}

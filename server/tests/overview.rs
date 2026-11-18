@@ -297,6 +297,89 @@ async fn a_member_counts_only_their_own_calls_on_a_public_agent() {
     server.cleanup().await;
 }
 
+/// An owner sees their agent failing for other callers (its health), but not those callers' runs or
+/// spend (their usage).
+#[tokio::test]
+#[serial]
+async fn an_owner_sees_their_agent_failing_for_others_without_seeing_their_usage() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "ov-health-owner").await;
+    let stranger = seed_user(&server, "ov-health-stranger").await;
+    let public = seed_agent(&server, owner, "ov-health-agent").await;
+    sqlx::query("UPDATE agents SET is_public = TRUE WHERE id = $1")
+        .bind(public)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    seed_runs(&server, public, stranger, 40, 20).await;
+
+    let (status, body) = estate(&server, &token(owner, "ov-health-owner", false), "7d").await;
+    assert_eq!(status, 200, "{body}");
+    let e = &body["data"];
+    let row = e["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == public.to_string())
+        .expect("the owner's agent is on their map");
+    assert_eq!(
+        row["runs"], 0,
+        "a stranger's runs are not the owner's usage"
+    );
+    assert_eq!(row["spend_usd"], 0.0, "nor their spend");
+    assert_eq!(
+        row["success_pct"], 50.0,
+        "but the agent's health counts them"
+    );
+    assert!(
+        e["problems"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == format!("agent-failing:{public}")),
+        "the owner is told their agent is failing: {e}"
+    );
+
+    server.cleanup().await;
+}
+
+/// A user manager who is not a superuser (`role = 'admin'`) sees every caller's usage, as on the
+/// FinOps pages, so the two never disagree for the same person.
+#[tokio::test]
+#[serial]
+async fn a_user_manager_counts_every_callers_usage_like_finops() {
+    let server = common::TestServer::start().await;
+    let owner = seed_user(&server, "ov-um-owner").await;
+    let manager = seed_user(&server, "ov-um-manager").await;
+    let stranger = seed_user(&server, "ov-um-stranger").await;
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(manager)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    let public = seed_agent(&server, owner, "ov-um-agent").await;
+    sqlx::query("UPDATE agents SET is_public = TRUE WHERE id = $1")
+        .bind(public)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    seed_runs(&server, public, manager, 3, 0).await;
+    seed_runs(&server, public, stranger, 40, 0).await;
+
+    let (status, body) = estate(&server, &token(manager, "ov-um-manager", false), "7d").await;
+    assert_eq!(status, 200, "{body}");
+    let row = body["data"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == public.to_string())
+        .expect("a public agent is on the manager's map")
+        .clone();
+    assert_eq!(row["runs"], 43, "a user manager sees every caller");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn a_problem_takes_an_owner_a_snooze_and_handled() {

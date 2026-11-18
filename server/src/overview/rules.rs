@@ -743,9 +743,14 @@ fn agent_failing(f: &Facts, a: &AgentRow) -> Option<Problem> {
 
 fn agent_slow(f: &Facts, a: &AgentRow) -> Option<Problem> {
     let week = f.week.get(&a.id)?;
-    let prev = f.prev_week.get(&a.id).filter(|p| p.runs >= MIN_BASE)?;
+    // The p95 is over `health_runs` (every caller's, on the caller's own agent), so that is the
+    // sample size, not the caller's own runs.
+    let prev = f
+        .prev_week
+        .get(&a.id)
+        .filter(|p| p.health_runs >= MIN_BASE)?;
     let (now_ms, before_ms) = (week.p95_ms?, prev.p95_ms?);
-    if before_ms <= 0.0 || week.runs < MIN_BASE {
+    if before_ms <= 0.0 || week.health_runs < MIN_BASE {
         return None;
     }
     let rise = pct_change(now_ms, before_ms);
@@ -784,15 +789,15 @@ fn agent_slow(f: &Facts, a: &AgentRow) -> Option<Problem> {
             evidence: vec![format!(
                 "p95 {}s over {} runs in the last 7 days, {}s over {} the week before",
                 secs(now_ms),
-                week.runs,
+                week.health_runs,
                 secs(before_ms),
-                prev.runs
+                prev.health_runs
             )],
             fixed_when: format!("p95 back under {}s for a day", secs(bar)),
             action: action("Open the agent", Target::of("agent", a.id)),
             entities: agent_entities(f, a.id),
             flow_id: "agents-models",
-            count: week.runs,
+            count: week.health_runs,
             spend: week.spend,
         }
         .into_problem(f.today),
@@ -969,7 +974,7 @@ fn cost_per_run(f: &Facts, a: &AgentRow) -> Option<Problem> {
             action: action("Open the agent", Target::of("agent", a.id)),
             entities: agent_entities(f, a.id),
             flow_id: "agents-models",
-            count: week.runs,
+            count: week.health_runs,
             spend: week.spend,
         }
         .into_problem(f.today),
@@ -1808,6 +1813,7 @@ mod tests {
             agent_id: Uuid::from_u128(id),
             stats: UsageStats {
                 runs,
+                health_runs: runs,
                 spend,
                 priced: runs,
                 checked: runs,

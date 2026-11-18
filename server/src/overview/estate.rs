@@ -303,8 +303,9 @@ fn agent(
         runs: u.runs,
         success_pct: success_pct(u.checked, u.failed),
         p95_ms: u.p95_ms.map(f64::round),
-        // Deployed but not answering, or answering nothing in the range: drawn grey.
-        idle: a.status != "running" || u.runs == 0,
+        // Deployed but not answering, or answering nothing in the range: drawn grey. Anyone's
+        // calls to an agent the caller owns count, so an agent in use by others is not idle.
+        idle: a.status != "running" || u.health_runs == 0,
         failed_spend_usd: round2(u.failed_spend),
     }
 }

@@ -775,8 +775,12 @@ pub struct NestedCostSummary {
     pub total: CostOnly,
     pub prompt: CostOnly,
     pub completion: CostOnly,
-    pub cache_read: CostOnly,
-    pub cache_creation: CostOnly,
+    /// Absent when it cannot be narrowed to the caller's own calls (see `get_agent_stats`), so a
+    /// missing figure never reads as a real $0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<CostOnly>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CostOnly>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -2409,12 +2413,12 @@ impl ObservabilityService {
                         completion: CostOnly {
                             cost: cost.completion_usd,
                         },
-                        cache_read: CostOnly {
+                        cache_read: Some(CostOnly {
                             cost: cost.cache_read_usd,
-                        },
-                        cache_creation: CostOnly {
+                        }),
+                        cache_creation: Some(CostOnly {
                             cost: cost.cache_creation_usd,
-                        },
+                        }),
                     },
                     root_spans: RootSpansWrapper { edges: root_edges },
                     spans: root_nodes,
@@ -2675,15 +2679,16 @@ impl ObservabilityService {
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
         // Tempo's cache figures cover every caller of the agent and cannot be narrowed to some of
-        // them, so a narrowed read leaves them out rather than show other people's.
+        // them, so a narrowed read leaves them out (absent, not $0) rather than show other people's.
         let cache_cost = match user_ids {
-            Some(_) => (0.0, 0.0),
-            None => self
-                .provider
-                .agent_stats(agent_id, start, end)
-                .await
-                .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
-                .unwrap_or_default(),
+            Some(_) => None,
+            None => Some(
+                self.provider
+                    .agent_stats(agent_id, start, end)
+                    .await
+                    .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
+                    .unwrap_or_default(),
+            ),
         };
 
         Ok(AgentStatsResponse {
@@ -2701,8 +2706,8 @@ impl ObservabilityService {
                         completion: CostOnly {
                             cost: row.completion_cost,
                         },
-                        cache_read: CostOnly { cost: cache_cost.0 },
-                        cache_creation: CostOnly { cost: cache_cost.1 },
+                        cache_read: cache_cost.map(|(read, _)| CostOnly { cost: read }),
+                        cache_creation: cache_cost.map(|(_, write)| CostOnly { cost: write }),
                     },
                     latency_ms_p50: row.p50,
                     latency_ms_p99: row.p99,

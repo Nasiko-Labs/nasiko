@@ -106,6 +106,26 @@ pub(super) async fn agent_name_fully_accessible(
     true
 }
 
+/// Whether no one else has, or had, an agent by any name the caller's live agents bear. Spend rows
+/// are matched by agent name, and names are unique per owner only, so a "my agents" read that
+/// counts every caller's calls is safe only while this holds.
+///
+/// Deleted agents count: spend rows are keyed by agent name and outlive the agent.
+pub(super) async fn agent_names_owned_by_caller(state: &AppState, claims: &Claims) -> bool {
+    let Ok(caller_id) = claims.user_uuid() else {
+        return false;
+    };
+    sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM agents mine JOIN agents other ON other.name = mine.name \
+         WHERE mine.owner_id = $1 AND mine.deleted_at IS NULL \
+           AND other.owner_id IS DISTINCT FROM $1)",
+    )
+    .bind(caller_id)
+    .fetch_one(&state.db)
+    .await
+    .unwrap_or(false)
+}
+
 // ---------------------------------------------------------------------------
 // Public orchestrator factories
 // ---------------------------------------------------------------------------

@@ -583,6 +583,7 @@ pub async fn get_span_details(
 pub async fn get_agent_stats(
     State(state): State<AppState>,
     claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Path(agent_id): Path<String>,
     Query(params): Query<AgentStatsParams>,
 ) -> impl IntoResponse {
@@ -600,7 +601,8 @@ pub async fn get_agent_stats(
     // Tempo's service.name is the agent name (the injector sets
     // OTEL_SERVICE_NAME to the container/agent name); accept a name or UUID
     // here (same contract as the logs endpoints) and query by name.
-    let users = usage_user_ids(&state, &claims, None).await;
+    // The same rule as every FinOps read, so the card agrees with the dashboard filtered to it.
+    let users = usage_user_ids(&state, &claims, user_scope).await;
     match svc(&state)
         .get_agent_stats(&tempo_ref, params.start_time.as_deref(), users.as_deref())
         .await
@@ -654,11 +656,21 @@ pub async fn get_finops_dashboard(
             Err(r) => return r,
         };
 
-    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+    let mut scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await
+    {
         Ok(scope) => scope,
         Err(refused) => return refused,
     };
     let owner_id = (params.my_agent && agent_name.is_none()).then_some(claims.sub.as_str());
+    // `my_agent` matches spend rows by agent name, and names are unique per owner only (every
+    // user's harness agent for a harness shares one). A caller who sees everyone's calls would add
+    // up another owner's same-named agent, so while a name is shared they get their own calls.
+    if owner_id.is_some()
+        && scope.user_ids.is_none()
+        && !super::routes::agent_names_owned_by_caller(&state, &claims).await
+    {
+        scope.user_ids = Some(vec![claims.user_uuid().unwrap_or(uuid::Uuid::nil())]);
+    }
     match svc(&state)
         .get_finops_dashboard(
             &claims.sub,
@@ -678,7 +690,7 @@ pub async fn get_finops_dashboard(
         .await
     {
         Ok(mut resp) => {
-            retain_visible_users(&state, &claims, &mut resp.data.users).await;
+            retain_visible_users(&state, &claims, scope.sees_everyone, &mut resp.data.users).await;
             Json(resp).into_response()
         }
         Err(e) => obs_err(e),
@@ -1085,6 +1097,8 @@ struct CallerScope {
     user_ids: Option<Vec<uuid::Uuid>>,
     accessible_agent_ids: Option<Vec<uuid::Uuid>>,
     workflow_owner: Option<uuid::Uuid>,
+    /// [`may_see_every_user`], looked up once for the request.
+    sees_everyone: bool,
 }
 
 impl CallerScope {
@@ -1098,37 +1112,40 @@ impl CallerScope {
 }
 
 /// `requested_user` (the `user_id` query param) narrows to one user's calls whatever else applies;
-/// see [`authorized_user_filter`] for who may name whom. Without it, [`usage_user_ids`] decides.
+/// see [`authorized_user_filter`] for who may name whom. Without it, [`user_ids_for`] decides.
 async fn finops_scope(
     state: &AppState,
     claims: &Claims,
     user_scope: Option<Extension<FinopsUserScope>>,
     requested_user: Option<&str>,
 ) -> Result<CallerScope, Response> {
+    let sees_everyone = may_see_every_user(state, claims).await;
     let user_ids = match requested_user {
-        Some(raw) => Some(vec![authorized_user_filter(state, claims, raw).await?]),
-        None => usage_user_ids(state, claims, user_scope).await,
+        Some(raw) => Some(vec![authorized_user_filter(claims, raw, sees_everyone)?]),
+        None => user_ids_for(claims, user_scope, sees_everyone),
     };
     Ok(CallerScope {
         user_ids,
         accessible_agent_ids: accessible_agent_ids(state, claims).await,
         workflow_owner: (!claims.is_superuser)
             .then(|| claims.sub.parse().unwrap_or(uuid::Uuid::nil())),
+        sees_everyone,
     })
 }
 
 /// The user a `user_id` filter names, if the caller may see that user's usage: anyone may name
-/// themselves; only a user manager (`AuthService::can_manage_users`: a superuser, or an admin)
-/// may name someone else. Not a UUID is a 400; someone else's, for anyone but an admin, a 403.
-async fn authorized_user_filter(
-    state: &AppState,
+/// themselves; only a user manager (`sees_everyone`, see [`may_see_every_user`]) may name someone
+/// else. Not a UUID is a 400; someone else's, for anyone but an admin, a 403.
+#[allow(clippy::result_large_err)] // see validate_range
+fn authorized_user_filter(
     claims: &Claims,
     raw: &str,
+    sees_everyone: bool,
 ) -> Result<uuid::Uuid, Response> {
     let Ok(user) = raw.parse::<uuid::Uuid>() else {
         return Err((StatusCode::BAD_REQUEST, "user_id must be a UUID").into_response());
     };
-    if claims.sub == user.to_string() || may_see_every_user(state, claims).await {
+    if claims.sub == user.to_string() || sees_everyone {
         return Ok(user);
     }
     Err((
@@ -1138,20 +1155,23 @@ async fn authorized_user_filter(
         .into_response())
 }
 
+/// Whether the caller sees every user's usage: a user manager (`AuthService::can_manage_users`, a
+/// superuser or an admin). One role lookup; a handler asks once and passes the answer along.
 async fn may_see_every_user(state: &AppState, claims: &Claims) -> bool {
     state.auth.can_manage_users(&claims.clone().into()).await
 }
 
-/// Keeps the dashboard's per-user rows the caller may see: every row for an admin, otherwise the
-/// users the edition lets them see (`AuthService::org_visible_user_ids`; OSS: nobody else) and
-/// themselves. A member's spend view can include other people's calls to their agents, but
-/// never who made them.
+/// Keeps the dashboard's per-user rows the caller may see: every row for a user manager, otherwise
+/// the users the edition lets them see (`AuthService::org_visible_user_ids`; OSS: nobody else) and
+/// themselves. Usage is already narrowed to the caller's own calls by [`user_ids_for`], so this is
+/// a second guard on who a row names, not the thing that keeps other people's calls out.
 async fn retain_visible_users(
     state: &AppState,
     claims: &Claims,
+    sees_everyone: bool,
     users: &mut Vec<super::service::UserFinopsRow>,
 ) {
-    if may_see_every_user(state, claims).await {
+    if sees_everyone {
         return;
     }
     let visible = state
@@ -1166,25 +1186,34 @@ async fn retain_visible_users(
     });
 }
 
-/// Whose calls a usage read covers: `None` is everyone's. The edition's scope wins when it set one
-/// (EE: an `org_unit` subtree the caller may read, or the caller alone); without one, a user manager
-/// (`AuthService::can_manage_users`) sees everyone and anyone else only their own calls.
+/// Whose calls a usage read covers: `None` is everyone's. A scope set by earlier middleware
+/// ([`FinopsUserScope`]) wins, and an empty one matches nobody; without one, a user manager sees
+/// everyone and anyone else only their own calls.
 ///
 /// Reaching an agent, and owning one, are deliberately not reasons to see other people's calls to
 /// it: a public agent's usage is the sum of many people's chats, and each of them sees only theirs.
+fn user_ids_for(
+    claims: &Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
+    sees_everyone: bool,
+) -> Option<Vec<uuid::Uuid>> {
+    if let Some(Extension(FinopsUserScope(users))) = user_scope {
+        return Some(users);
+    }
+    if sees_everyone {
+        return None;
+    }
+    // A subject that is not a UUID matches no one's calls rather than everyone's.
+    Some(vec![claims.user_uuid().unwrap_or(uuid::Uuid::nil())])
+}
+
+/// [`user_ids_for`] for a handler that needs nothing else from the caller's role.
 async fn usage_user_ids(
     state: &AppState,
     claims: &Claims,
     user_scope: Option<Extension<FinopsUserScope>>,
 ) -> Option<Vec<uuid::Uuid>> {
-    if let Some(Extension(FinopsUserScope(users))) = user_scope {
-        return Some(users);
-    }
-    if may_see_every_user(state, claims).await {
-        return None;
-    }
-    // A subject that is not a UUID matches no one's calls rather than everyone's.
-    Some(vec![claims.user_uuid().unwrap_or(uuid::Uuid::nil())])
+    user_ids_for(claims, user_scope, may_see_every_user(state, claims).await)
 }
 
 async fn accessible_agent_ids(state: &AppState, claims: &Claims) -> Option<Vec<uuid::Uuid>> {

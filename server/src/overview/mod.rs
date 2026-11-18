@@ -156,6 +156,9 @@ impl Range {
 pub(super) struct Scope {
     pub me: Uuid,
     pub superuser: bool,
+    /// Whether the caller sees everyone's usage (`AuthService::can_manage_users`: a superuser or an
+    /// admin), the same rule the FinOps pages follow. Anyone else sees only their own calls.
+    pub sees_everyone: bool,
     pub org_granted: Vec<String>,
     /// `None`: everyone.
     pub visible_people: Option<Vec<Uuid>>,
@@ -169,10 +172,11 @@ impl Scope {
         let listing = listing_scope(state, claims)
             .await
             .map_err(OverviewError::Rejected)?;
+        let identity: nasiko_auth::Identity = claims.clone().into();
+        let sees_everyone = state.auth.can_manage_users(&identity).await;
         let visible_people = if claims.is_superuser {
             None
         } else {
-            let identity: nasiko_auth::Identity = claims.clone().into();
             let mut ids: Vec<Uuid> = state
                 .auth
                 .org_visible_user_ids(&identity)
@@ -187,6 +191,7 @@ impl Scope {
         Ok(Scope {
             me,
             superuser: claims.is_superuser,
+            sees_everyone,
             org_granted: listing.org_granted,
             visible_people,
         })
