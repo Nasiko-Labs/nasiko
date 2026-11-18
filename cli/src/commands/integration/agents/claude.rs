@@ -688,6 +688,13 @@ fn parse_turns(content: &str, sidechain_is_own: bool) -> Vec<Turn> {
                     fallback_turns: &mut fallback_turns,
                 },
             );
+        } else if entry.is_compact_summary {
+            // Compaction cuts into the latest turn, and what follows the summary continues it. The
+            // boundary before the summary starts a new chain, so ancestry may not reach the turn.
+            let owner = parent_owner.or(turns.len().checked_sub(1));
+            if let (Some(uuid), Some(owner)) = (&entry.uuid, owner) {
+                owners.insert(uuid.clone(), owner);
+            }
         } else if let (Some(uuid), Some(owner)) = (&entry.uuid, parent_owner) {
             // Tool results and metadata preserve ancestry to the open turn.
             owners.insert(uuid.clone(), owner);
@@ -868,6 +875,9 @@ struct Entry {
     session_id: Option<String>,
     #[serde(rename = "isSidechain", default)]
     is_sidechain: bool,
+    /// The summary Claude Code writes, as a user record, when it compacts the conversation.
+    #[serde(rename = "isCompactSummary", default)]
+    is_compact_summary: bool,
     timestamp: Option<DateTime<Utc>>,
     message: Option<Message>,
     #[serde(rename = "requestId")]
@@ -942,7 +952,7 @@ impl Entry {
         if self.kind == "last-prompt" {
             return nonempty(self.last_prompt.as_deref()?);
         }
-        if self.kind != "user" {
+        if self.kind != "user" || self.is_compact_summary {
             return None;
         }
         let content = self.message.as_ref()?.content.as_ref()?;
@@ -1805,5 +1815,97 @@ mod tests {
         };
         let event = super::super::super::report::canonical_event_for_test(&snapshot, turn);
         assert_eq!(event.validate(), Ok(()));
+    }
+
+    /// The records Claude Code writes when it compacts: a boundary that starts a new chain
+    /// (`parentUuid: null`, `logicalParentUuid` naming the record it continues), then the summary,
+    /// written as a user record.
+    fn compaction(after: &str) -> String {
+        format!(
+            r#"{{"type":"system","subtype":"compact_boundary","uuid":"b1","parentUuid":null,"logicalParentUuid":"{after}","timestamp":"2026-01-01T00:00:03Z"}}
+{{"type":"user","uuid":"s1","parentUuid":"b1","isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"2026-01-01T00:00:03Z","message":{{"role":"user","content":"This session is being continued from a previous conversation that ran out of context."}}}}
+{{"type":"attachment","uuid":"at1","parentUuid":"s1","timestamp":"2026-01-01T00:00:03Z"}}"#
+        )
+    }
+
+    #[test]
+    fn auto_compaction_mid_turn_continues_the_original_turn() {
+        let input = format!(
+            r#"{{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{{"content":"refactor the parser"}}}}
+{{"type":"assistant","uuid":"a1","parentUuid":"u1","requestId":"req-1","timestamp":"2026-01-01T00:00:01Z","message":{{"id":"msg-1","model":"m","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"tool-1","name":"Read","input":{{}}}}],"usage":{{"input_tokens":1,"output_tokens":2}}}}}}
+{{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}}]}}}}
+{}
+{{"type":"assistant","uuid":"a2","parentUuid":"at1","requestId":"req-2","timestamp":"2026-01-01T00:00:04Z","message":{{"id":"msg-2","model":"m","stop_reason":"end_turn","content":"done","usage":{{"input_tokens":3,"output_tokens":4}}}}}}"#,
+            compaction("r1")
+        );
+        let turns = turns_from_lines(&input);
+
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.uuid, "u1");
+        assert_eq!(turn.prompt, "refactor the parser");
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(turn.response.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn auto_compaction_after_streamed_text_continues_the_original_turn() {
+        // Claude Code writes a record per content block, so the turn already holds the text block
+        // written before the response's tool_use block when compaction cuts in.
+        let input = format!(
+            r#"{{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{{"content":"refactor the parser"}}}}
+{{"type":"assistant","uuid":"a1","parentUuid":"u1","requestId":"req-1","timestamp":"2026-01-01T00:00:01Z","message":{{"id":"msg-1","model":"m","content":[{{"type":"text","text":"Reading it first."}}],"usage":{{"input_tokens":1,"output_tokens":1}}}}}}
+{{"type":"assistant","uuid":"a1b","parentUuid":"a1","requestId":"req-1","timestamp":"2026-01-01T00:00:01Z","message":{{"id":"msg-1","model":"m","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"tool-1","name":"Read","input":{{}}}}],"usage":{{"input_tokens":1,"output_tokens":2}}}}}}
+{{"type":"user","uuid":"r1","parentUuid":"a1b","timestamp":"2026-01-01T00:00:02Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}}]}}}}
+{}
+{{"type":"assistant","uuid":"a2","parentUuid":"at1","requestId":"req-2","timestamp":"2026-01-01T00:00:04Z","message":{{"id":"msg-2","model":"m","stop_reason":"end_turn","content":"done","usage":{{"input_tokens":3,"output_tokens":4}}}}}}"#,
+            compaction("r1")
+        );
+        let turns = turns_from_lines(&input);
+
+        assert_eq!(turns.len(), 1);
+        let turn = &turns[0];
+        assert_eq!(turn.uuid, "u1");
+        assert_eq!(turn.calls.len(), 2);
+        assert_eq!(turn.response.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_last_prompt_after_compaction_does_not_repeat_the_turn() {
+        // Seen in a real transcript: the boundary's logicalParentUuid names a record the transcript
+        // no longer has, and a last-prompt record follows the summary.
+        let input = format!(
+            r#"{{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{{"content":"refactor the parser"}}}}
+{{"type":"assistant","uuid":"a1","parentUuid":"u1","requestId":"req-1","timestamp":"2026-01-01T00:00:01Z","message":{{"id":"msg-1","model":"m","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"tool-1","name":"Read","input":{{}}}}],"usage":{{"input_tokens":1,"output_tokens":2}}}}}}
+{{"type":"user","uuid":"r1","parentUuid":"a1","timestamp":"2026-01-01T00:00:02Z","message":{{"content":[{{"type":"tool_result","tool_use_id":"tool-1","content":"ok"}}]}}}}
+{}
+{{"type":"last-prompt","lastPrompt":"refactor the parser","leafUuid":"at1","sessionId":"s1"}}
+{{"type":"assistant","uuid":"a2","parentUuid":"at1","requestId":"req-2","timestamp":"2026-01-01T00:00:04Z","message":{{"id":"msg-2","model":"m","stop_reason":"end_turn","content":"done","usage":{{"input_tokens":3,"output_tokens":4}}}}}}"#,
+            compaction("not-in-this-transcript")
+        );
+        let turns = turns_from_lines(&input);
+
+        assert_eq!(turns.len(), 1);
+        assert_eq!(turns[0].uuid, "u1");
+        assert_eq!(turns[0].calls.len(), 2);
+        assert_eq!(turns[0].response.as_deref(), Some("done"));
+    }
+
+    #[test]
+    fn a_compaction_summary_between_turns_is_not_a_prompt() {
+        let input = format!(
+            r#"{{"type":"user","uuid":"u1","timestamp":"2026-01-01T00:00:00Z","message":{{"content":"first"}}}}
+{{"type":"assistant","uuid":"a1","parentUuid":"u1","timestamp":"2026-01-01T00:00:01Z","message":{{"model":"m","stop_reason":"end_turn","content":"first done","usage":{{"input_tokens":1,"output_tokens":2}}}}}}
+{}
+{{"type":"user","uuid":"u2","parentUuid":"at1","timestamp":"2026-01-01T00:00:05Z","message":{{"content":"second"}}}}
+{{"type":"assistant","uuid":"a2","parentUuid":"u2","timestamp":"2026-01-01T00:00:06Z","message":{{"model":"m","stop_reason":"end_turn","content":"second done","usage":{{"input_tokens":3,"output_tokens":4}}}}}}"#,
+            compaction("a1")
+        );
+        let turns = turns_from_lines(&input);
+
+        let prompts: Vec<&str> = turns.iter().map(|turn| turn.prompt.as_str()).collect();
+        assert_eq!(prompts, ["first", "second"]);
+        assert_eq!(turns[0].response.as_deref(), Some("first done"));
+        assert_eq!(turns[1].calls.len(), 1);
     }
 }
