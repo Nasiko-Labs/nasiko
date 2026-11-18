@@ -215,12 +215,43 @@ async fn fetch_price_book(
             ModelPrices::from_pay_as_you_go(payg).map(|p| (model.clone(), p))
         })
         .collect();
+    let prices = with_bare_tier_names(prices);
     tracing::info!(
         target: "nasiko::llm_router::pricing_sync",
         slug = %slug, models = prices.len(),
         "pricing sync: fetched price book"
     );
     Some(prices)
+}
+
+/// Add each context-tiered model under its bare name too.
+///
+/// Portkey keys Google by prompt-length tier (`gemini-4-hydrogen-lte-128k`,
+/// `gemini-4-hydrogen-gt-128k`), while calls report the bare `gemini-4-hydrogen`, so no
+/// `model_pricing` row matched and every exact lookup (the savings view's among them)
+/// priced those calls at nothing. The bare name takes the smallest "up to" tier, the
+/// rate a prompt of ordinary length pays. A bare name the book lists itself is kept.
+fn with_bare_tier_names(mut prices: HashMap<String, ModelPrices>) -> HashMap<String, ModelPrices> {
+    let mut lowest: HashMap<String, (u32, ModelPrices)> = HashMap::new();
+    for (model, price) in &prices {
+        let Some((bare, limit)) = lte_tier(model) else {
+            continue;
+        };
+        if lowest.get(bare).is_none_or(|(seen, _)| limit < *seen) {
+            lowest.insert(bare.to_string(), (limit, *price));
+        }
+    }
+    for (bare, (_, price)) in lowest {
+        prices.entry(bare).or_insert(price);
+    }
+    prices
+}
+
+/// `("gemini-4-hydrogen", 128)` for `gemini-4-hydrogen-lte-128k`.
+fn lte_tier(model: &str) -> Option<(&str, u32)> {
+    let (bare, tier) = model.rsplit_once("-lte-")?;
+    let limit = tier.strip_suffix('k')?.parse().ok()?;
+    (!bare.is_empty()).then_some((bare, limit))
 }
 
 /// OpenRouter's `pricing` object is USD **per token** as decimal strings (e.g.
@@ -668,6 +699,53 @@ mod tests {
                 .is_none()
             );
         }
+    }
+
+    fn price(input: f64) -> ModelPrices {
+        ModelPrices {
+            input_per_1m: input,
+            output_per_1m: input * 5.0,
+            cache_creation_per_1m: None,
+            cache_creation_1h_per_1m: None,
+            cache_read_per_1m: None,
+        }
+    }
+
+    /// Portkey lists Google by context tier only; calls report the bare name.
+    #[test]
+    fn a_tiered_model_is_also_priced_under_its_bare_name_at_its_lowest_tier() {
+        let book = HashMap::from([
+            ("gemini-4-hydrogen-lte-128k".to_string(), price(1.5)),
+            ("gemini-4-hydrogen-gt-128k".to_string(), price(3.0)),
+            ("gemini-3.1-pro-lte-200k".to_string(), price(2.5)),
+            ("gemini-3.1-pro-lte-128k".to_string(), price(2.0)),
+        ]);
+
+        let out = with_bare_tier_names(book);
+
+        assert_eq!(out["gemini-4-hydrogen"], price(1.5));
+        assert_eq!(out["gemini-3.1-pro"], price(2.0), "the smallest tier wins");
+        assert!(
+            out.contains_key("gemini-4-hydrogen-gt-128k"),
+            "tiers are kept"
+        );
+    }
+
+    #[test]
+    fn a_bare_name_the_book_lists_itself_is_not_overwritten() {
+        let book = HashMap::from([
+            ("gemini-2.5-flash".to_string(), price(0.3)),
+            ("gemini-2.5-flash-lte-128k".to_string(), price(9.0)),
+            ("not-a-tier-lte-big".to_string(), price(1.0)),
+        ]);
+
+        let out = with_bare_tier_names(book);
+
+        assert_eq!(out["gemini-2.5-flash"], price(0.3));
+        assert!(
+            !out.contains_key("not-a-tier"),
+            "only `-lte-<n>k` is a tier"
+        );
     }
 
     #[test]

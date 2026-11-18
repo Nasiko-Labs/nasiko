@@ -184,9 +184,10 @@ macro_rules! seed {
 ///
 /// The Anthropic, OpenAI and DeepSeek rows were audited against the upstream
 /// book on 2026-09-29 (migration 0047 carries the same corrections for databases
-/// already seeded). The Gemini and Groq rows were not: Portkey keys Google by
-/// context tier (`gemini-2.5-pro-lte-128k`), so a bare name matches nothing
-/// there and these stay hand-maintained until the sync normalizes names.
+/// already seeded). The Gemini and Groq rows were not. Portkey keys Google by
+/// context tier (`gemini-2.5-pro-lte-128k`); the sync now also writes each such
+/// model under its bare name at its lowest tier (`with_bare_tier_names`), so a
+/// synced Gemini price supersedes the seed row here once a sync has run.
 ///
 /// Deliberately code, not a migration: price updates ship with the binary
 /// instead of requiring a new migration per price change.
