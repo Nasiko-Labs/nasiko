@@ -2635,10 +2635,12 @@ impl ObservabilityService {
 
     // ── 5. agent/{agent_id}/stats ─────────────────────────────────────────────
 
+    /// `user_ids` narrows every figure to those people's calls (`None`: everyone's).
     pub async fn get_agent_stats(
         &self,
         agent_id: &str,
         start_time: Option<&str>,
+        user_ids: Option<&[uuid::Uuid]>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 1);
         let end = Utc::now();
@@ -2661,21 +2663,28 @@ impl ObservabilityService {
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50,
                       percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99
                FROM trace_usage
-               WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3"#,
+               WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3
+                 AND ($4::uuid[] IS NULL OR user_id = ANY($4))"#,
         )
         .bind(agent_id)
         .bind(start)
         .bind(end)
+        .bind(user_ids)
         .fetch_one(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
-        let cache_cost = self
-            .provider
-            .agent_stats(agent_id, start, end)
-            .await
-            .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
-            .unwrap_or_default();
+        // Tempo's cache figures cover every caller of the agent and cannot be narrowed to some of
+        // them, so a narrowed read leaves them out rather than show other people's.
+        let cache_cost = match user_ids {
+            Some(_) => (0.0, 0.0),
+            None => self
+                .provider
+                .agent_stats(agent_id, start, end)
+                .await
+                .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
+                .unwrap_or_default(),
+        };
 
         Ok(AgentStatsResponse {
             data: AgentStatsData {

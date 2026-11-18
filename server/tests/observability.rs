@@ -696,8 +696,8 @@ async fn finops_spend_endpoints_hide_agents_the_caller_cannot_access() {
     for endpoint in SPEND_ENDPOINTS {
         let (total, body) = spend_seen(&server, endpoint, &world.caller_token).await;
         assert!(
-            (total - 3.0).abs() < 1e-6,
-            "{endpoint}: own + granted agent only, got {total}"
+            (total - 1.0).abs() < 1e-6,
+            "{endpoint}: the caller's own calls only, not the owner's on the granted agent, got {total}"
         );
         assert!(
             !body.contains("spend-hidden-agent"),
@@ -3064,5 +3064,74 @@ async fn finops_dashboard_counts_default_priced_calls_as_unpriced() {
         .await
         .unwrap();
     assert_eq!(body["data"]["summary"]["unpriced_calls"], 1, "{body}");
+    server.cleanup().await;
+}
+
+async fn context_report(server: &common::TestServer, user: Uuid, agent: Uuid, pool_tokens: i64) {
+    sqlx::query(
+        "INSERT INTO context_reports \
+           (user_id, agent_id, pool_messages, pool_tokens, kept_messages, kept_tokens) \
+         VALUES ($1, $2, 10, $3, 2, 100)",
+    )
+    .bind(user)
+    .bind(agent)
+    .bind(pool_tokens)
+    .execute(&server.db)
+    .await
+    .expect("seed context_reports");
+}
+
+async fn context_savings(server: &common::TestServer, path: &str, token: &str) -> Value {
+    let response = server
+        .client
+        .get(server.url(&format!("/api/observability/finops/context-savings{path}")))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{path}");
+    response.json().await.unwrap()
+}
+
+/// A member sees only their own requests on the Optimization page, even on an agent shared with
+/// them: another user's request is not on their list, in any form, nor in their totals.
+#[tokio::test]
+#[serial]
+async fn context_savings_show_a_member_only_their_own_requests_on_a_shared_agent() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let caller = seed_user(&server, "ctx-caller").await;
+    let other = seed_user(&server, "ctx-other").await;
+    let shared = seed_agent(&server, other, "ctx-shared-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(shared)
+    .bind(caller.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    context_report(&server, caller, shared, 1_000).await;
+    context_report(&server, other, shared, 50_000).await;
+    let token = common::sign_token(&caller.to_string(), "ctx-caller", false, "member");
+
+    let top = context_savings(&server, "/top-requests?range=7d", &token).await;
+    let rows = top["data"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "another user's request was listed: {top}");
+    assert_eq!(rows[0]["own"], true);
+    assert_eq!(rows[0]["pool_tokens"], 1_000);
+
+    let totals = context_savings(&server, "?range=7d", &token).await;
+    assert_eq!(
+        totals["data"]["pool_tokens"], 1_000,
+        "another user's tokens were in the totals: {totals}"
+    );
+
+    let by_agent = context_savings(&server, "/agents?range=7d", &token).await;
+    assert!(
+        !by_agent.to_string().contains("50000"),
+        "another user's tokens were in the per-agent rows: {by_agent}"
+    );
+
     server.cleanup().await;
 }

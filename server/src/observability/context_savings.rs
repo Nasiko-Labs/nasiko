@@ -97,6 +97,9 @@ pub struct ContextSavingsQuery<'a> {
     /// Restricts every aggregate to agents the caller may see. `None` means unrestricted
     /// (superuser); an empty slice means the caller can see nothing.
     pub accessible_agent_ids: Option<&'a [Uuid]>,
+    /// Restricts every aggregate to these people's requests. `None` means everyone's (a user
+    /// manager); anyone else gets only their own, whatever agent the request went to.
+    pub user_ids: Option<&'a [Uuid]>,
     pub series: Option<Bucket>,
     pub limit: i64,
     /// Narrows `top-requests` to one chart bar's interval.
@@ -199,6 +202,23 @@ fn push_filters<'a>(qb: &mut QueryBuilder<'a, Postgres>, q: &'a ContextSavingsQu
             .push_bind(q.caller_id)
             .push("))");
     }
+    push_user_filter(qb, q, "cr.user_id");
+}
+
+/// Narrows a query to the people in `q.user_ids` on `column`, the request's user, so no count, total
+/// or row on the page includes anyone else's requests. Nothing to add when `user_ids` is `None`.
+fn push_user_filter<'a>(
+    qb: &mut QueryBuilder<'a, Postgres>,
+    q: &'a ContextSavingsQuery<'a>,
+    column: &str,
+) {
+    if let Some(users) = q.user_ids {
+        qb.push(" AND ")
+            .push(column)
+            .push(" = ANY(")
+            .push_bind(users)
+            .push(")");
+    }
 }
 
 /// `context_reports` with its agent resolved. Every query here starts from this shape, so
@@ -288,7 +308,7 @@ async fn recorded_since(
     // Unfiltered — a superuser with no agent picked — is the common case and needs none of the
     // agent resolution below. A plain MIN walks the window index once instead of resolving an agent
     // for every report ever written.
-    if q.agent_id.is_none() && q.accessible_agent_ids.is_none() {
+    if q.agent_id.is_none() && q.accessible_agent_ids.is_none() && q.user_ids.is_none() {
         return sqlx::query_scalar(
             "SELECT MIN(created_at) FROM context_reports_spend WHERE created_at < $1",
         )
@@ -312,6 +332,7 @@ async fn recorded_since(
             .push_bind(q.caller_id)
             .push("))");
     }
+    push_user_filter(&mut qb, q, "cr.user_id");
     qb.build_query_scalar().fetch_one(db).await
 }
 
@@ -354,6 +375,7 @@ async fn eligible_requests(
             .push_bind(q.caller_id)
             .push("))");
     }
+    push_user_filter(&mut qb, q, "s.user_id");
     qb.build_query_scalar().fetch_one(db).await
 }
 
@@ -426,6 +448,7 @@ async fn series(
             .push_bind(q.caller_id)
             .push("))");
     }
+    push_user_filter(&mut eb, q, "s.user_id");
     eb.push(" GROUP BY bucket_start");
     let eligible: Vec<EligibleBucketRow> = match eligible_from {
         Some(_) => eb.build_query_as().fetch_all(db).await?,
@@ -537,11 +560,13 @@ pub async fn get_by_agent(
            JOIN chat_sessions s ON s.session_id = m.session_id \
           WHERE m.role = 'user' AND m.timestamp >= $1 AND m.timestamp < $2 \
             AND s.agent_id = ANY($3) \
+            AND ($4::uuid[] IS NULL OR s.user_id = ANY($4)) \
           GROUP BY s.agent_id",
     )
     .bind(q.start)
     .bind(q.end)
     .bind(&ids)
+    .bind(q.user_ids)
     .fetch_all(db)
     .await?;
 
@@ -647,6 +672,7 @@ mod tests {
             caller_id: caller,
             caller_is_superuser: superuser,
             accessible_agent_ids: None,
+            user_ids: None,
             series: None,
             limit: 10,
             from: None,

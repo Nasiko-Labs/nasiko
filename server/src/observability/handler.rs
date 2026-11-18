@@ -600,8 +600,9 @@ pub async fn get_agent_stats(
     // Tempo's service.name is the agent name (the injector sets
     // OTEL_SERVICE_NAME to the container/agent name); accept a name or UUID
     // here (same contract as the logs endpoints) and query by name.
+    let users = usage_user_ids(&state, &claims, None).await;
     match svc(&state)
-        .get_agent_stats(&tempo_ref, params.start_time.as_deref())
+        .get_agent_stats(&tempo_ref, params.start_time.as_deref(), users.as_deref())
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -653,12 +654,10 @@ pub async fn get_finops_dashboard(
             Err(r) => return r,
         };
 
-    let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), params.my_agent).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
     let owner_id = (params.my_agent && agent_name.is_none()).then_some(claims.sub.as_str());
     match svc(&state)
         .get_finops_dashboard(
@@ -792,7 +791,6 @@ pub async fn get_finops_spend_timeseries(
     {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
-    let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
     // Only `agent` is a grouping; anything else is a caller error rather than
     // something to silently drop, which would return a fleet-wide chart under a
     // per-agent legend.
@@ -807,11 +805,10 @@ pub async fn get_finops_spend_timeseries(
                 .into_response();
         }
     };
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_timeseries(
@@ -874,12 +871,10 @@ pub async fn get_finops_spend_calendar(
     {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
-    let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar(
@@ -927,12 +922,10 @@ pub async fn get_finops_spend_calendar_day(
     {
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
-    let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
     let access = scope.access();
     match svc(&state)
         .get_finops_spend_calendar_day(
@@ -992,12 +985,10 @@ pub async fn get_finops_attributions(
             Ok(v) => v,
             Err(r) => return r,
         };
-    let owns = owns_filtered_agent(&state, &claims, agent_name.as_deref(), false).await;
-    let scope =
-        match finops_scope(&state, &claims, user_scope, owns, params.user_id.as_deref()).await {
-            Ok(scope) => scope,
-            Err(refused) => return refused,
-        };
+    let scope = match finops_scope(&state, &claims, user_scope, params.user_id.as_deref()).await {
+        Ok(scope) => scope,
+        Err(refused) => return refused,
+    };
     let access = scope.access();
     match svc(&state)
         .get_finops_attributions(
@@ -1106,21 +1097,17 @@ impl CallerScope {
     }
 }
 
-/// `owns`: the caller owns the agent being filtered on, which is its own reason to see that agent's
-/// full usage, not just their own calls to it (bug found 2026-10-22). `requested_user` (the
-/// `user_id` query param) narrows to one user's calls whatever else applies; see
-/// [`authorized_user_filter`] for who may name whom.
+/// `requested_user` (the `user_id` query param) narrows to one user's calls whatever else applies;
+/// see [`authorized_user_filter`] for who may name whom. Without it, [`usage_user_ids`] decides.
 async fn finops_scope(
     state: &AppState,
     claims: &Claims,
     user_scope: Option<Extension<FinopsUserScope>>,
-    owns: bool,
     requested_user: Option<&str>,
 ) -> Result<CallerScope, Response> {
     let user_ids = match requested_user {
         Some(raw) => Some(vec![authorized_user_filter(state, claims, raw).await?]),
-        None if owns => None,
-        None => user_scope.map(|Extension(s)| s.0),
+        None => usage_user_ids(state, claims, user_scope).await,
     };
     Ok(CallerScope {
         user_ids,
@@ -1179,19 +1166,25 @@ async fn retain_visible_users(
     });
 }
 
-/// Whether the caller owns the agent named by the filter; with no filter, `unfiltered` asks for the
-/// dashboard's `my_agent` (browsing only your own agents), which holds only while no one else's
-/// agent shares a name with one of yours: the spend rows are matched by name.
-async fn owns_filtered_agent(
+/// Whose calls a usage read covers: `None` is everyone's. The edition's scope wins when it set one
+/// (EE: an `org_unit` subtree the caller may read, or the caller alone); without one, a user manager
+/// (`AuthService::can_manage_users`) sees everyone and anyone else only their own calls.
+///
+/// Reaching an agent, and owning one, are deliberately not reasons to see other people's calls to
+/// it: a public agent's usage is the sum of many people's chats, and each of them sees only theirs.
+async fn usage_user_ids(
     state: &AppState,
     claims: &Claims,
-    agent_name: Option<&str>,
-    unfiltered: bool,
-) -> bool {
-    match agent_name {
-        Some(name) => super::routes::agent_name_owned_by_caller(state, claims, name).await,
-        None => unfiltered && super::routes::agent_names_owned_by_caller(state, claims).await,
+    user_scope: Option<Extension<FinopsUserScope>>,
+) -> Option<Vec<uuid::Uuid>> {
+    if let Some(Extension(FinopsUserScope(users))) = user_scope {
+        return Some(users);
     }
+    if may_see_every_user(state, claims).await {
+        return None;
+    }
+    // A subject that is not a UUID matches no one's calls rather than everyone's.
+    Some(vec![claims.user_uuid().unwrap_or(uuid::Uuid::nil())])
 }
 
 async fn accessible_agent_ids(state: &AppState, claims: &Claims) -> Option<Vec<uuid::Uuid>> {
@@ -1381,18 +1374,7 @@ pub async fn get_finops_savings(
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
 
-    // Owning the filtered agent is its own reason to see its full savings, not just your own calls
-    // to it (bug found 2026-10-22: this endpoint never had the "your own calls" default at all, only
-    // `accessible_agent_ids` — now it does, so it needs the same exemption the other five got).
-    let owns_filtered_agent = match agent_uuid {
-        Some(id) => super::routes::agent_id_owned_by_caller(&state, &claims, id).await,
-        None => false,
-    };
-    let user_ids = if owns_filtered_agent {
-        None
-    } else {
-        user_scope.map(|Extension(s)| s.0)
-    };
+    let user_ids = usage_user_ids(&state, &claims, user_scope).await;
     let accessible = accessible_agent_ids(&state, &claims).await;
     let query = super::savings::SavingsQuery {
         start,
@@ -1439,8 +1421,8 @@ pub struct ModelRoutingParams {
 }
 
 /// How the LLM router chose the model over the window: calls per precedence level and per tier
-/// (NAS-1263). Scoped exactly as `/finops/savings` is — the caller's accessible agents, and their
-/// own calls unless they own the agent being filtered on.
+/// (NAS-1263). Scoped exactly as `/finops/savings` is — the caller's accessible agents, and only
+/// the calls [`usage_user_ids`] lets them see.
 #[utoipa::path(
     get,
     path = "/api/observability/finops/model-routing",
@@ -1484,17 +1466,7 @@ pub async fn get_model_routing(
         return (StatusCode::NOT_FOUND, "agent not found").into_response();
     }
 
-    // Owning the filtered agent is its own reason to see all of its routing, not just your own
-    // calls to it — the same exemption `/finops/savings` makes.
-    let owns_filtered_agent = match agent_uuid {
-        Some(id) => super::routes::agent_id_owned_by_caller(&state, &claims, id).await,
-        None => false,
-    };
-    let user_ids = if owns_filtered_agent {
-        None
-    } else {
-        user_scope.map(|Extension(s)| s.0)
-    };
+    let user_ids = usage_user_ids(&state, &claims, user_scope).await;
     let accessible = accessible_agent_ids(&state, &claims).await;
     let query = super::model_routing::ModelRoutingQuery {
         start,
@@ -1580,6 +1552,7 @@ async fn context_savings_query<'a>(
     claims: &Claims,
     params: &'a ContextSavingsParams,
     accessible: &'a Option<Vec<uuid::Uuid>>,
+    user_ids: &'a Option<Vec<uuid::Uuid>>,
 ) -> Result<super::context_savings::ContextSavingsQuery<'a>, Response> {
     validate_range(params.range.as_deref())?;
     let series = super::context_savings::Bucket::parse(params.series.as_deref())?;
@@ -1649,6 +1622,7 @@ async fn context_savings_query<'a>(
         caller_id,
         caller_is_superuser: claims.is_superuser,
         accessible_agent_ids: accessible.as_deref(),
+        user_ids: user_ids.as_deref(),
         series,
         limit,
         from,
@@ -1693,10 +1667,12 @@ fn context_failure(e: sqlx::Error, what: &str) -> Response {
 pub async fn get_context_savings(
     State(state): State<AppState>,
     claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<ContextSavingsParams>,
 ) -> Response {
     let accessible = accessible_agent_ids(&state, &claims).await;
-    let query = match context_savings_query(&state, &claims, &params, &accessible).await {
+    let users = usage_user_ids(&state, &claims, user_scope).await;
+    let query = match context_savings_query(&state, &claims, &params, &accessible, &users).await {
         Ok(q) => q,
         Err(r) => return r,
     };
@@ -1717,10 +1693,12 @@ pub async fn get_context_savings(
 pub async fn get_context_savings_agents(
     State(state): State<AppState>,
     claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<ContextSavingsParams>,
 ) -> Response {
     let accessible = accessible_agent_ids(&state, &claims).await;
-    let query = match context_savings_query(&state, &claims, &params, &accessible).await {
+    let users = usage_user_ids(&state, &claims, user_scope).await;
+    let query = match context_savings_query(&state, &claims, &params, &accessible, &users).await {
         Ok(q) => q,
         Err(r) => return r,
     };
@@ -1741,10 +1719,12 @@ pub async fn get_context_savings_agents(
 pub async fn get_context_savings_top_requests(
     State(state): State<AppState>,
     claims: Claims,
+    user_scope: Option<Extension<FinopsUserScope>>,
     Query(params): Query<ContextSavingsParams>,
 ) -> Response {
     let accessible = accessible_agent_ids(&state, &claims).await;
-    let query = match context_savings_query(&state, &claims, &params, &accessible).await {
+    let users = usage_user_ids(&state, &claims, user_scope).await;
+    let query = match context_savings_query(&state, &claims, &params, &accessible, &users).await {
         Ok(q) => q,
         Err(r) => return r,
     };

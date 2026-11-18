@@ -514,9 +514,9 @@ pub(super) async fn snapshot(
 
 // ── What is visible ──────────────────────────────────────────────────────────
 
-/// Whose calls an agent's usage counts. On an agent someone the caller can see owns, every call;
-/// on any other agent the caller reaches (a public one, a shared one), only calls by people the
-/// caller can see. A superuser's scope owns every agent.
+/// Whose calls an agent's usage counts: for a superuser, every call on every agent; for anyone
+/// else, only calls by people the caller can see (OSS: themselves), on any agent they reach.
+/// Owning an agent is not a reason to see other people's calls to it.
 ///
 /// Summing every caller on a public agent showed a member other people's spend on it, and made
 /// each estate read cost as much as the whole platform's traffic on the public agents.
@@ -531,7 +531,7 @@ impl UsageScope {
         let people = scope.visible_people.clone().unwrap_or_default();
         let (owned, shared) = agents
             .iter()
-            .partition::<Vec<&AgentRow>, _>(|a| scope.superuser || people.contains(&a.owner_id));
+            .partition::<Vec<&AgentRow>, _>(|_| scope.superuser);
         UsageScope {
             owned: owned.iter().map(|a| a.id).collect(),
             shared: shared.iter().map(|a| a.id).collect(),
@@ -1390,7 +1390,7 @@ mod tests {
     }
 
     #[test]
-    fn a_member_counts_every_call_on_their_own_agent_and_only_their_own_on_a_public_one() {
+    fn a_member_counts_only_their_own_calls_on_their_own_agent_and_on_a_public_one() {
         let (me, stranger) = (Uuid::new_v4(), Uuid::new_v4());
         let mine = agent_owned_by(me);
         let public = agent_owned_by(stranger);
@@ -1400,7 +1400,10 @@ mod tests {
         );
 
         assert!(usage.counts(mine.id, me));
-        assert!(usage.counts(mine.id, stranger), "anyone's call on my agent");
+        assert!(
+            !usage.counts(mine.id, stranger),
+            "a stranger's call on my agent is theirs"
+        );
         assert!(usage.counts(public.id, me));
         assert!(
             !usage.counts(public.id, stranger),
@@ -1409,14 +1412,15 @@ mod tests {
     }
 
     #[test]
-    fn a_manager_counts_every_call_on_agents_their_people_own() {
+    fn a_manager_counts_their_peoples_calls_but_not_an_outsiders_on_a_reports_agent() {
         let (lead, report, outsider) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
         let reports_agent = agent_owned_by(report);
         let usage = UsageScope::of(
             &scope_of(lead, false, Some(vec![lead, report])),
             std::slice::from_ref(&reports_agent),
         );
-        assert!(usage.counts(reports_agent.id, outsider));
+        assert!(usage.counts(reports_agent.id, report));
+        assert!(!usage.counts(reports_agent.id, outsider));
     }
 
     #[test]
