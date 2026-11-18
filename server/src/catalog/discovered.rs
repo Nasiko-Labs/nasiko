@@ -27,6 +27,8 @@ use crate::state::AppState;
 const MAX_NAME_CHARS: usize = 255;
 /// Longest copy id accepted. The CLI sends a 16-character hash.
 const MAX_INSTANCE_CHARS: usize = 64;
+/// Most agents one machine's report may carry; each becomes a catalog row.
+const MAX_AGENTS_PER_REPORT: usize = 100;
 
 pub fn router() -> Router<AppState> {
     Router::new().route(
@@ -84,7 +86,7 @@ pub(crate) struct RegisteredAgent {
     request_body = RegisterDiscoveredRequest,
     responses(
         (status = 200, description = "Catalog updated to the machine's running agents", body = RegisterDiscoveredResponse),
-        (status = 400, description = "Missing machine, or a card without a usable name"),
+        (status = 400, description = "Missing machine, more than 100 agents, or a card without a usable name"),
         (status = 409, description = "No free catalog name for an agent"),
     ),
 )]
@@ -100,6 +102,13 @@ pub(crate) async fn register_discovered_agents(
     let machine = body.machine.trim();
     if machine.is_empty() || machine.chars().count() > MAX_NAME_CHARS {
         return (StatusCode::BAD_REQUEST, "machine must be 1-255 characters").into_response();
+    }
+    if body.agents.len() > MAX_AGENTS_PER_REPORT {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("a report may carry at most {MAX_AGENTS_PER_REPORT} agents"),
+        )
+            .into_response();
     }
     let mut cards = Vec::with_capacity(body.agents.len());
     for (index, agent) in body.agents.into_iter().enumerate() {
