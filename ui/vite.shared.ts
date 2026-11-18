@@ -2,6 +2,7 @@
  * The one Vite config every edition builds from (docs/lab-vs-react-migration-review.md §10.6). Published with the
  * core: it never names a private edition. Each edition's own vite.config.ts passes its layers in.
  */
+import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
   existsSync,
@@ -225,7 +226,7 @@ export function inlineScriptHashes(html: string): string[] {
 }
 
 /**
- * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script, plus OSS's Reo loader) for
+ * `dist/csp.json`: the hashes of index.html's inline scripts (the pre-paint theme script) for
  * the server's CSP (plan §8 Phase 9). The page has no other inline script or style attribute.
  */
 function cspHashes(): Plugin {
@@ -243,19 +244,6 @@ function cspHashes(): Plugin {
         `${JSON.stringify({ 'script-src': inlineScriptHashes(html) }, null, 2)}\n`,
       )
     },
-  }
-}
-
-/**
- * Reo (product analytics) reports from built bundles only: the dev server, and with it every e2e and sweep run, drops
- * the loader between index.html's "Start/End of Reo Javascript" comments, so no local session counts as a visit.
- */
-function analyticsInBuildsOnly(): Plugin {
-  return {
-    name: 'nasiko:analytics-in-builds-only',
-    apply: 'serve',
-    transformIndexHtml: (html) =>
-      html.replace(/\s*<!-- Start of Reo Javascript -->[\s\S]*?<!-- End of Reo Javascript -->/, ''),
   }
 }
 
@@ -285,6 +273,62 @@ function bootGuard(): Plugin {
   }
 }
 
+/**
+ * The release name error reports carry (`VITE_NASIKO_RELEASE`, read by `shared/app-core/src/env.ts`): set it to pin one,
+ * else `nasiko-ui@<package.json version>-<commit>` (just the version where there is no git, as in the Docker build).
+ * Not `ui/VERSION`: that file is private (scripts/lib/oss-paths.sh), and this config also builds the public tree. The build
+ * writes it to `dist/.vite/sentry-release.txt` (a dotfile folder, never embedded or served) so the source-map upload
+ * (scripts/sentry-sourcemaps.ts) files the maps under the same name.
+ */
+function errorReportingRelease(env: Record<string, string>): Plugin {
+  let out = ''
+  const release = env.VITE_NASIKO_RELEASE?.trim() || defaultRelease()
+  return {
+    name: 'nasiko:error-reporting-release',
+    apply: 'build',
+    config: () => ({ define: { 'import.meta.env.VITE_NASIKO_RELEASE': JSON.stringify(release) } }),
+    configResolved(c) {
+      out = c.build.outDir
+    },
+    closeBundle() {
+      mkdirSync(join(out, '.vite'), { recursive: true })
+      writeFileSync(join(out, '.vite', 'sentry-release.txt'), `${release}\n`)
+    },
+  }
+}
+
+function defaultRelease(): string {
+  const { version } = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
+    version: string
+  }
+  try {
+    const commit = execFileSync('git', ['rev-parse', '--short=12', 'HEAD'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    return `nasiko-ui@${version}-${commit}`
+  } catch {
+    return `nasiko-ui@${version}`
+  }
+}
+
+/**
+ * Whether Weave (the EE assistant, its generated views and the GenUI frame) is in this build. Weave is not part of
+ * the current release (decided 13 Nov 2026): production builds, web and desktop, leave it out unless
+ * `NASIKO_WEAVE=on`; dev servers and tests keep it unless `NASIKO_WEAVE=off`. When Weave ships, flip
+ * `WEAVE_IN_RELEASES`. Read in the code as `import.meta.env.NASIKO_WEAVE_COMPILED_IN`, a boolean literal, so a build
+ * without it drops the code instead of hiding it.
+ */
+const WEAVE_IN_RELEASES = false
+
+export function weaveCompiledIn(mode: string): boolean {
+  const flag = loadEnv(mode, ROOT, '').NASIKO_WEAVE?.trim()
+  if (flag === 'on') return true
+  if (flag === 'off') return false
+  return mode !== 'production' || WEAVE_IN_RELEASES
+}
+
 export function nasikoApp(o: AppOptions): UserConfig {
   const env = loadEnv(o.mode, ROOT, '')
   const proxy = o.proxy ?? { paths: PROXIED, target: env.NASIKO_API_URL || 'http://localhost:8080' }
@@ -301,6 +345,14 @@ export function nasikoApp(o: AppOptions): UserConfig {
     envDir: ROOT,
     publicDir: join(SHARED, 'ui/public'),
     cacheDir: join(ROOT, 'node_modules/.vite', o.id),
+    define: {
+      // A boolean literal, so every `if (… NASIKO_MOCKS_COMPILED_IN)` folds before bundling and a live production build
+      // drops every mock-only path, MSW's ~280 KB gz loader included (shared/app-core/src/env.ts MOCKS_COMPILED_IN).
+      'import.meta.env.NASIKO_MOCKS_COMPILED_IN': JSON.stringify(
+        o.mode !== 'production' || env.VITE_NASIKO_ALLOW_MOCK_BUILD === 'true',
+      ),
+      'import.meta.env.NASIKO_WEAVE_COMPILED_IN': JSON.stringify(weaveCompiledIn(o.mode)),
+    },
     plugins: [
       leakGuard(o),
       // Must run before react(): it generates the edition's src/routeTree.gen.ts from the core's routes.
@@ -347,12 +399,13 @@ export function nasikoApp(o: AppOptions): UserConfig {
       }),
       tailwindcss(),
       routesManifest(routes),
-      precompressed(),
+      // NASIKO_PRECOMPRESS=0: a bundle no server negotiates encodings for (the desktop app embeds it compressed).
+      ...(env.NASIKO_PRECOMPRESS === '0' ? [] : [precompressed()]),
       apiMode(),
-      analyticsInBuildsOnly(),
       zodJitless(),
       bootGuard(),
       cspHashes(),
+      errorReportingRelease(env),
     ],
     resolve: {
       alias: {
@@ -375,9 +428,25 @@ export function nasikoApp(o: AppOptions): UserConfig {
       emptyOutDir: true,
       // scripts/check-budgets.ts reads it (dist/.vite/manifest.json; not served, the Rust embed skips dotfiles).
       manifest: true,
-      // Off in every edition (Vite's default, made explicit): a map would publish private EE source under /assets.
-      sourcemap: false,
+      // Off in every edition: a map would publish private EE source under /assets. The one exception is a release
+      // build that uploads them to Sentry (NASIKO_SOURCEMAPS=hidden): `hidden` writes the maps without the
+      // `sourceMappingURL` comment, and scripts/sentry-sourcemaps.ts uploads, then deletes, every one of them before
+      // the bundle is embedded (the servers' build.rs refuses a release build that still has one).
+      sourcemap: env.NASIKO_SOURCEMAPS === 'hidden' ? 'hidden' : false,
       rolldownOptions: {
+        // `"use no memo"` is the React Compiler's opt-out. The compiler (a Babel transform) has already read it by the
+        // time Rolldown bundles the module, so the directive being dropped from the bundle changes nothing. Any other
+        // directive still warns.
+        onwarn(warning, warn) {
+          if (
+            warning.code === 'MODULE_LEVEL_DIRECTIVE' &&
+            warning.message.includes('"use no memo"')
+          )
+            return
+          warn(warning)
+        },
+        // The per-plugin timing report prints on every build; profile with `node --cpu-prof` when it matters.
+        checks: { pluginTimings: false },
         output: {
           // visx (+ d3) is most of the chart pages' weight; its own chunk keeps it cacheable across page changes.
           // Shared deps (React) must not be dragged in, or the entry would import the charts chunk. So @visx/text's own

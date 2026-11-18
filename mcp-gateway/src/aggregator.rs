@@ -222,8 +222,10 @@ mod tests {
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
-        let redis = redis::Client::open("redis://127.0.0.1:1/")
-            .expect("lazy redis client construction must not touch the network");
+        let redis = nasiko_redis::SharedRedis::new(
+            redis::Client::open("redis://127.0.0.1:1/")
+                .expect("lazy redis client construction must not touch the network"),
+        );
         McpState {
             db,
             redis,
@@ -246,13 +248,13 @@ mod tests {
                 tool_search_mode: crate::config::ToolSearchMode::None,
                 tool_search_tool_limit: 15,
                 tool_search_meta_limit: 10,
-                openai_api_key: None,
                 embedding_model: "text-embedding-3-small".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
+                capture_content: false,
             },
             providers: Providers {
-                composio: None,
+                composio: Default::default(),
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),

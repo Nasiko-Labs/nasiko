@@ -1,14 +1,28 @@
 /**
- * Needs you (plans/feat-overview.md §6): the inbox, most urgent first. Severity is said once, by a plain icon beside
- * the text (design review 9A); five rows show and the rest scroll inside the card (2A); the header always says when
- * it last checked (8A); a failed source adds a line and never turns into "Nothing needs you" (5A).
+ * Needs your attention (plans/feat-overview.md §6; "Needs you" until 2026-11-05): the inbox, most urgent first.
+ * Severity is said once, by a plain icon beside the text (design review 9A); five rows show and the rest scroll inside
+ * the card (2A); the header always says when it last checked (8A); a failed source adds a line and never turns into
+ * "Nothing needs your attention" (5A).
+ *
+ * 2026-11-05: an all-clear names what it checked (one line per source that answered), so an empty inbox reads as
+ * "watched and fine", not as a blank card; and the setup items (LLM router, workflows, MCP servers) sit under the
+ * alerts in their own group, always: one not set up yet is a step to take, one that is says how many exist and links
+ * to them. They are suggestions, never alerts: no severity, no "failed" line.
  */
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { OpenFlowLink } from '@nasiko/features/flows/components/OpenFlowLink'
 import { Link } from '@tanstack/react-router'
-import { CircleAlert, Hand, TriangleAlert } from 'lucide-react'
+import {
+  Check,
+  CircleAlert,
+  CircleCheck,
+  Hand,
+  Plug,
+  TriangleAlert,
+  Waypoints,
+  Workflow,
+} from 'lucide-react'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { withButtonStyle } from '@nasiko/ui/primitives/button'
 import { ScrollArea } from '@nasiko/ui/primitives/scroll-area'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
@@ -17,7 +31,14 @@ import { rememberRailView } from '@nasiko/features/chat/rememberTarget'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { NeedsYou as NeedsYouData } from '../api'
 import { copy } from '../copy'
-import { budgetView, type NeedRow, type Severity } from '../needs'
+import {
+  budgetView,
+  type NeedRow,
+  type SetupId,
+  type SetupItem,
+  type Severity,
+  type SourceId,
+} from '../needs'
 import { CHECKED_TICK_MS, LAST_WEEK, NEEDS_VISIBLE_ROWS } from '../tuning'
 import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
 
@@ -54,11 +75,19 @@ function Action({ children }: { children: ReactNode }) {
   })
 }
 
+/**
+ * One row of the inbox, alerts and setup items alike: hairline rows at every width, as Fleet health beside it lists
+ * agents (user 2026-11-05: tiles read boxy for these; they were three across from 900 px of card before).
+ */
+const ROW_ITEM = 'border-t border-border first:border-t-0'
+
 export function NeedsYou({
   data,
   now,
   userId,
   pausedFlows,
+  setup = [],
+  watch = null,
   className,
 }: {
   data: NeedsYouData
@@ -66,6 +95,10 @@ export function NeedsYou({
   userId: string
   /** Chat session → its paused flow (plans/feat-flows.md O2, amended 2026-10-06): a request row links it. */
   pausedFlows?: ReadonlyMap<string, string>
+  /** The setup items under the alerts (`useSetupSteps`). */
+  setup?: readonly SetupItem[]
+  /** Fleet health's Watch agents (`watchSummary`): one row when the inbox is otherwise empty. */
+  watch?: { count: number; detail: string } | null
   className?: string
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null)
@@ -83,7 +116,11 @@ export function NeedsYou({
     return () => clearInterval(t)
   }, [])
   const ageNow = Math.max(now, clock)
-  const count = { action: 0, watch: 0, waiting: 0 }
+  const setupLeft = setup.filter((i) => !i.count).length
+  // Watch agents are promoted only into an inbox with nothing else in it (user 2026-11-05).
+  const watchRow: NeedRow | null =
+    needs.empty && watch ? { key: 'watch', kind: 'watch', severity: 'watch', ...watch } : null
+  const count = { action: 0, watch: watchRow ? 1 : 0, waiting: 0 }
   for (const r of needs.rows) count[r.severity]++
   return (
     <Card
@@ -97,15 +134,19 @@ export function NeedsYou({
         count.action > 0 && 'border-destructive/35 shadow-[inset_0_3px_0_var(--color-destructive)]',
       )}
       meta={
-        needs.rows.length ? (
+        needs.rows.length || watchRow || setupLeft ? (
           <span className="inline-flex gap-3 font-medium">
             {(['action', 'watch', 'waiting'] as const).map((s) =>
               count[s] ? (
                 <span key={s} className={ICON[s].tone}>
-                  {copy.needs.count[s](count[s])}
+                  {/* The promoted row counts its agents, not itself. */}
+                  {copy.needs.count[s](s === 'watch' && watchRow ? (watch?.count ?? 0) : count[s])}
                 </span>
               ) : null,
             )}
+            {setupLeft ? (
+              <span className="font-normal">{copy.needs.setupCount(setupLeft)}</span>
+            ) : null}
           </span>
         ) : undefined
       }
@@ -129,24 +170,21 @@ export function NeedsYou({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col gap-2">
           {needs.empty ? (
-            <div data-testid="needs-empty">
-              <EmptyState title={copy.needs.nothing} className="py-6 md:py-6" />
-            </div>
+            <>
+              <AllClear checked={needs.checked} urgentOnly={!!watchRow || setupLeft > 0} />
+              {watchRow ? (
+                <div className="border-t border-border pr-2.5">
+                  <NeedRowView row={watchRow} now={now} userId={userId} />
+                </div>
+              ) : null}
+            </>
           ) : needs.rows.length ? (
             // Five rows show; the list scrolls inside the card after that (design review 2A).
             // Taller on touch, where row actions are 44 px (/ship review): five rows still fit without clipping.
             <ScrollArea className="[&>[data-slot=scroll-area-viewport]]:max-h-70 pointer-coarse:[&>[data-slot=scroll-area-viewport]]:max-h-84 [&>[data-slot=scroll-area-viewport]>div]:block!">
-              {/* Full width on the Overview: from 900 px of card the rows are tiles three across, so a short list never
-                  leaves the card's lower half empty. Narrower they are hairline rows. */}
-              <ul
-                className="grid grid-cols-1 gap-x-3 pr-2.5 @[900px]/card:grid-cols-3 @[900px]/card:gap-y-3"
-                aria-label={copy.needs.title}
-              >
+              <ul className="pr-2.5" aria-label={copy.needs.title}>
                 {needs.rows.map((r) => (
-                  <li
-                    key={r.key}
-                    className="border-t border-border first:border-t-0 @[900px]/card:rounded-lg @[900px]/card:border @[900px]/card:bg-muted/20 @[900px]/card:px-3 @[900px]/card:first:border-t"
-                  >
+                  <li key={r.key} className={ROW_ITEM}>
                     <NeedRowView
                       row={r}
                       now={now}
@@ -170,9 +208,121 @@ export function NeedsYou({
           {needs.failed.map((id) => (
             <SourceFailed key={id} what={copy.needs.source[id]} onRetry={data.retry[id]} />
           ))}
+          {setup.length ? <SetupSteps items={setup} /> : null}
         </div>
       )}
     </Card>
+  )
+}
+
+/** Nothing needs the viewer: say so, then what was checked, one line per source that answered. */
+function AllClear({
+  checked,
+  urgentOnly,
+}: {
+  checked: readonly SourceId[]
+  /** Agents to watch or setup steps are listed below: "nothing urgent", so the sentence doesn't contradict them. */
+  urgentOnly: boolean
+}) {
+  return (
+    <div data-testid="needs-empty" className="flex items-start gap-3 py-2.5">
+      <CircleCheck
+        aria-hidden
+        className="box-content size-4 shrink-0 rounded-md bg-current/12 p-1.5 text-success"
+      />
+      <div className="flex min-w-0 flex-col gap-1.5">
+        <p className="text-sm font-semibold">
+          {urgentOnly ? copy.needs.nothingUrgent : copy.needs.nothing}
+        </p>
+        <ul className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted-foreground">
+          {checked.map((id) => (
+            <li key={id} className="inline-flex items-center gap-1.5">
+              <Check aria-hidden className="size-3.5 text-success" />
+              {copy.needs.clear[id]}
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+/** Where each item's action goes: a step starts the thing, a set-up item opens where it's managed. */
+const SETUP: Record<
+  SetupId,
+  {
+    Icon: typeof Plug
+    to: '/router' | '/workflows/new' | '/mcp'
+    manage: '/router' | '/workflows' | '/mcp'
+  }
+> = {
+  router: { Icon: Waypoints, to: '/router', manage: '/router' },
+  workflows: { Icon: Workflow, to: '/workflows/new', manage: '/workflows' },
+  mcp: { Icon: Plug, to: '/mcp', manage: '/mcp' },
+}
+
+/**
+ * The setup items under the alerts, always in the same order so nothing jumps when one gets set up. A step: a neutral
+ * icon (no severity), what it gives, and the one action. Set up: the icon in the success tone with a check, how many
+ * exist, and where to manage them.
+ */
+function SetupSteps({ items }: { items: readonly SetupItem[] }) {
+  return (
+    <section
+      aria-labelledby="needs-setup"
+      data-testid="needs-setup"
+      className="mt-1 flex flex-col gap-1 border-t border-border pt-3"
+    >
+      <h3 id="needs-setup" className="text-xs font-medium text-muted-foreground">
+        {copy.needs.setupTitle}
+      </h3>
+      {/* The alerts' scrollbar gutter, so both groups' buttons end on one edge. */}
+      <ul className="pr-2.5">
+        {items.map(({ id, count, more }) => {
+          const { Icon, to, manage } = SETUP[id]
+          const c = copy.needs.setup[id]
+          const done = count > 0
+          return (
+            <li key={id} data-kind="setup" data-done={done} className={ROW_ITEM}>
+              <div className="flex items-center gap-3 py-2.5">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
+                  <span aria-hidden className="relative shrink-0">
+                    <Icon
+                      className={cn(
+                        'box-content size-4 rounded-md p-1.5',
+                        done ? 'bg-success/12 text-success' : 'bg-muted text-muted-foreground',
+                      )}
+                    />
+                    {done ? (
+                      <Check className="absolute -right-1 -bottom-1 size-3 rounded-full bg-success p-px text-background" />
+                    ) : null}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p id={`setup-${id}`} className="truncate text-sm font-semibold">
+                      {done ? c.doneTitle : c.title}
+                    </p>
+                    <p className="line-clamp-2 text-xs text-muted-foreground">
+                      {done
+                        ? c.done(more ? `${count}+` : String(count), count === 1 && !more)
+                        : c.detail}
+                    </p>
+                  </div>
+                </div>
+                <Action>
+                  <Link
+                    to={done ? manage : to}
+                    search={{} as never}
+                    aria-describedby={`setup-${id}`}
+                  >
+                    {done ? c.manage : c.action}
+                  </Link>
+                </Action>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
   )
 }
 
@@ -281,6 +431,21 @@ export function NeedRowView({
       ) : null
       break
     }
+    case 'watch':
+      title = copy.needs.watch(row.count)
+      detail = row.detail
+      action = (
+        <Action>
+          <Link
+            to="/agents"
+            search={{ health: 'watch' } as never}
+            aria-label={copy.needs.reviewWatchLabel}
+          >
+            {copy.needs.reviewWatch}
+          </Link>
+        </Action>
+      )
+      break
     case 'sessions':
       title = copy.needs.sessions(row.failed)
       detail = row.agents.join(', ')

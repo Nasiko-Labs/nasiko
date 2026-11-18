@@ -103,7 +103,7 @@ export interface TurnState {
    * How many artifacts existed when the first `trace_meta` arrived. A routed reconnect replays the
    * sub-agent's own resumed stream before the orchestrator's new turn, which starts with
    * `trace_meta` (hitl/mod.rs deliver → trigger_new_orchestrator_turn): only later artifacts are
-   * OpenRuntime's reply.
+   * Open Runtime's reply.
    */
   replyArtifactsFrom: number | null
 }
@@ -216,6 +216,10 @@ function dataEvents(d: Json): TypedEvent[] {
       if (str(d.trace_id)) usage.trace_id = str(d.trace_id)
       if (n('input_tokens') !== null) usage.input_tokens = n('input_tokens') as number
       if (n('output_tokens') !== null) usage.output_tokens = n('output_tokens') as number
+      if (n('cache_read_tokens') !== null)
+        usage.cache_read_tokens = n('cache_read_tokens') as number
+      if (n('cache_creation_tokens') !== null)
+        usage.cache_creation_tokens = n('cache_creation_tokens') as number
       if (n('total_tokens') !== null) usage.total_tokens = n('total_tokens') as number
       if (n('cost_usd') !== null) usage.cost_usd = n('cost_usd') as number
       if (typeof d.estimated === 'boolean') usage.estimated = d.estimated

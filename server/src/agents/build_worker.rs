@@ -60,7 +60,7 @@ pub async fn run(state: AppState, mut notify: mpsc::Receiver<()>) {
     let mut recovery_tick = tokio::time::interval_at(recovery_start, Duration::from_secs(10 * 60));
     recovery_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    // Config clamps this to 1..=16, but the field is a plain `usize` that test
+    // Config clamps this to 1..=256, but the field is a plain `usize` that test
     // and bench harnesses set by struct literal — a 0 would make the drain loop
     // body unreachable and silently park the worker forever.
     let concurrency = state.config.build_concurrency.max(1);
@@ -585,6 +585,7 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 state.http_client.clone(),
                 state.config.git_clone_allowed_hosts.clone(),
                 state.config.capability_generator_model.clone(),
+                state.llm_backend.clone(),
             )
             .await;
         }
@@ -662,6 +663,9 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
     };
 
     mark_job(&state.db, job.id, status, err.as_deref()).await;
+    if let (Some(agent_id), "done") = (job.agent_id, status) {
+        super::sandbox_smoke::smoke_after_build(&state, agent_id, build_id).await;
+    }
     // If the agent was deleted mid-build, the cascade will have deleted this build_jobs row —
     // the UPDATE above is a no-op (0 rows affected) and that's fine.
 }

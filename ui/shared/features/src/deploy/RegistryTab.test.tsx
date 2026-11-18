@@ -27,21 +27,21 @@ async function importRef(ref: string) {
 
 describe('parseReference', () => {
   it('reads host/owner/name[:tag] and rejects anything without a real host', () => {
-    expect(parseReference('registry.nasiko.dev/acme/bot:1.2.0')).toEqual({
-      host: 'registry.nasiko.dev',
+    expect(parseReference('registry.nasiko.com/acme/bot:1.2.0')).toEqual({
+      host: 'registry.nasiko.com',
       repo: 'acme/bot',
       tag: '1.2.0',
     })
-    expect(parseReference('https://registry.nasiko.dev/a/b/c')).toEqual({
-      host: 'registry.nasiko.dev',
+    expect(parseReference('https://registry.nasiko.com/a/b/c')).toEqual({
+      host: 'registry.nasiko.com',
       repo: 'a/b/c',
       tag: 'latest',
     })
     expect(parseReference('localhost:5000/acme/bot')).toMatchObject({ host: 'localhost:5000' })
     for (const bad of [
       'acme/bot',
-      'registry.nasiko.dev/bot',
-      'registry.nasiko.dev/acme/bot:',
+      'registry.nasiko.com/bot',
+      'registry.nasiko.com/acme/bot:',
       'not a ref',
       '',
     ])
@@ -61,7 +61,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
 
   it('opens the build page for an agent package it built', async () => {
     const { router } = renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/nasiko/packaged-bot:0.5.0')
+    await importRef('registry.nasiko.com/nasiko/packaged-bot:0.5.0')
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/builds\/5eed000b-/), {
       timeout: 5000,
     })
@@ -69,7 +69,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
 
   it('opens the agent page for a plain image it pulled (no build)', async () => {
     const { router } = renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/acme/pulled-bot:1.0.0')
+    await importRef('registry.nasiko.com/acme/pulled-bot:1.0.0')
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/agents\/5eed000c-/), {
       timeout: 5000,
     })
@@ -90,7 +90,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
   it('puts a version the agent already built on the field (the build-from-source path)', async () => {
     const b = deployMockState().state.builds[0]!
     renderApp('/deploy?method=registry')
-    await importRef(`registry.nasiko.dev/nasiko/${b.agentName}:${b.record.version_tag}`)
+    await importRef(`registry.nasiko.com/nasiko/${b.agentName}:${b.record.version_tag}`)
     expect(
       await screen.findByText(/already exists in this agent's history/, {}, { timeout: 5000 }),
     ).toBeInTheDocument()
@@ -99,13 +99,13 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
   it('sends the reference without a scheme (the server splits the host at the first slash)', async () => {
     const rec = recordRequestBodies()
     const { router } = renderApp('/deploy?method=registry')
-    await importRef('https://registry.nasiko.dev/acme/pulled-bot:1.0.0')
+    await importRef('https://registry.nasiko.com/acme/pulled-bot:1.0.0')
     await waitFor(() => expect(router.state.location.pathname).toMatch(/^\/agents\//), {
       timeout: 5000,
     })
     rec.stop()
     expect(rec.requests.find((r) => r.url.pathname === '/api/import/registry')!.body).toEqual({
-      reference: 'registry.nasiko.dev/acme/pulled-bot:1.0.0',
+      reference: 'registry.nasiko.com/acme/pulled-bot:1.0.0',
     })
   })
 
@@ -123,7 +123,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
       }),
     )
     const { router } = renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/acme/slow-bot:1.0.0')
+    await importRef('registry.nasiko.com/acme/slow-bot:1.0.0')
     await screen.findByTestId('import-progress', {}, { timeout: 5000 })
     await router.navigate({ to: '/builds' })
     release()
@@ -137,7 +137,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
   it('says so when registry import is turned off, and offers Upload', async () => {
     configureMocks({ variant: 'deploy-registry-disabled' })
     renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/acme/bot:1.0.0')
+    await importRef('registry.nasiko.com/acme/bot:1.0.0')
     expect(
       await screen.findByText(copy.registry.disabled, {}, { timeout: 5000 }),
     ).toBeInTheDocument()
@@ -149,7 +149,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
   it('says the agent did not start when the deploy failed (container_name null)', async () => {
     configureMocks({ variant: 'deploy-registry-not-running' })
     renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/acme/lazy-bot:1.0.0')
+    await importRef('registry.nasiko.com/acme/lazy-bot:1.0.0')
     const alert = await screen.findByTestId('import-not-running', {}, { timeout: 5000 })
     expect(
       within(alert).getByRole('link', { name: copy.registry.openAgent }).getAttribute('href'),
@@ -167,7 +167,7 @@ describe('Deploy: from a registry (plans/feat-deploy.md §4.3)', () => {
       }),
     )
     const { router } = renderApp('/deploy?method=registry')
-    await importRef('registry.nasiko.dev/acme/slow-bot:1.0.0')
+    await importRef('registry.nasiko.com/acme/slow-bot:1.0.0')
     const progress = await screen.findByTestId('import-progress', {}, { timeout: 5000 })
     expect(within(progress).getAllByRole('listitem')).toHaveLength(2)
     expect(within(progress).getByText(copy.registry.keepUsing)).toBeInTheDocument()

@@ -34,7 +34,9 @@ pub fn route_tool<'a>(
             .ok_or_else(|| {
                 McpError::BadRequest(format!(
                     "Connector '{prefix}' is not available for this agent. \
-                     It may be disabled in the agent's permission settings."
+                     It may be disabled in the agent's permission settings, or you have not \
+                     connected your own account for it: tools run on the chatting user's own \
+                     connections, never the agent owner's (connect it in Connect → MCP)."
                 ))
             });
     }

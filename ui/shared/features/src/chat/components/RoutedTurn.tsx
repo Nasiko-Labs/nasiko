@@ -1,5 +1,5 @@
 /**
- * A routed turn (v1b §5.5-§5.8). Answer first: reply → "Answered by OpenRuntime[, using …]" →
+ * A routed turn (v1b §5.5-§5.8). Answer first: reply → "Answered by Open Runtime[, using …]" →
  * footer → "Activity · N agents", collapsed. While live, one status line (Working / Asking /
  * Writing) with Activity expandable. Agent names are plain text; links to the current agent of a
  * name sit only inside an expanded agent row (DP9). Every model- or agent-supplied string here
@@ -373,7 +373,7 @@ export function Activity({
   )
 }
 
-/** "Answered by OpenRuntime", plus ", using …" only from observed data (C6, DP9). */
+/** "Answered by Open Runtime", plus ", using …" only from observed data (C6, DP9). */
 function Attribution({ names }: { names: readonly string[] }) {
   return (
     <p className="text-xs text-muted-foreground" data-testid="attribution">
@@ -604,14 +604,15 @@ export function RoutedLive({
       }
       const create = e.key === 'createFailed' || e.key === 'saveUserFailed'
       const refusal = refusalOf(e, chatRefusal)
-      const { actions, links } = refusal
-        ? { actions: [], links: undefined }
-        : create
-          ? {
-              actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
-              links: undefined,
-            }
-          : routedActions(e, live.userText, handlers, resume)
+      const { actions, links } =
+        refusal && !refusal.retry
+          ? { actions: [], links: undefined }
+          : create
+            ? {
+                actions: [{ label: copy.tryAgain, onClick: tryAgain, primary: true }],
+                links: undefined,
+              }
+            : routedActions(e, live.userText, handlers, resume)
       end = (
         <ErrorNotice
           error={e}

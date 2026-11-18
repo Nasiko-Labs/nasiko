@@ -44,6 +44,10 @@ fn sum_cost(costs: impl Iterator<Item = f64>) -> f64 {
 const RECENT_SESSION_LIMIT: i64 = 20;
 /// Model names per harness in `top_models`, by turns.
 const TOP_MODELS: usize = 2;
+/// Models per harness in `models`, by turns.
+const MODELS_PER_HARNESS: usize = 10;
+/// Tool names per harness in `tools`, by calls.
+const TOOLS_PER_HARNESS: usize = 10;
 
 // ─── Request ─────────────────────────────────────────────────────────────────
 
@@ -88,9 +92,38 @@ pub struct HarnessTotals {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct HarnessEntry {
     pub harness: String,
+    /// The first names in `models`.
     pub top_models: Vec<String>,
+    /// Most turns first, ties by name. A mixed-model turn has no single model
+    /// (`trace_usage.model` is NULL) and is left out, so these need not add up
+    /// to the harness's own totals.
+    pub models: Vec<HarnessModel>,
+    /// Subagent sessions whose first turn started in the window.
+    pub subagent_runs: i64,
+    /// Most calls first, ties by name.
+    pub tools: Vec<HarnessTool>,
     #[serde(flatten)]
     pub totals: HarnessTotals,
+}
+
+/// One model's share of a harness's turns in the window.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct HarnessModel {
+    pub model: String,
+    pub turns: i64,
+    /// Every token class, as `HarnessTotals::tokens` counts them.
+    pub tokens: i64,
+    pub cost_usd: f64,
+}
+
+/// One tool's calls through a harness in the window.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct HarnessTool {
+    pub name: String,
+    pub calls: i64,
+    /// Calls that ended `failed` or `timed_out`: ingest's `turn_tool_errors`
+    /// rule. A denied or cancelled call is the user's decision, not a failure.
+    pub failed: i64,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -369,7 +402,7 @@ async fn individual(
                             + u.cache_read_tokens + u.cache_creation_tokens), 0)::bigint AS tokens,
                COALESCE(sum(u.cost_usd), 0)::float8 AS cost_usd,
                count(*) FILTER (
-                   WHERE u.cost_usd = 0
+                   WHERE (u.cost_usd = 0 OR u.metadata->'pricing'->>'source' = 'Default')
                      AND (u.input_tokens + u.output_tokens
                           + u.cache_read_tokens + u.cache_creation_tokens) > 0
                )::bigint AS unpriced_calls
@@ -415,7 +448,9 @@ async fn individual(
         HashMap::new()
     };
 
-    let top_models = top_models_by_harness(db, user, w).await?;
+    let mut models = models_by_harness(db, user, w).await?;
+    let subagent_runs = subagent_runs_by_harness(db, user, w).await?;
+    let mut tools = tools_by_harness(db, user, w).await?;
 
     // Every harness the developer is registered on or active with, so an idle
     // seat still appears with zeros rather than vanishing.
@@ -445,9 +480,17 @@ async fn individual(
             let a = by_name.get(h.as_str());
             let turns = a.map_or(0, |r| r.turns);
             let is_registered = registered.contains(h);
+            let models = models.remove(h).unwrap_or_default();
             HarnessEntry {
                 harness: h.clone(),
-                top_models: top_models.get(h).cloned().unwrap_or_default(),
+                top_models: models
+                    .iter()
+                    .take(TOP_MODELS)
+                    .map(|m| m.model.clone())
+                    .collect(),
+                models,
+                subagent_runs: subagent_runs.get(h).copied().unwrap_or(0),
+                tools: tools.remove(h).unwrap_or_default(),
                 totals: HarnessTotals {
                     scope_devs: 1,
                     active_devs: i64::from(turns > 0),
@@ -523,14 +566,17 @@ async fn display_name(
         .unwrap_or_else(|| claims.sub.clone()))
 }
 
-/// Up to `TOP_MODELS` model names per harness, by turns.
-async fn top_models_by_harness(
+/// Up to `MODELS_PER_HARNESS` models per harness, most turns first.
+async fn models_by_harness(
     db: &PgPool,
     user: uuid::Uuid,
     w: &Window,
-) -> Result<HashMap<String, Vec<String>>, sqlx::Error> {
-    let rows: Vec<(String, String, i64)> = sqlx::query_as(
-        "SELECT a.coding_agent_integration_id AS harness, u.model, count(*)::bigint AS turns \
+) -> Result<HashMap<String, Vec<HarnessModel>>, sqlx::Error> {
+    let rows: Vec<(String, String, i64, i64, f64)> = sqlx::query_as(
+        "SELECT a.coding_agent_integration_id AS harness, u.model, count(*)::bigint AS turns, \
+                COALESCE(sum(u.input_tokens + u.output_tokens \
+                             + u.cache_read_tokens + u.cache_creation_tokens), 0)::bigint AS tokens, \
+                COALESCE(sum(u.cost_usd), 0)::float8 AS cost_usd \
            FROM trace_usage u \
            JOIN agents a ON a.id = u.agent_id \
           WHERE u.user_id = $1 \
@@ -545,14 +591,116 @@ async fn top_models_by_harness(
     .bind(w.end)
     .fetch_all(db)
     .await?;
-    let mut out: HashMap<String, Vec<String>> = HashMap::new();
-    for (harness, model, _) in rows {
+    Ok(first_per_harness(
+        rows.into_iter()
+            .map(|(harness, model, turns, tokens, cost_usd)| {
+                (
+                    harness,
+                    HarnessModel {
+                        model,
+                        turns,
+                        tokens,
+                        cost_usd,
+                    },
+                )
+            }),
+        MODELS_PER_HARNESS,
+    ))
+}
+
+/// Subagent sessions per harness whose first turn started in the window.
+///
+/// A subagent run is a `chat_sessions` row naming the session that spawned it
+/// (`parent_session_id`, set at ingest). Its `created_at` is its earliest
+/// turn's start: ingest keeps the least. A deleted session is left out, as
+/// `subagents_sql` leaves it out of its parent's children.
+async fn subagent_runs_by_harness(
+    db: &PgPool,
+    user: uuid::Uuid,
+    w: &Window,
+) -> Result<HashMap<String, i64>, sqlx::Error> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT a.coding_agent_integration_id AS harness, count(*)::bigint AS runs \
+           FROM chat_sessions c \
+           JOIN agents a ON a.id = c.agent_id \
+          WHERE c.user_id = $1 \
+            AND a.coding_agent_integration_id IS NOT NULL \
+            AND c.parent_session_id IS NOT NULL \
+            AND c.deleted_at IS NULL \
+            AND c.created_at >= $2 AND c.created_at < $3 \
+          GROUP BY 1",
+    )
+    .bind(user)
+    .bind(w.start)
+    .bind(w.end)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Up to `TOOLS_PER_HARNESS` tools per harness, most calls first.
+///
+/// From the receipts: `trace_usage` keeps only a per-turn count. Every capture
+/// policy keeps a call's name and status (metadata-only strips arguments and
+/// output), so this covers turns whose content was never stored, which
+/// `chat_messages.metadata` does not. A receipt the 0068 backfill has not
+/// reached has no `turn_started_at` yet and is left out until it has.
+///
+/// ponytail: reading `payload` detoasts the whole receipt (prompt, response,
+/// tool outputs) for every turn in the window. A typed per-call column written
+/// at ingest, as `turn_tool_errors` is, would avoid it if this shows up.
+async fn tools_by_harness(
+    db: &PgPool,
+    user: uuid::Uuid,
+    w: &Window,
+) -> Result<HashMap<String, Vec<HarnessTool>>, sqlx::Error> {
+    let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+        "SELECT a.coding_agent_integration_id AS harness, \
+                t.call->>'name' AS name, \
+                count(*)::bigint AS calls, \
+                count(*) FILTER (WHERE t.call->>'status' IN ('failed', 'timed_out'))::bigint AS failed \
+           FROM coding_agent_telemetry_events e \
+           JOIN agents a ON a.id = e.agent_id \
+          CROSS JOIN LATERAL jsonb_array_elements(e.payload->'turn'->'tool_calls') AS t(call) \
+          WHERE e.user_id = $1 \
+            AND a.coding_agent_integration_id IS NOT NULL \
+            AND e.turn_started_at >= $2 AND e.turn_started_at < $3 \
+          GROUP BY 1, 2 \
+          ORDER BY 1, 3 DESC, 2",
+    )
+    .bind(user)
+    .bind(w.start)
+    .bind(w.end)
+    .fetch_all(db)
+    .await?;
+    Ok(first_per_harness(
+        rows.into_iter().map(|(harness, name, calls, failed)| {
+            (
+                harness,
+                HarnessTool {
+                    name,
+                    calls,
+                    failed,
+                },
+            )
+        }),
+        TOOLS_PER_HARNESS,
+    ))
+}
+
+/// The first `cap` items of each harness, in the order the rows arrive.
+fn first_per_harness<T>(
+    rows: impl Iterator<Item = (String, T)>,
+    cap: usize,
+) -> HashMap<String, Vec<T>> {
+    let mut out: HashMap<String, Vec<T>> = HashMap::new();
+    for (harness, item) in rows {
         let slot = out.entry(harness).or_default();
-        if slot.len() < TOP_MODELS {
-            slot.push(model);
+        if slot.len() < cap {
+            slot.push(item);
         }
     }
-    Ok(out)
+    out
 }
 
 /// Per UTC day × harness, sorted by date then harness, so the trend needs no
@@ -708,6 +856,16 @@ mod tests {
         assert!(empty.iter().copied().sum::<f64>().is_sign_negative());
         assert!(sum_cost(empty.into_iter()).is_sign_positive());
         assert_eq!(sum_cost([1.5, 2.25].into_iter()), 3.75);
+    }
+
+    #[test]
+    fn each_harness_keeps_its_first_items_up_to_the_cap() {
+        let rows = [("claude", 1), ("claude", 2), ("codex", 3), ("claude", 4)]
+            .into_iter()
+            .map(|(h, n)| (h.to_string(), n));
+        let capped = first_per_harness(rows, 2);
+        assert_eq!(capped["claude"], [1, 2], "arrival order, cut at the cap");
+        assert_eq!(capped["codex"], [3]);
     }
 
     #[test]

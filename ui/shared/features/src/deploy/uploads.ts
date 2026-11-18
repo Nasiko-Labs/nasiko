@@ -8,11 +8,18 @@
  * - R7: the XHR comes from an injectable factory (the default is the browser's); tests drive a fake one.
  *
  * `POST /api/agents/upload` (`agents/upload.rs` `upload_and_deploy`): multipart `name`, `file`, optional `version_tag`,
- * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`, `inbound_format`;
+ * `ports` (CSV), `env` (a JSON object as a string), `writable` ("true"/"false"), `writable_path`;
  * 202 `{data: {build_id, agent_id, …}}`; errors are plain text (400/409/413/500).
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import type { QueryClient } from '@tanstack/react-query'
-import { ApiError, isAbortError, safeJson } from '@nasiko/data-access/client'
+import {
+  ApiError,
+  apiUrl,
+  failureMessage,
+  isAbortError,
+  safeJson,
+} from '@nasiko/data-access/client'
 import type { components } from '@nasiko/data-access/schema.gen'
 import { clearFollower, follow, importFinished } from './follower'
 import { parseReference } from './registry'
@@ -25,7 +32,6 @@ export interface UploadFields {
   /** Sent only when the user touched storage: the server treats these as tri-state. */
   writable?: boolean
   writablePath?: string
-  inboundFormat?: 'openai' | 'anthropic' | 'gemini'
 }
 
 export type UploadState =
@@ -93,7 +99,6 @@ function formFor(file: Blob, fileName: string, f: UploadFields): FormData {
   if (f.env && Object.keys(f.env).length) fd.set('env', JSON.stringify(f.env))
   if (f.writable !== undefined) fd.set('writable', String(f.writable))
   if (f.writable && f.writablePath) fd.set('writable_path', f.writablePath)
-  if (f.inboundFormat) fd.set('inbound_format', f.inboundFormat)
   fd.set('file', file, fileName)
   return fd
 }
@@ -109,7 +114,9 @@ function send(
   return new Promise((resolve, reject) => {
     const xhr = xhrFactory()
     entry.xhr = xhr
-    xhr.open('POST', UPLOAD_PATH)
+    // Against the API base, as every apiFetch is: the workspace's control plane can be another origin than the page
+    // (the multi-tenant dashboard), and a bare path would post to the page's own host instead.
+    xhr.open('POST', apiUrl(UPLOAD_PATH).href)
     xhr.withCredentials = true
     xhr.setRequestHeader('Accept', 'application/json')
     xhr.upload.onprogress = (e) => {
@@ -136,7 +143,14 @@ function send(
           ),
         )
       }
-      reject(new ApiError(xhr.status, body, UPLOAD_PATH, `POST ${UPLOAD_PATH} → ${xhr.status}`))
+      reject(
+        new ApiError(
+          xhr.status,
+          body,
+          UPLOAD_PATH,
+          failureMessage(xhr.status, body, 'POST', UPLOAD_PATH),
+        ),
+      )
     }
     xhr.onerror = () =>
       reject(new ApiError(502, null, UPLOAD_PATH, `POST ${UPLOAD_PATH} → network error`))
@@ -158,6 +172,7 @@ export function startUpload(
 ): Promise<UploadState> {
   const current = entries.get(userId)
   if (current?.state.phase === 'uploading') return Promise.resolve(current.state)
+  productEvent('agent_deploy_started', { method: 'upload' })
   const entry: Entry = {
     state: { phase: 'uploading', fileName, fields, loaded: 0, total: file.size },
     xhr: null,
@@ -259,6 +274,7 @@ export function startImport(
 ): Promise<ImportState> {
   const current = imports.get(userId)
   if (current?.phase === 'importing') return Promise.resolve(current)
+  productEvent('agent_deploy_started', { method: 'registry' })
   const started: ImportState = { phase: 'importing', reference, startedAt: Date.now() }
   imports.set(userId, started)
   emit()
@@ -273,6 +289,12 @@ export function startImport(
     if (imports.get(userId) === started) {
       imports.set(userId, state)
       emit()
+      // Done or failed, the agent's row may have changed (the server writes it before the build), so every agent list
+      // re-reads, as after a followed build; the restart watches are cache-only state (NAS-1449).
+      void qc.invalidateQueries({
+        queryKey: ['agents'],
+        predicate: (q) => q.queryKey[1] !== 'watch',
+      })
       if (state.phase === 'done') {
         const name = parseReference(reference)?.repo.split('/').pop() ?? reference
         const toasted = importFinished(
@@ -329,6 +351,7 @@ export const uploadsEpoch = () => epoch
 
 export function rememberClone(buildId: string, repo: string) {
   clonedRepos.set(buildId, repo)
+  productEvent('agent_deploy_started', { method: 'github' })
 }
 
 export const clonedRepo = (buildId: string): string | null => clonedRepos.get(buildId) ?? null

@@ -9,11 +9,12 @@ import { IS_MAC } from '@nasiko/ui/lib/keys'
 import { SettingHeading, SettingRow, SettingRows } from './components/SettingRow'
 import { copy } from './copy'
 
-const label = (key: string) => (key === 'Mod' ? (IS_MAC ? '⌘' : 'Ctrl') : key)
+const label = (key: string) =>
+  key === 'Mod' ? (IS_MAC ? '⌘' : 'Ctrl') : key === 'Alt' && IS_MAC ? '⌥' : key
 
 export function ShortcutsPage() {
   return (
-    <div className="flex flex-col">
+    <div data-tour="shortcuts-list" className="flex flex-col">
       <PageHeader title={copy.shortcuts.label} description={copy.shortcuts.sub} />
       {copy.shortcuts.groups.map((g) => (
         <section key={g.title}>

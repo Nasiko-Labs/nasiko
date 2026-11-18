@@ -19,7 +19,7 @@ import { Spinner } from '@nasiko/ui/primitives/spinner'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { copy } from '@nasiko/app-core/shell/copy'
 import { ForgotPasswordLink } from '@nasiko/app-shell/shell/ForgotPassword'
-import { LoginGlow, LoginShowcase } from '@nasiko/app-shell/shell/LoginShowcase'
+import { LoginShowcase } from '@nasiko/app-shell/shell/LoginShowcase'
 import { NasikoLockup } from '@nasiko/ui/composites/NasikoMark'
 // The waitlist line is off while the free assessment replaces it (user request 2026-10-22).
 // import { WaitlistLoginLink } from '@nasiko/app-shell/shell/WaitlistCta'
@@ -45,6 +45,7 @@ import {
   withSessionLock,
 } from '@nasiko/app-core/session'
 import { env } from '@nasiko/app-core/env'
+import { identifySignIn } from '@nasiko/app-core/analytics'
 import { opt } from '@nasiko/ui/lib/search'
 
 export const Route = createFileRoute('/login')({
@@ -95,6 +96,7 @@ function LoginPage() {
           bumpSignInGeneration()
           clearSignedOutMark()
           broadcastSession({ type: 'signed-in', sub: me.sub })
+          reportSignIn(me.username)
         })
         await resetQueryClient(queryClient)
         await navigate({ to: safeRedirect(redirect), replace: true })
@@ -152,6 +154,7 @@ function LoginPage() {
         bumpSignInGeneration()
         clearSignedOutMark()
         broadcastSession({ type: 'signed-in', sub: result.user_id })
+        reportSignIn(result.username)
       })
       // A new login may be a different account: drop every cached query so no page shows the
       // previous account's data. The _app route's beforeLoad (ensureQueryData(meQuery)) then
@@ -176,12 +179,9 @@ function LoginPage() {
   }
 
   return (
-    // The prototype's layout (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §1), mirrored and full page:
-    // the decorative showcase over the left half from `md` up, the form column on the right. The page keeps Carbon's muted / card background; the form is centred in its column and capped at max-w-md.
-    // The prototype's page: two equal columns on its warm backdrop (`--showcase-bg`, per mode), 16 px apart and in.
-    <main className="relative isolate grid min-h-svh gap-4 overflow-hidden p-4 [background:var(--showcase-bg)] md:grid-cols-2">
-      {/* One glow behind the whole page, so the two halves read as one page. */}
-      <LoginGlow />
+    // nasiko-login-gradient (2026-11-12): two equal columns from `md` up, edge to edge, the decorative showcase on the
+    // left and the form centred on the page's own background on the right.
+    <main className="relative isolate grid min-h-svh overflow-hidden bg-background p-4 md:grid-cols-2 md:p-0">
       {/* aria-hidden and hidden below `md`, so leading the DOM changes neither tab order nor the phone layout. */}
       <LoginShowcase />
       <div className="relative flex flex-col px-4 py-7 md:px-8">
@@ -198,7 +198,8 @@ function LoginPage() {
                 }
               />
             ) : null}
-            <NasikoLockup className="h-6 w-auto self-start text-foreground" />
+            {/* From `md` up the showcase shows the lockup; this one stays the page's named logo for screen readers. */}
+            <NasikoLockup className="h-6 w-auto self-start text-foreground md:sr-only" />
             <h1 className="mt-4 text-[40px] leading-[1.1] font-semibold tracking-[-0.035em]">
               {copy.login.title}
             </h1>
@@ -283,6 +284,16 @@ function LoginPage() {
       </div>
     </main>
   )
+}
+
+/**
+ * Reo's sign-in event, in the background: never delays or fails the sign-in. The address comes from `/api/users/me`
+ * (EE answers it for everyone, OSS for superusers only), else the username when it is one.
+ */
+function reportSignIn(username: string) {
+  void apiFetch<{ email: string | null; display_name: string | null }>('/api/users/me')
+    .catch(() => ({ email: null, display_name: null }))
+    .then((u) => identifySignIn(u.email ?? username, u.display_name))
 }
 
 /** The logout call didn't confirm: say so, and let the user repeat only that call. */

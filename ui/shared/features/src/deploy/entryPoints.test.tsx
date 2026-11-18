@@ -42,9 +42,9 @@ describe('Deploy an agent entry points', () => {
     },
   )
 
-  it('the home and the Agents headers link to /deploy', async () => {
-    // The home's header carries "Deploy an agent" (the Overview's Quick actions card was retired, PR2a).
-    renderApp('/')
+  it('the Agents header links to /deploy', async () => {
+    // The Overview's Quick actions card is gone (user 2026-11-06): only its first run keeps a Deploy button.
+    renderApp('/agents')
     const links = await screen.findAllByRole('link', { name: copy.entry.label }, { timeout: 5000 })
     expect(links.map((l) => l.getAttribute('href'))).toContain('/deploy')
   })

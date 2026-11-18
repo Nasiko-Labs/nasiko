@@ -2,7 +2,8 @@
  * Quick actions (plans/feat-overview.md §9): New chat, Ask the Orchestrator, Deploy an agent (plans/feat-deploy.md §7),
  * Adjust budget when the server has budgets, and the deploy command with Copy as the CLI alternative. The buttons sit
  * side by side once the card is wide enough (it spans the row in some layouts). The first run has its own panel
- * (SetUpNow.tsx).
+ * (SetUpNow.tsx). Weave's catalog only: the Overview dropped it (user 2026-11-06; the sidebar, Agents and "Did you
+ * know?" cover it), but saved views may still name it.
  */
 import { Link } from '@tanstack/react-router'
 import { Gauge, MessageSquare, Route as RouteIcon } from 'lucide-react'

@@ -52,7 +52,6 @@ export const boardCopy = {
     before: 'Before optimizations',
     saved: 'Saved',
     total: 'Total',
-    perDay: 'Per day',
     line: (name: string, usd: string) => `${name}, ${usd} on the bill`,
   },
   /** The ways to save more (the estate's opportunities), largest first. */
@@ -77,18 +76,38 @@ export const boardCopy = {
   tool: {
     off: (days: number) =>
       `Turned off ${days < 1 ? 'today' : days < 2 ? 'yesterday' : `${Math.floor(days)} days ago`}`,
-    empty: 'No tools here.',
   },
   routerLabel: (name: string, spend: string, share: string) =>
     `${name}, ${spend}, ${share} of agent spend`,
   saved: 'Saved',
   savedSub: 'from optimizations',
-  savedLabel: (x: string) => `Saved ${x} from optimizations: open Optimization`,
+  /**
+   * An empty card (FleetBoard's `Blank`): what lands here once it fills, over the one step that fills it (the canvases'
+   * setup steps, `estate/setup.ts`). Cards that fill from traffic alone (the bill) leave the step to the canvas's banner.
+   */
+  empty: {
+    teams: 'Each team’s spend against its budget, with its people.',
+    agents: 'None of the agents here are yours yet.',
+    deploy: 'Deploy an agent',
+    harness: 'Claude Code, Codex and Cursor installs, each by what it spends.',
+    workflows: 'Each workflow’s steps, and how its runs went day by day.',
+    routers: 'Routers pick a model for each call, keep a fallback and carry what they save.',
+    tools: 'The tools your agents call, busiest first, and any that fail.',
+    providers: 'The providers and models your agents call with your key, by what each costs.',
+    providerKey: 'Add a provider key',
+    bill: 'Spend by provider and by source, from the first call.',
+    saved: 'What optimization trims off each call, once calls run.',
+    savedGo: 'Open Optimization',
+    /** The Map's banner while nothing in the range has called a model. */
+    banner: {
+      title: 'No agent has run in this range',
+      body: 'The Map fills from real traffic: the first call brings in spend, providers and models.',
+    },
+  },
   opportunities: (k: number) => `${n(k, 'way', 'ways')} to save more`,
   /** A card's title is a button: it lights the card and opens its insights in the drawer. */
   cardLabel: (what: string) => `${what}: show insights`,
   /** The bill's peak days, each a button that opens the day in the drawer. */
-  dayLabel: (day: string, usd: string) => `${day}: ${usd}, over the daily line. Show the day`,
   routerTile: (name: string, dead: boolean) => (dead ? `${name}, not answering` : name),
   /** A workflow row's state, where a team row has its pace. */
   flowState: (bad: number, warn: number) =>
@@ -97,6 +116,7 @@ export const boardCopy = {
       : warn
         ? `${n(warn, 'step', 'steps')} slow`
         : 'healthy',
+  /** The village's System card (SystemCard.tsx): every part as a list, folded to its counts. */
   system: {
     title: 'System',
     parts: (k: number) => n(k, 'part', 'parts'),
@@ -142,13 +162,15 @@ export const boardCopy = {
     teamsKey: 'Bar: spent, dashed where the month ends, the tick is the limit',
     agents: (k: number, total: number, failing: number) =>
       `${n(k, 'agent', 'agents')} spent ${usd0(total)}; ${failing} failing today.`,
-    agentsKey: 'Big tile: today. Small tiles: the last 18 days, oldest first',
+    agentsKey:
+      'Tiles: the last 18 days, oldest first. Dot: failing (red) or slow or costly (orange) today',
     harness: (installs: number, kinds: number, total: number) =>
       `${n(installs, 'install', 'installs')} of ${n(kinds, 'kind', 'kinds')}, ${usd0(total)} in the range.`,
     harnessKey: 'One seat per install, the busiest first; grey seats are free',
     workflows: (k: number, runs: number, failing: number) =>
       `${n(k, 'workflow', 'workflows')}, ${runs.toLocaleString('en-US')} runs; ${failing} with a failing step.`,
-    workflowsKey: 'One segment per step, colored by the agent or tool it calls',
+    workflowsKey:
+      'Bar: one segment per step, red or orange where that step fails or slows. Tiles: the last 10 days, oldest first',
     tools: (k: number, unused: number, off: number) =>
       `${n(k, 'tool', 'tools')}, ${unused} not used by anything${off ? `, ${off} turned off lately` : ''}.`,
     toolsKey:
@@ -156,7 +178,7 @@ export const boardCopy = {
     bill: (avg: number, peak: number, line: number | null) =>
       `${usd(avg)} a day on average, ${usd(peak)} at the peak${line !== null ? `; the line is ${usd(line)} a day` : ''}.`,
     billKey:
-      'Both sides add up to the total. Dotted on the line: the days that peaked over it; pick one to read it',
+      'Both sides add up to the total. The days that peaked are listed below; pick one to read it',
     optimizations: (pct: number | null, calls: number, all: number) =>
       `${pct !== null ? `${Math.round(pct)}% less spent` : 'Nothing saved yet'}; ${calls.toLocaleString('en-US')} of ${all.toLocaleString('en-US')} calls optimized.`,
     optimizationsKey: 'Bar: what each program saved. Off: no agent has it turned on',
@@ -218,6 +240,17 @@ export const boardCopy = {
     dayTokenops: 'Open the day in TokenOps',
     daySessions: 'Sessions that day',
     allBill: 'Back to the bill',
+    /** A coding-harness kind picked on the board. */
+    kind: {
+      sub: (installs: number, usd: string) =>
+        `${n(installs, 'install', 'installs')}, ${usd} in the range.`,
+      spend: 'Spend',
+      installs: 'Installs',
+      failing: 'Failing',
+      via: 'Goes through',
+      top: 'Installs, busiest first',
+      open: 'Open harnesses',
+    },
   },
   people: (tones: readonly string[]) => {
     const c = (t: string) => tones.filter((x) => x === t).length
@@ -233,12 +266,29 @@ export const boardCopy = {
   usesTitle: (agents: number, harnesses: number, steps: number) =>
     `Used by ${n(agents, 'agent', 'agents')}, ${n(harnesses, 'coding harness', 'coding harnesses')} and ${n(steps, 'workflow step', 'workflow steps')}`,
   installs: (k: number) => n(k, 'install', 'installs'),
+  /** A harness kind's row is a button: it picks the whole kind. */
+  kindLabel: (name: string, usd: string, installs: number) =>
+    `${name}, ${usd}, ${n(installs, 'install', 'installs')}: pick all of them`,
+  /** A workflow's segment: one per step, in its step's state. */
+  stepTitle: (k: number, label: string, state: string) => `Step ${k}, ${label}: ${state}`,
   slots: (k: number) => `${n(k, 'free seat', 'free seats')}: room for the installs still to come`,
   change: (p: number) => `${Math.abs(Math.round(p))}%`,
   changeLabel: (p: number) =>
     `${p <= 0 ? 'Down' : 'Up'} ${Math.abs(Math.round(p))}% on the window before`,
   share: pct,
-  noRoutedSpend: 'No routed spend',
+  /** The LLM Routers card's No router section: what reaches a model with no router between. */
+  direct: {
+    name: 'No router',
+    sub: (agents: number, harnesses: number) =>
+      [
+        agents ? n(agents, 'agent', 'agents') : null,
+        harnesses ? n(harnesses, 'coding harness', 'coding harnesses') : null,
+      ]
+        .filter(Boolean)
+        .join(' · '),
+    label: (usd: string, share: string, agents: number, harnesses: number) =>
+      `No router: ${usd}, ${share} of all spend, from ${n(agents, 'agent', 'agents')} and ${n(harnesses, 'coding harness', 'coding harnesses')} that call their providers directly`,
+  },
   others: 'Other models',
   day: (k: number, state: string) => `${k === 0 ? 'Today' : `${k} days ago`}: ${state}`,
   tone: {
@@ -258,6 +308,7 @@ export const boardCopy = {
   legend: {
     spend: 'Spend, as wide as it is',
     hot: 'Spend going up',
+    failing: 'Failing',
     calls: 'Calls',
   },
 }

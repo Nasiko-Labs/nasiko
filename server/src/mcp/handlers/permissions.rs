@@ -99,6 +99,36 @@ pub async fn list_connectors(
     ))
 }
 
+/// `GET /api/mcp/agents/{agent_id}/my-connections` — the connectors enabled on this agent,
+/// each with where the *caller* stands (`ready`, `connected`, `needs_connection`,
+/// `not_shared`). An agent's tools run on the chatting user's own connections, never its
+/// owner's, so a user the agent is shared with reads this to see which they must connect.
+/// Open to anyone who can use the agent; it reveals nothing about other users' connections.
+#[utoipa::path(
+    get,
+    path = "/api/mcp/agents/{agent_id}/my-connections",
+    tag = "mcp",
+    params(("agent_id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "The agent's enabled connectors with the caller's own standing — `data.connectors` is a list", body = McpEnvelope),
+        (status = 403, description = "Caller cannot use this agent", body = McpEnvelope),
+    ),
+)]
+pub async fn list_caller_connections(
+    State(state): State<AppState>,
+    claims: Claims,
+    AppPath(agent_id): AppPath<Uuid>,
+) -> Result<ApiResponse, ApiError> {
+    let user_id = parse_user(&claims)?;
+    if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
+        return Err(ApiError(McpError::Forbidden(
+            "you do not have access to this agent".into(),
+        )));
+    }
+    let data = service::permissions::list_caller_connections(&state, user_id, agent_id).await?;
+    Ok(ApiResponse::ok(data, "Your connections for this agent"))
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SetConnectorAccess {
     pub enabled: bool,
@@ -180,8 +210,9 @@ pub async fn list_connector_tools(
 /// Agent-wide (every connector's rules at once), so a non-agent-manager never
 /// gets the unfiltered view: if they can't manage the whole agent, the result
 /// is narrowed to only the connector(s) they themselves can manage
-/// (`can_manage_agent_connector` — reachable, and either already granted to
-/// this agent or the caller has at least ordinary access to it), e.g. so
+/// (`can_manage_agent_connector` — reachable, and either owned by the caller
+/// and already granted to this agent, or the caller has at least ordinary
+/// access to it), e.g. so
 /// `agent-tools set-rule`'s read-modify-write can find that connector's
 /// existing rules. This works with zero relationship to the agent itself,
 /// e.g. a connector owner whose connector was granted to someone else's agent.
@@ -207,8 +238,7 @@ pub async fn list_tool_rules(
     claims: Claims,
     AppPath(agent_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
-    let user_id = parse_user(&claims)?;
-    let mut data = service::permissions::list_tool_rules(&state, user_id, agent_id).await?;
+    let mut data = service::permissions::list_tool_rules(&state, agent_id).await?;
     if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         let mut allowed: std::collections::HashMap<Uuid, bool> = std::collections::HashMap::new();
         if let Some(rules) = data.get_mut("rules").and_then(|v| v.as_array_mut()) {
@@ -322,7 +352,7 @@ pub async fn bulk_update_tools(
     params(("agent_id" = Uuid, Path, description = "Agent id")),
     responses(
         (status = 200, description = "Permissions reset — `data` is `{rows_deleted}`", body = McpEnvelope),
-        (status = 403, description = "Caller cannot manage this agent, or is restricted to a subset of tools", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent", body = McpEnvelope),
     ),
 )]
 pub async fn reset(
@@ -331,9 +361,8 @@ pub async fn reset(
     AppPath(agent_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
-    let user_id = parse_user(&claims)?;
     tracing::info!(%agent_id, caller = %claims.sub, "resetting agent tool permissions");
-    let deleted = service::permissions::reset(&state, user_id, agent_id).await?;
+    let deleted = service::permissions::reset(&state, agent_id).await?;
     Ok(ApiResponse::ok(
         json!({ "rows_deleted": deleted }),
         "Agent permissions reset successfully",

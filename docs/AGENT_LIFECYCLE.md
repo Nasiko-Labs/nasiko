@@ -123,15 +123,17 @@ Remote cluster:
     nasiko connect https://nasiko.example.com --name prod
     nasiko auth login
 
-Or start a local cluster (auto-registers as "local"):
+Or start a local cluster from a clone of the repository (auto-registers as "local"):
 
+    git clone https://github.com/Nasiko-Labs/nasiko.git && cd nasiko
     nasiko up
+    nasiko auth login     # admin / changeme, or the ADMIN_PASSWORD in .env
 
-`nasiko up` starts Postgres, Redis, and the Nasiko control plane locally. It registers itself as a cluster named "local" — visible in `nasiko clusters` alongside any remote ones.
+`nasiko up` runs the README's Docker Compose quick start for you: in the checkout it creates `.env` from `.env.example` if there is none, runs `docker compose up -d --build` (Podman works too), waits up to two minutes for the server's `/health`, and registers `http://localhost:8080` as a cluster named "local" — visible in `nasiko clusters` alongside any remote ones. It must be run inside the clone (any directory within it works); the first build takes a few minutes.
 
     nasiko clusters       # see all configured clusters
     nasiko use prod       # switch active cluster
-    nasiko down           # stop local cluster
+    nasiko down           # stop the local stack (run in the clone; data is kept)
 
 ### Deploy
 
@@ -177,19 +179,32 @@ manifests anonymously.
 
 Secrets are encrypted env vars injected into agent containers at runtime. There are two scopes:
 
-**Vault secrets** — applied to all your agents:
+**Vault secrets** (the UI's Settings → Secrets) — yours, applied to every agent you own:
 
     nasiko secrets set OPENAI_API_KEY sk-xxx
     nasiko secrets ls
     nasiko secrets rm OPENAI_API_KEY
 
-**Agent-specific secrets** — override vault, applied to one agent only:
+**Agent-specific secrets** (the agent's Settings tab → Secrets) — override vault, applied to one agent only:
 
     nasiko secrets set DB_URL postgres://... --agent my-agent
     nasiko secrets ls --agent my-agent
     nasiko secrets rm DB_URL --agent my-agent
 
-**Precedence** (highest wins): inline deploy `-e` > agent secrets > vault secrets.
+**Precedence** (highest wins): inline deploy `-e` > agent secrets > vault secrets. An agent gets its
+**owner's** vault secrets, whoever deploys it. Every deploy path (upload, update, rollback, restart,
+startup recovery, a parked agent's wake) builds the env the same way: vault, then agent secrets on
+top (`resolve_secret_env` in `server/src/catalog/agent_secrets.rs`); platform defaults fill only
+names neither sets, and the platform's own keys (see [Platform environment](#platform-environment))
+win over all of them.
+
+The agent's Secrets section lists the vault names it inherits (names only, never values), marked
+**Overridden here** where an agent secret of the same name wins
+(`GET /api/agents/{id}/secrets/inherited`).
+
+A secret is read when the agent starts, so a change to either scope reaches a running agent only
+after `nasiko restart` (or Restart in the UI) or a redeploy; a parked agent picks it up on its next
+wake.
 
 ---
 
@@ -217,8 +232,65 @@ Secrets are encrypted env vars injected into agent containers at runtime. There 
 
 ### Scaling
 
-Every agent runs one replica; `nasiko scale <agent> <n>` sets a fixed count. Per-agent autoscaling
-is an enterprise feature.
+Every agent runs one replica; `nasiko scale <agent> <n>` sets a fixed count. An agent that may be
+parked (see [Parked agents](#parked-agents)) runs exactly one: scaling it above one is refused with
+`409` and code `parkable`; set its parking policy to `resident` first. Per-agent autoscaling is an
+enterprise feature.
+
+### Parked agents
+
+A parked agent's workload is scaled to zero. Its image, registry entry and workload stay in place,
+its status reads `parked`, and the next request starts the same workload again and waits until it
+answers, so the agent keeps its env, ports and mounts (a `--writable` agent finds its files again).
+
+Every deploy starts the agent's workload. When an agent that may be parked has had no request,
+and no deploy or other change, for `AGENT_PARK_IDLE_SECS` (default `3600`), has nothing in
+flight, has made no model call in that time, and has no open task or pending human-in-the-loop
+question younger than two hours, the platform scales its workload to zero and its status reads
+`parked`. A task the agent held in memory is lost when it is parked.
+`AGENT_PARK_IDLE_SECS` must be at least `AGENT_CALL_TIMEOUT_SECS` plus 60 seconds (how often at
+most a request records the agent's last-request time) plus one `SESSION_REAPER_INTERVAL_SECS`, or
+the server refuses to start; left unset it is raised to that. A request that reaches the agent just
+as it is parked wakes it again, or is answered `503` with `Retry-After` to retry.
+`AGENT_PARK_IDLE_SECS=0` turns agent parking off; agents already parked still start on their next
+request. It is independent of `CODING_AGENT_IDLE_TTL_SECS`, which governs harness sessions only.
+
+An agent may be parked when it is an ordinary agent (not a connector or harness) and its
+parking policy is `auto` (the default for a new agent). Nothing else decides it. Agents that
+existed when this release was installed were set to `resident`, so they keep running as before;
+agents already parked keep `auto`.
+
+To keep an agent always running, set its policy to `resident` with the `parking_policy`
+field (`auto` or `resident`) of the agent metadata update, `PUT /api/agents/{id}`. A `parked`
+agent set to `resident` is woken by its next request and then stays up. A running `resident`
+agent set to `auto` is parked once it is idle. The upload (`POST /api/agents/upload`) and
+multipart update (`PUT /api/agents/{id}/update`) forms and the GitHub clone request
+(`POST /api/github/clone`) take the same optional field, applied to that deploy; absent keeps the
+stored policy (`auto` for a new agent). The multipart update saves the policy as it accepts the
+request, so an update whose build then fails keeps the new policy. Platform agents (`SEED_AGENTS`
+and internal agents) are always `resident`. The CLI has no flag for it yet.
+
+`agents.sandbox_compatible` records whether the agent's image is known to start under gVisor
+(`runsc`): `true` it did, `false` it did not, empty it was never checked. Nothing reads it to
+refuse a deploy; it is information for operators. To fill it in, set `BUILD_SANDBOX_SMOKE=runsc`
+(default `off`) on a Docker-runtime server with gVisor installed: after each successful build the
+worker runs the image once under `--runtime=runsc`, waits up to 60 seconds for its port to accept
+connections, and stops it. A host without gVisor leaves the column empty (logged once), any other
+failure sets `false` with the reason in the build log, and the build itself never fails because of
+the smoke run. On Kubernetes the check is skipped, and agents do not run under gVisor there.
+
+The lifecycle commands work on a parked agent too: `nasiko stop` leaves it `stopped` (a request no
+longer wakes it), and `nasiko start` wakes it the way its next request would, answering once the
+agent serves (`503` with the reason if it does not start in time, and it stays `parked`). An agent
+parked by an earlier release has no workload; its next request (or `nasiko start`) deploys one from
+its stored image.
+
+In the web UI a parked agent's page says what parked means and offers Start and Stop beside Try it,
+and the agent's Settings tab has an Always on switch: on sets the policy to `resident`, off to
+`auto`. Where every idle agent is parked whatever its policy, the switch is shown off and disabled.
+
+`nasiko ps` reads the agent list, so a parked agent appears in it with state `parked`; only
+`GET /api/containers` lists workloads.
 
 ### Cluster health
 
@@ -479,11 +551,17 @@ in new code.
 
 Test the full deploy flow locally before pushing to production:
 
-    nasiko up                       # start local cluster
+    # in your clone of https://github.com/Nasiko-Labs/nasiko
+    nasiko up                       # build and start the Compose stack, register it as "local"
+    nasiko auth login               # admin / changeme, or the ADMIN_PASSWORD in .env
+
+    # in your agent's directory
     nasiko deploy .                 # deploys to local
     nasiko ps                       # verify it's running
-    nasiko chat http://localhost:8080/api/agents/my-agent "test"
-    nasiko down                     # tear down when done
+    nasiko chat my-agent "test"     # name resolves to the agent's UUID
+
+    # back in the clone
+    nasiko down                     # stop the stack; data stays in its volumes
 
 ---
 
@@ -496,6 +574,10 @@ Test the full deploy flow locally before pushing to production:
 
     # Deploy (CD job or manual gate)
     nasiko deploy my-agent:latest
+
+`nasiko auth login` has no non-interactive form yet: it reads the password from a terminal
+(`--password` only skips SSO, it does not take a value). In CI, sign in once on a machine with a
+terminal and make that session available to the job, or run the job with a TTY.
 
 ---
 

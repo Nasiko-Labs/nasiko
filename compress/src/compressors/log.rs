@@ -31,10 +31,12 @@ pub(super) fn compress(input: &str, policy: &Policy<'_>) -> Option<String> {
         }
     }
 
-    Some(render(&lines, &keep, policy))
+    Some(render(input, &lines, &keep, policy))
 }
 
-pub(super) fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
+/// `lines` with every run of dropped lines replaced by one counted marker. Ends with a newline
+/// only if `input` did, so the kept lines stay an exact sub-sequence of the original.
+pub(super) fn render(input: &str, lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> String {
     let mut out = String::with_capacity(lines.iter().map(|l| l.len() + 1).sum::<usize>());
     let mut dropped = 0usize;
 
@@ -54,6 +56,9 @@ pub(super) fn render(lines: &[&str], keep: &[bool], policy: &Policy<'_>) -> Stri
     if dropped > 0 {
         out.push_str(&marker::elided_lines(dropped, policy.recovery_ref));
         out.push('\n');
+    }
+    if !input.ends_with('\n') {
+        out.pop();
     }
     out
 }
@@ -109,6 +114,16 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    #[test]
+    fn the_output_ends_with_a_newline_only_if_the_input_did() {
+        let with = noisy(&[100], 200);
+        assert!(compress(&with, &policy()).unwrap().ends_with('\n'));
+        let without = with.trim_end_matches('\n');
+        let out = compress(without, &policy()).unwrap();
+        assert!(!out.ends_with('\n'));
+        assert!(out.ends_with("handled request 199"));
     }
 
     #[test]

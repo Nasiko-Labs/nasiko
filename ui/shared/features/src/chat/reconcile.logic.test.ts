@@ -98,6 +98,21 @@ describe('reconcileRouted', () => {
         NO_RECHECKS,
       ).action.type,
     ).toBe('forget')
+    // The answer saved as a user row opens a turn, and the chained request lands on it (NAS-1540).
+    const answerRow = { ...user, id: 'u2' }
+    expect(
+      reconcileRouted(
+        input({
+          live: resumed,
+          requests: [answered, chained],
+          turns: [
+            { key: 'u1', user, replies: [], requests: [answered] },
+            { key: 'u2', user: answerRow, replies: [], requests: [chained] },
+          ],
+        }),
+        NO_RECHECKS,
+      ).action.type,
+    ).toBe('forget')
     const older = request({ id: 'q3', created_at: '2026-09-30T09:00:00Z' })
     expect(
       reconcileRouted(

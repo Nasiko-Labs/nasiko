@@ -58,19 +58,17 @@ describe('follow the money', () => {
           expect(router.state.location.pathname).toBe(`/sessions/${SHOWCASE_SESSION}`),
         )
 
-        // 3. Trace: the session line repeats the row's cost; the narrative explains the trace.
+        // 3. Trace: the session total repeats the row's cost; the narrative explains the trace.
         expect(
           await screen.findByRole(
             'heading',
-            {
-              level: 1,
-              name: new RegExp(
-                `^Session · Code Reviewer · Mar 11 .* · \\${rowCost} · \\d+ traces · ✕ failed$`,
-              ),
-            },
+            { level: 1, name: /^Session · Code Reviewer · Mar 11 .* · ✕ failed$/ },
             { timeout: 8000 },
           ),
         ).toBeInTheDocument()
+        expect(screen.getByText('Session total:').parentElement).toHaveTextContent(
+          new RegExp(`^Session total: \\${rowCost} · .* · across \\d+ traces$`),
+        )
         const story = await screen
           .findByRole('region', { name: 'What happened' })
           .catch(() => screen.getByLabelText('What happened'))
@@ -87,7 +85,7 @@ describe('follow the money', () => {
         // The failing attempt is selected by default.
         const tree = screen.getByRole('tree', { name: 'Spans' })
         expect(within(tree).getByRole('treeitem', { selected: true })).toHaveAccessibleName(
-          /^tool\.get_diff attempt 6 of 6, Tool, starts .*, lasts 30\.0 s, 0 tokens, error$/,
+          /^tool\.get_diff attempt 6 of 6, execute_tool, Tool, starts .*, lasts 30\.0 s, 0 tokens, error$/,
         )
 
         // Requests: bounded (status checks cap at 25 sessions × 3 traces).

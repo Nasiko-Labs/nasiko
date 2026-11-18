@@ -5,7 +5,7 @@
  * forecast line is the Spend tile's (eng review R2: the calendar is fleet-wide, so it is said as fleet spend).
  */
 import { Link } from '@tanstack/react-router'
-import { BarChart3, Eye, EyeOff, LineChart } from 'lucide-react'
+import { BarChart3, DollarSign, Eye, EyeOff, LineChart } from 'lucide-react'
 import { useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { spikeSentence } from '@nasiko/features/narrative/tokenops'
 import { Swatch } from '@nasiko/ui/composites/chart-marks'
@@ -27,7 +27,7 @@ import { TEMPO_MAX_SEARCH_MS } from '@nasiko/features/observability/tuning'
 import { fmtMoney, fmtMoneyFloor, fmtPct } from '@nasiko/ui/lib/format'
 import type { Spend as SpendData } from '../api'
 import { copy } from '../copy'
-import { Card, CardError, CardSkeleton, SourceFailed, TOUCH } from './Card'
+import { Card, CardError, CardQuiet, CardSkeleton, SourceFailed, TOUCH } from './Card'
 import { SpendChart, type ChartMode } from './SpendChart'
 
 const OTHER = 'other'
@@ -36,10 +36,13 @@ export function Spend({
   spend,
   now,
   className,
+  hideEmpty = false,
 }: {
   spend: SpendData
   now: number
   className?: string
+  /** The Overview's rule (user 2026-11-06): with nothing to show, render nothing instead of the quiet state. */
+  hideEmpty?: boolean
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null)
   const [mode, setMode] = useState<ChartMode>('bars')
@@ -68,6 +71,7 @@ export function Spend({
       ? ((totals.spend - totals.previous.spend) / totals.previous.spend) * 100
       : null
   const anySpend = spend.days.some((d) => d.spend > 0)
+  if (hideEmpty && totals && totals.spend <= 0) return null
   return (
     <Card
       id="overview-spend"
@@ -82,6 +86,29 @@ export function Spend({
         <CardSkeleton rows={6} />
       ) : !totals ? (
         <CardError what={copy.spend.rangeWhat} onRetry={spend.retry} titleRef={titleRef} />
+      ) : totals.spend <= 0 ? (
+        // Nothing spent in the range (2026-11-06): what fills the card and one step, not $0.00 and a table of zeros.
+        <CardQuiet
+          Icon={DollarSign}
+          title={spend.unpriced ? copy.quiet.spendUnpriced : copy.cardQuiet.spend(rangeDays)}
+          detail={
+            totals.previous?.spend
+              ? copy.cardQuiet.spendBefore(fmtMoney(totals.previous.spend), rangeDays)
+              : spend.unpriced
+                ? copy.quiet.spendUnpricedDetail
+                : copy.cardQuiet.spendDetail
+          }
+          action={
+            <Link
+              to="/workflows"
+              search={{} as never}
+              {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+            >
+              {copy.cardQuiet.spendAction}
+            </Link>
+          }
+          testId="spend-quiet"
+        />
       ) : (
         // From 1000 px of card (full width on the Overview): the total and chart on the left, the drivers on the right.
         <div className="grid gap-x-8 gap-y-3 @[1000px]/card:grid-cols-[minmax(0,1.35fr)_minmax(0,1fr)]">

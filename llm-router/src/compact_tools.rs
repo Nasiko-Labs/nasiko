@@ -23,7 +23,7 @@ use serde_json::Value;
 
 use crate::config::GatewayConfig;
 use crate::ir::ChatRequest;
-use crate::ir::chat::{ChatResponse, Choice, FunctionCall, Message, ToolCall};
+use crate::ir::chat::{ChatResponse, Choice, FunctionCall, Message, ToolCall, ToolDef};
 use crate::resolver::ResolvedConfig;
 
 /// Why compaction was not applied.
@@ -79,6 +79,11 @@ impl Skipped {
 pub(crate) struct Compacted {
     pub(crate) tools: Vec<compact::ToolDef>,
     pub(crate) native: ChatRequest,
+    /// `(native, compact)`: the native `tools` the endpoint would have been sent, serialized,
+    /// against the signatures and call-format instruction that replaced them, for the savings
+    /// ledger. Measured here because `brevity::estimated_bytes` counts message text only and never
+    /// sees `tools`.
+    pub(crate) bytes: (usize, usize),
 }
 
 /// Rewrites `req` to the compact form unless a carve-out applies. On `Err`, `req` is untouched.
@@ -145,19 +150,99 @@ pub(crate) fn apply(
         })
         .collect();
     let encoded = compact::encode_tools(&tools).map_err(|_| Skipped::Unsupported)?;
+    let native_bytes = native_sent_bytes(native_tools, &req.messages, cfg, resolved);
+    let system_prompt = encoded.system_prompt();
+    let bytes = (native_bytes, system_prompt.len());
 
     let native = req.clone();
     req.tools = None;
     req.tool_choice = None;
     req.messages.push(Message {
         role: "system".into(),
-        content: Some(Value::String(encoded.system_prompt())),
+        content: Some(Value::String(system_prompt)),
         name: None,
         tool_calls: None,
         tool_call_id: None,
         extra: Default::default(),
     });
-    Ok(Compacted { tools, native })
+    Ok(Compacted {
+        tools,
+        native,
+        bytes,
+    })
+}
+
+/// The serialized size of the native tools the endpoint would actually have been sent.
+///
+/// The built-in OpenAI endpoint trims its tool array to `openai_max_tools`
+/// (`providers::openai::fit_tools`), so the schemas it would never have sent are not counted as
+/// saved. Judged on the resolved provider: a fallback to a different endpoint is not foreseen here.
+fn native_sent_bytes(
+    tools: &[ToolDef],
+    messages: &[Message],
+    cfg: &GatewayConfig,
+    resolved: &ResolvedConfig,
+) -> usize {
+    let size = |t: &[ToolDef]| serde_json::to_string(t).map_or(0, |s| s.len());
+    if resolved.provider != "openai" {
+        return size(tools);
+    }
+    let query = crate::providers::openai::latest_user_text(messages);
+    let (kept, _) =
+        crate::providers::openai::fit_tools(tools.to_vec(), cfg.openai_max_tools, &query);
+    size(&kept)
+}
+
+/// [`native_sent_bytes`] for a request that was not compacted: 0 when it carries no tools.
+pub(crate) fn native_tool_bytes(
+    req: &ChatRequest,
+    cfg: &GatewayConfig,
+    resolved: &ResolvedConfig,
+) -> usize {
+    match &req.tools {
+        Some(tools) if !tools.is_empty() => native_sent_bytes(tools, &req.messages, cfg, resolved),
+        _ => 0,
+    }
+}
+
+/// What one provider call did with compact schemas, for its usage row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outcome {
+    /// Sent compact, and the reply decoded.
+    Applied,
+    /// Sent native, and why compaction did not apply.
+    Skipped(Skipped),
+    /// Sent compact, but the reply did not decode; the native request goes out as its own call.
+    Retried,
+    /// That native re-send.
+    NativeResend,
+}
+
+/// One call's `metadata.compact_tools` block.
+///
+/// Flat counters (`calls`, one outcome key, the two byte counts), so the usage write can add a
+/// flow's calls together key by key (`usage::write_trace_usage`) rather than letting the last call
+/// overwrite the first: a flow typically compacts its first call and skips the rest with
+/// `tool_history`, and only the sum shows both. `tool_bytes_native` is what full schemas would have
+/// sent; it equals `tool_bytes_sent` on every call that was not compacted.
+pub(crate) fn to_metadata(
+    outcome: Outcome,
+    tool_bytes_sent: usize,
+    tool_bytes_native: usize,
+) -> Value {
+    let key = match outcome {
+        Outcome::Applied => "applied".to_string(),
+        Outcome::Skipped(reason) => format!("skipped_{}", reason.as_label()),
+        Outcome::Retried => "retried".to_string(),
+        Outcome::NativeResend => "native_resend".to_string(),
+    };
+    let mut block = serde_json::json!({
+        "calls": 1,
+        "tool_bytes_sent": tool_bytes_sent,
+        "tool_bytes_native": tool_bytes_native,
+    });
+    block[key.as_str()] = Value::from(1);
+    block
 }
 
 /// Checks and restores a compacted reply. Returns the failure label on any problem, with the
@@ -370,6 +455,91 @@ mod tests {
         );
         assert_eq!(serde_json::to_string(&c.native).unwrap(), original);
         assert_eq!(c.tools[0].name, "get_weather");
+    }
+
+    /// One flat counter per outcome, so the usage write can add a flow's calls key by key.
+    #[test]
+    fn each_outcome_writes_its_own_counter_beside_the_byte_counts() {
+        for (outcome, key) in [
+            (Outcome::Applied, "applied"),
+            (
+                Outcome::Skipped(Skipped::ToolHistory),
+                "skipped_tool_history",
+            ),
+            (Outcome::Skipped(Skipped::Disabled), "skipped_disabled"),
+            (Outcome::Retried, "retried"),
+            (Outcome::NativeResend, "native_resend"),
+        ] {
+            assert_eq!(
+                to_metadata(outcome, 7_430, 10_270),
+                json!({ "calls": 1, key: 1, "tool_bytes_sent": 7_430, "tool_bytes_native": 10_270 }),
+                "{outcome:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_request_without_tools_sends_no_tool_bytes() {
+        let req = request(json!({"tools": null}));
+        assert_eq!(
+            native_tool_bytes(&req, &enabled(), &resolved(true, false)),
+            0
+        );
+        let req = request(json!({}));
+        assert!(native_tool_bytes(&req, &enabled(), &resolved(true, false)) > 0);
+    }
+
+    /// The savings ledger compares the schemas sent natively with exactly what replaced them,
+    /// call-format instruction included.
+    #[test]
+    fn measures_the_native_schemas_against_the_message_that_replaced_them() {
+        let mut req = request(json!({}));
+        let native = serde_json::to_string(req.tools.as_ref().unwrap())
+            .unwrap()
+            .len();
+        let c = apply(&mut req, &enabled(), &resolved(true, false)).unwrap();
+        let sent = req.messages.last().unwrap().text().unwrap().len();
+        assert_eq!(c.bytes, (native, sent));
+    }
+
+    /// Schemas the OpenAI endpoint would have trimmed away were never going to be sent, so they
+    /// are not counted as saved; an endpoint without that cap counts them all.
+    #[test]
+    fn native_bytes_count_only_the_tools_the_endpoint_would_send() {
+        let tool = |name: &str| {
+            json!({"type": "function", "function": {
+                "name": name,
+                "description": format!("Does {name}."),
+                "parameters": {"type": "object", "properties": {"x": {"type": "string"}}}
+            }})
+        };
+        let three = json!({"tools": [tool("alpha"), tool("beta"), tool("gamma")]});
+        let capped = GatewayConfig {
+            openai_max_tools: 1,
+            ..enabled()
+        };
+        let size = |req: &ChatRequest| {
+            serde_json::to_string(req.tools.as_ref().unwrap())
+                .unwrap()
+                .len()
+        };
+
+        let mut openai = request(three.clone());
+        let all = size(&openai);
+        let c = apply(&mut openai, &capped, &resolved(true, false)).unwrap();
+        assert!(c.bytes.0 < all, "one of three tools would be sent");
+        let one = serde_json::to_string(&c.native.tools.as_ref().unwrap()[..1])
+            .unwrap()
+            .len();
+        assert_eq!(c.bytes.0, one);
+
+        let mut anthropic = request(three);
+        let r = ResolvedConfig {
+            provider: "anthropic".into(),
+            ..resolved(true, false)
+        };
+        let c = apply(&mut anthropic, &capped, &r).unwrap();
+        assert_eq!(c.bytes.0, all, "no cap on this endpoint");
     }
 
     fn response(content: &str) -> ChatResponse {

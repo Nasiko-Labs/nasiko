@@ -177,7 +177,8 @@ fn sync_records(
 ) -> Result<Pass> {
     let mut pass = Pass::default();
     let mut groups: BTreeMap<(String, String, Uuid), Vec<(PathBuf, QueueRecord)>> = BTreeMap::new();
-    for record in records {
+    for (path, record) in records {
+        let record = (path, without_unagreed_chat_history(record));
         if record.1.delivery_state == DeliveryState::Rejected {
             queue::quarantine(&record.0, &record.1)?;
             pass.set_aside += 1;
@@ -215,6 +216,19 @@ fn sync_records(
         pass.absorb(deliver_destination(&client, &records, pace)?);
     }
     Ok(pass)
+}
+
+/// `record` as it may leave this machine: its chat history only if it was captured with the
+/// consent this CLI records (`QueueRecord::chat_history`), never one an older CLI queued under its
+/// default yes. Usage always goes.
+fn without_unagreed_chat_history(record: QueueRecord) -> QueueRecord {
+    if record.chat_history {
+        return record;
+    }
+    QueueRecord {
+        event: record.event.without_content(),
+        ..record
+    }
 }
 
 /// Sends one destination's due turns, one batch at a time at the size `pace` allows: a batch refused
@@ -681,6 +695,8 @@ mod tests {
         record.event.capture_policy = CapturePolicy::Content;
         record.event.turn.prompt = Some("p".into());
         record.event.turn.response = Some("r".into());
+        // Captured with consent, so the conversation is sent and the turn stays this large.
+        record.chat_history = true;
         let mut left = bytes;
         while left > 0 {
             let size = left.min(PIECE);
@@ -957,6 +973,31 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("changed"));
+    }
+
+    #[test]
+    fn a_turn_queued_with_chat_history_leaves_it_behind_unless_agreed_to() {
+        let with_history = |agreed: bool| {
+            let mut queued = record("bound", "https://nasiko.example", "s", "t");
+            queued.event.capture_policy = CapturePolicy::Content;
+            queued.event.session.title = Some("private title".into());
+            queued.event.turn.prompt = Some("private prompt".into());
+            queued.event.turn.response = Some("private answer".into());
+            queued.chat_history = agreed;
+            queued
+        };
+
+        // Queued by an older CLI under its default yes: usage only.
+        let older = without_unagreed_chat_history(with_history(false));
+        assert_eq!(older.event.capture_policy, CapturePolicy::MetadataOnly);
+        assert_eq!(older.event.turn.prompt, None);
+        assert_eq!(older.event.session.title, None);
+
+        let agreed = with_history(true);
+        assert_eq!(
+            without_unagreed_chat_history(agreed.clone()).event,
+            agreed.event
+        );
     }
 
     #[test]
@@ -1319,7 +1360,7 @@ mod tests {
                 assert_eq!(kept.attempts, 0, "pacing is no failure of the turn's");
                 assert_eq!(kept.next_attempt_at, None);
             }
-            let backlog = super::super::backlog::backlog_at(dir.path()).unwrap();
+            let backlog = super::super::backlog::backlog_at(dir.path(), None).unwrap();
             assert_eq!((backlog.pending(), backlog.due), (3, 0));
             assert_eq!(backlog.next_attempt_at, Some(until));
         }

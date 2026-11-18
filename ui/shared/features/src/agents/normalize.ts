@@ -6,6 +6,8 @@
 import { isHarness } from './status'
 import type { AgentDetailResponse, Skill } from './types'
 
+export type ParkingPolicy = 'auto' | 'resident'
+
 export interface AgentView {
   id: string
   name: string
@@ -29,6 +31,10 @@ export interface AgentView {
   integrationId: string | null
   /** `compress_enabled` (catalog/routes.rs `AgentDetailResponse`): the Token optimization switch; absent reads as off. */
   compressEnabled: boolean
+  /** `parking_policy` (same response): the Always on switch; null on a server that doesn't send it, which hides it. */
+  parkingPolicy: ParkingPolicy | null
+  /** `resident_available`: false where every idle agent is parked whatever its owner chose (the Free plane). */
+  residentAvailable: boolean
   /** The raw `metadata` bag: a PUT replaces the whole column, so feature writes spread it (catalog/routes.rs). */
   metadata: Record<string, unknown>
   /** `metadata.features.prompt_comments === 'enabled'` (state.rs `agent_env` → `NASIKO_PROMPT_COMMENTS`). */
@@ -123,6 +129,11 @@ export function normalizeDetail(d: AgentDetailResponse): AgentView {
     }),
     integrationId: strOrNull(raw.coding_agent_integration_id),
     compressEnabled: bool(raw.compress_enabled),
+    parkingPolicy:
+      raw.parking_policy === 'auto' || raw.parking_policy === 'resident'
+        ? raw.parking_policy
+        : null,
+    residentAvailable: bool(raw.resident_available),
     metadata,
     promptComments: record(metadata.features).prompt_comments === 'enabled',
     minimalCode: bool(raw.minimal_code_enabled),

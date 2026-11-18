@@ -10,7 +10,10 @@ use nasiko_flow::{FlowContext, TRACEPARENT_HEADER};
 use nasiko_orchestrator::{ContextTiers, context_selection};
 use uuid::Uuid;
 
+use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
+use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
+use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -64,6 +67,31 @@ pub async fn agent_proxy(
     if !crate::acl::can_access_agent(&state, &claims, agent_id).await {
         return Err(StatusCode::NOT_FOUND);
     }
+    // An agent→agent leg honours the calling agent's `agent_acl` allowlist before anything
+    // spends flow budget or wakes a sandbox.
+    let calling_agent = req.extensions().get::<crate::acl::CallingAgent>().copied();
+    if let Some(crate::acl::CallingAgent(caller_id)) = calling_agent {
+        crate::acl::require_agent_acl(&state.db, caller_id, agent_id).await?;
+    }
+
+    // Agents act as the user only toward ordinary agents: a harness (or legacy coding agent) is
+    // driven by a person's session, so an agent caller is refused before anything is written.
+    let req = if calling_agent.is_some() {
+        match refuse_agent_driving_coding_target(&state, agent_id, req).await? {
+            EarlyAnswer::Answered(response) => return Ok(response),
+            EarlyAnswer::Continue(req) => req,
+        }
+    } else {
+        req
+    };
+
+    // A harness session answers the A2A task methods itself, from the session row: polling them
+    // must not spend flow-guard budget or leave a flow and a participant behind, so they are
+    // answered here, before any flow state is touched.
+    let req = match answer_harness_task(&state, &claims, agent_id, req).await? {
+        EarlyAnswer::Answered(response) => return Ok(response),
+        EarlyAnswer::Continue(req) => req,
+    };
 
     // Flow guard: prevent infinite A2A cascades
     let traceparent = req
@@ -133,84 +161,32 @@ pub async fn agent_proxy(
         return Err(StatusCode::LOOP_DETECTED);
     }
 
-    // Resolve the agent's catalog record. Its `agents.url` is a snapshot taken
-    // at the last deploy/restart — stale the moment the container is recreated
-    // outside that flow (Docker/Podman assign a new random host port on every
-    // recreate), and possibly empty (a k8s deploy that persisted before the
-    // pod was Ready). Prefer the live runtime lookup instead (same fix already
-    // applied in `resolve_endpoint` in `router/a2a_dispatch.rs`), falling back
-    // to the stored snapshot only if the runtime can't resolve the agent (e.g.
-    // external agents registered by URL rather than deployed through this
-    // platform).
-    let agent = nasiko_agent_proxy::resolve(&state.db, agent_id)
+    // The agent's row, loaded once for the whole request (name, mount path, internal flags and
+    // what `resolve_loaded` needs to pick its endpoint by kind below).
+    let agent = load_agent(&state, agent_id)
         .await
-        .map_err(|e| match e {
-            nasiko_agent_proxy::ResolveError::NotFound => StatusCode::NOT_FOUND,
-            nasiko_agent_proxy::ResolveError::NotRunning(_) => StatusCode::SERVICE_UNAVAILABLE,
-            nasiko_agent_proxy::ResolveError::Database(_) => StatusCode::INTERNAL_SERVER_ERROR,
-        })?;
+        .map_err(|e| e.http_status())?;
+    ensure_routable(&agent).map_err(|e| e.http_status())?;
 
     // Coding agents have no HTTP endpoint — they're driven over a per-session
     // stdio turn, not reverse-proxied — so resolve that discriminator first and
     // skip the endpoint lookup for them. The shared session/flow setup below
     // still runs, then the request is diverted to the coding-agent turn path just
     // before the HTTP forward.
-    let coding_target = crate::coding::proxy::load_target(&state.db, agent_id)
+    let coding_target = crate::coding::proxy::load_agent_target(&state.db, agent_id)
         .await
         .map_err(|e| {
             tracing::error!(error = %e, %agent_id, "agent proxy: coding-agent lookup failed");
             match e {
                 // The agent is a coding agent but its image is not a kind we can
                 // drive — a deploy-time misconfiguration, not a transient fault.
-                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. } => {
+                crate::coding::proxy::LoadTargetError::UnrecognizedImage { .. }
+                | crate::coding::proxy::LoadTargetError::HarnessUnset { .. } => {
                     StatusCode::BAD_GATEWAY
                 }
                 crate::coding::proxy::LoadTargetError::Db(_) => StatusCode::INTERNAL_SERVER_ERROR,
             }
         })?;
-
-    // A coding agent is diverted to the ACP turn path below, so it needs no HTTP
-    // endpoint and no forward headers. Every other agent resolves its live
-    // forwarding endpoint — the injection proxy when memory/L1A is enabled, which
-    // also returns the headers to attach — falling back to the stored `agents.url`
-    // on a transient runtime lookup failure.
-    let (agent_base, forward_headers) = if coding_target.is_some() {
-        (String::new(), Vec::new())
-    } else {
-        match state
-            .runtime
-            .forwarding_endpoint(&nasiko_runtime::ContainerId::from_uuid(agent_id))
-            .await
-        {
-            Ok(target) => (target.url.trim_end_matches('/').to_string(), target.headers),
-            Err(e) => {
-                let Some(stored) = &agent.endpoint else {
-                    tracing::error!(
-                        error = %e, %agent_id,
-                        "agent proxy: live endpoint lookup failed and no stored agents.url to fall back to"
-                    );
-                    return Err(StatusCode::BAD_GATEWAY);
-                };
-                // Falls back to the plain stored address, bypassing whatever `forwarding_endpoint()`
-                // would otherwise route through (the injection proxy, when memory is enabled) — so
-                // this forward gets no L1A. Rare (only on a transient runtime lookup failure) and
-                // fails toward availability rather than blocking the call entirely, but worth a line
-                // in the logs: a silent L1A skip looks identical to "L1A had nothing to say."
-                tracing::warn!(
-                    error = %e, %agent_id,
-                    "agent proxy: live endpoint lookup failed, falling back to stored agents.url \
-                     (bypasses the injection proxy — this forward gets no L1A)"
-                );
-                (
-                    format!("http://{}:{}", stored.host, stored.port),
-                    Vec::new(),
-                )
-            }
-        }
-    };
-    // The forwarded path. See `resolve_forwarded_path`'s doc comment for the root-mount case.
-    let forwarded_path = resolve_forwarded_path(&forwarded_path, agent.transport_path.as_deref());
-    let target_url = format!("{agent_base}{forwarded_path}");
 
     // Forward the request
     let method = req.method().clone();
@@ -219,19 +195,85 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
+    // A message to a harness starts a turn, which the session admission may refuse (it can need
+    // an agent of the caller's own). Asked before anything is written for the turn: a refused
+    // one leaves no session row, transcript or flow.
+    if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target
+        && let Some(refusal) = refuse_harness_turn(&state, &claims, target, &body_bytes).await?
+    {
+        return Ok(refusal);
+    }
+
+    // A harness session's ownership is decided before anything is written under its contextId:
+    // `ensure_chat_session` persists the transcript and the flow row below, and a foreign
+    // contextId must not collect either.
+    let resolved_session =
+        if let Some(crate::coding::proxy::AgentTarget::Harness(_)) = &coding_target {
+            reject_foreign_harness_session(&state, &claims, agent_id, &body_bytes).await?
+        } else {
+            None
+        };
+
     // Every message send must belong to a persisted session (may inject a
     // generated contextId into the body — see `ensure_chat_session`).
-    let prepared = ensure_chat_session(
-        &state,
-        &claims,
-        agent_id,
-        &agent_base,
-        body_bytes,
-        agent.is_internal,
-        !agent.keeps_session_memory,
-    )
-    .await?;
+    //
+    // An agent calling a peer is a leg of the *caller's* flow, not a chat of the user's: it
+    // opens no session, persists no transcript and does not own (or complete) the flow.
+    let agent_call = calling_agent.is_some();
+    let prepared = if agent_call {
+        prepare_agent_call(&state, body_bytes).await
+    } else {
+        ensure_chat_session(
+            &state,
+            &claims,
+            agent_id,
+            "",
+            body_bytes,
+            agent.is_internal,
+            !agent.keeps_session_memory,
+        )
+        .await?
+    };
     let (body_bytes, persist_info) = (prepared.body, prepared.persist);
+
+    // A coding agent is diverted to the ACP turn path below, so it needs no HTTP endpoint and no
+    // forward headers. Every other agent resolves to its workload's live runtime endpoint (the
+    // injection proxy when memory/L1A is enabled, which also returns the headers to attach).
+    let (agent_base, forward_headers) = if coding_target.is_some() {
+        (String::new(), Vec::new())
+    } else {
+        // Wake a parked agent before resolving where the call goes: until its workload is back
+        // there is nowhere to resolve to.
+        if let Err(msg) = state
+            .agent_wake
+            .before_forward(agent_id, Some(&flow_ctx.flow_id))
+            .await
+        {
+            tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
+        }
+        let caller = Caller {
+            flow_id: Some(flow_ctx.flow_id.clone()),
+        };
+        let resolved = match resolve_loaded(&state, &agent, &caller).await {
+            Ok(resolved) => resolved,
+            Err(e) => {
+                tracing::error!(error = %e, %agent_id, "agent proxy: target resolution failed");
+                return Ok(resolve_refusal(&e));
+            }
+        };
+        match resolved {
+            ResolvedTarget::Container(endpoint) => (
+                endpoint.base.url.trim_end_matches('/').to_string(),
+                endpoint.base.headers,
+            ),
+            // The harness case is `coding_target`, resolved above.
+            ResolvedTarget::Harness => return Err(StatusCode::BAD_GATEWAY),
+        }
+    };
+    // The forwarded path. See `resolve_forwarded_path`'s doc comment for the root-mount case.
+    let forwarded_path = resolve_forwarded_path(&forwarded_path, agent.transport_path.as_deref());
+    let target_url = format!("{agent_base}{forwarded_path}");
     if let Some(info) = persist_info.as_ref() {
         proxy_span.record("nasiko.prompt_context.org_applied", info.org_applied);
         proxy_span.record(
@@ -259,7 +301,7 @@ pub async fn agent_proxy(
     }
 
     // Persist the user message to chat_messages (fire-and-forget, mirrors CLI
-    // behaviour). No trace_id column: session_traces (below) is the
+    // behaviour). No trace_id column: flows is the
     // authoritative session↔trace mapping now.
     //
     // The 10s dedup guard exists because the CLI's A2A method negotiation
@@ -320,7 +362,10 @@ pub async fn agent_proxy(
     // `user_id` is never reassigned, so replaying someone else's trace id cannot
     // move billing — and `created_at` still ages the row out of the attribution
     // window normally.
-    if let Ok(user_id) = claims.user_uuid() {
+    if agent_call {
+        // The caller's flow is already live and verified; only this peer's membership is new.
+        crate::flows::record_participant(&state.db, &flow_ctx.flow_id, agent_id).await;
+    } else if let Ok(user_id) = claims.user_uuid() {
         let title = persist_info.as_ref().map(|i| i.user_text.as_str());
         // Carry the A2A context_id (the session id `ensure_chat_session` minted
         // or adopted) on the flow row so the LLM gateway can key its decision
@@ -344,7 +389,12 @@ pub async fn agent_proxy(
         // stays as it is: `derive_boundary_signals` and the LLM gateway read it
         // from there, and the column is written on this same insert so the two
         // can never disagree.
-        let session_id = persist_info.as_ref().map(|i| i.session_id.as_str());
+        // Non-send requests (passthrough) name no conversation: the flow is its own
+        // single-run session, same rule as the 0085 backfill.
+        let session_id = Some(crate::flows::session_or_self(
+            persist_info.as_ref().map(|i| i.session_id.as_str()),
+            flow_ctx.flow_id.as_str(),
+        ));
         let opened = crate::flows::open_flow(
             &state.db,
             crate::flows::NewFlow {
@@ -390,7 +440,8 @@ pub async fn agent_proxy(
         // synthetic card for discovery, a well-formed JSON-RPC error otherwise.
         let Some(info) = persist_info.as_ref() else {
             return Ok(coding_non_chat_response(
-                &target,
+                target.name(),
+                matches!(target, crate::coding::proxy::AgentTarget::Harness(_)),
                 agent_id,
                 &forwarded_path,
                 &body_bytes,
@@ -398,29 +449,74 @@ pub async fn agent_proxy(
         };
         let context_id = info.session_id.clone();
         let task_id = nasiko_types::a2a::new_task_id();
+        let user_id = claims.user_uuid().ok();
 
-        // The shared helper mints the session-bound token (NAS-839, bound to the
-        // same `flow_id` the `flows` + `flow_participants` rows above were written
-        // under), wires the agent's env, runs the ACP turn, and streams it back —
-        // identically to the orchestrator-dispatch path (see `coding::entry`).
-        return crate::coding::entry::run_coding_turn_sse(
-            &state,
-            agent_id,
-            &target,
-            claims.user_uuid().ok(),
-            &context_id,
-            &info.user_text,
-            &flow_ctx.flow_id,
-            &task_id,
-        )
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
-            match e {
-                crate::coding::turn::CodingTurnError::Busy => StatusCode::CONFLICT,
-                _ => StatusCode::BAD_GATEWAY,
+        let turn = match target {
+            // The shared helper mints the session-bound token (NAS-839, bound to the
+            // same `flow_id` the `flows` + `flow_participants` rows above were written
+            // under), wires the agent's env, runs the ACP turn, and streams it back —
+            // identically to the orchestrator-dispatch path (see `coding::entry`).
+            crate::coding::proxy::AgentTarget::Coding(target) => {
+                crate::coding::entry::run_coding_turn_sse(
+                    &state,
+                    agent_id,
+                    &target,
+                    user_id,
+                    &context_id,
+                    &info.user_text,
+                    &flow_ctx.flow_id,
+                    &task_id,
+                )
+                .await
             }
-        });
+            // A harness session runs in its own sandbox. Resolving the session is also the
+            // ownership check: a contextId that is someone else's is a 404, like any unknown one.
+            crate::coding::proxy::AgentTarget::Harness(target) => {
+                let Some(user_id) = user_id else {
+                    return Err(StatusCode::UNAUTHORIZED);
+                };
+                // Carried from the ownership check when the body named the session; a minted
+                // contextId (none in the body) is new and is created here.
+                let session = match resolved_session {
+                    Some(row) if row.session_id == context_id => row,
+                    _ => crate::sessions::SessionStore::new(state.db.clone())
+                        .find_or_create_for_harness(agent_id, user_id, &context_id)
+                        .await
+                        .map_err(|e| {
+                            tracing::error!(error = %e, %agent_id, "agent proxy: harness session lookup failed");
+                            StatusCode::INTERNAL_SERVER_ERROR
+                        })?
+                        .ok_or(StatusCode::NOT_FOUND)?,
+                };
+                crate::sessions::turn::run_harness_turn_sse(
+                    &state,
+                    crate::sessions::turn::HarnessTurnRequest {
+                        target: &target,
+                        session,
+                        user_id,
+                        prompt: &info.user_text,
+                        flow_id: &flow_ctx.flow_id,
+                        task_id: &task_id,
+                    },
+                )
+                .await
+            }
+        };
+        return match turn {
+            Ok(response) => Ok(response),
+            Err(crate::coding::turn::CodingTurnError::NotConfigured(message)) => {
+                tracing::warn!(%agent_id, %message, "coding-agent turn refused: server not configured");
+                Ok(not_configured_answer(&message))
+            }
+            Err(e) => {
+                tracing::error!(error = %e, %agent_id, "coding-agent turn failed to start");
+                Err(match e {
+                    crate::coding::turn::CodingTurnError::Busy
+                    | crate::coding::turn::CodingTurnError::Superseded => StatusCode::CONFLICT,
+                    _ => StatusCode::BAD_GATEWAY,
+                })
+            }
+        };
     }
 
     // Explicit allowlist, not a denylist: the agent container is unvetted, so anything not named
@@ -482,33 +578,8 @@ pub async fn agent_proxy(
     // can map Tempo traces back to chat sessions for agents that don't set
     // session.id on their spans (anything not running the Python patch).
     // Fire-and-forget so it never delays the proxy.
-    //
-    // Only the session `ensure_chat_session` verified belongs to the caller.
-    // The raw `contextId` of other methods (`tasks/get`, `tasks/cancel`, …) is
-    // unchecked caller input: recording it let anyone who knew another user's
-    // session id attach traces to that user's session view.
-    if let Some(info) = persist_info.as_ref() {
-        let ctx_id = info.session_id.clone();
-        let trace_id = flow_ctx.flow_id.clone();
-        let agent_name = agent.name.clone();
-        let db = state.db.clone();
-        tokio::spawn(async move {
-            if let Err(e) = sqlx::query(
-                "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-                 VALUES ($1, $2, $3, $4)
-                 ON CONFLICT (session_id, trace_id) DO NOTHING",
-            )
-            .bind(&ctx_id)
-            .bind(&trace_id)
-            .bind(agent_id)
-            .bind(&agent_name)
-            .execute(&db)
-            .await
-            {
-                tracing::warn!(error = %e, session_id = %ctx_id, %trace_id, "agent proxy: session trace record failed");
-            }
-        });
-    }
+    // Flows are now the single source of truth for session trace mapping.
+    // The flow record created by `open_flow` already has `session_id` populated.
 
     if !body_bytes.is_empty() {
         forwarded = forwarded.body(body_bytes);
@@ -555,6 +626,7 @@ pub async fn agent_proxy(
             agent_id,
             flow_ctx.flow_id.clone(),
             claims.sub.parse::<Uuid>().ok(),
+            !agent_call,
         );
         // `stream::unfold`, not `take_while`: `take_while`'s predicate only runs when a
         // NEW upstream chunk arrives, so an agent that emits the pausing event and then
@@ -572,7 +644,7 @@ pub async fn agent_proxy(
             Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>,
         > = Box::pin(stream);
         let body = Body::from_stream(futures::stream::unfold(
-            RelayStep::Read(boxed, tap, Box::new(request_guard)),
+            RelayStep::Read(boxed, Box::new(tap), Box::new(request_guard)),
             move |step| async move {
                 match step {
                     RelayStep::Done => None,
@@ -637,8 +709,17 @@ pub async fn agent_proxy(
     // the UI, with the resumed hop unattributable to it.
     let mut is_paused = false;
 
+    // Parsed once: the open-task note and the pause check below both read it.
+    let parsed = serde_json::from_slice::<serde_json::Value>(&bytes).ok();
+
+    // A task the agent answered with but did not finish keeps it awake: noted so the idle
+    // reaper does not park it mid-task. A harness never reaches here (it is diverted above).
+    if let Some(rpc_val) = parsed.as_ref().filter(|v| v.get("result").is_some()) {
+        crate::agents::open_tasks::note_response(&state.db, agent_id, rpc_val).await;
+    }
+
     if let Some(ref info) = persist_info
-        && let Ok(rpc_val) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        && let Some(ref rpc_val) = parsed
     {
         let raw_body = rpc_val.to_string();
         if nasiko_types::a2a::classify_stream_disposition(&raw_body)
@@ -695,7 +776,7 @@ pub async fn agent_proxy(
             } else {
                 tracing::error!(session_id = %info.session_id, "agent proxy: HITL pause detected but caller's user id didn't parse — pause not persisted");
             }
-        } else if let Some(agent_text) = extract_agent_reply_text(&rpc_val) {
+        } else if let Some(agent_text) = extract_agent_reply_text(rpc_val) {
             let db = state.db.clone();
             let session_id = info.session_id.clone();
             tokio::spawn(async move {
@@ -716,7 +797,7 @@ pub async fn agent_proxy(
     // terminal-for-now status instead. Without this at all the direct-chat path's rows stayed
     // 'running' forever, which would poison the LLM router's active-flow attribution fallback (it
     // only looks at running flows).
-    if !is_paused {
+    if !is_paused && !agent_call {
         complete_flow(&state.db, &flow_ctx.flow_id);
     }
 
@@ -724,6 +805,20 @@ pub async fn agent_proxy(
         tracing::error!(error = %e, %agent_id, "agent proxy: failed to build response");
         StatusCode::INTERNAL_SERVER_ERROR
     })
+}
+
+/// The answer to a request whose agent could not be resolved: its status, and a `Retry-After`
+/// when a retry can get past it (the agent was parked as the request reached it).
+fn resolve_refusal(e: &crate::agent_resolver::ResolveError) -> Response {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = e.http_status();
+    if let Some(secs) = e.retry_after_secs() {
+        response.headers_mut().insert(
+            axum::http::header::RETRY_AFTER,
+            axum::http::HeaderValue::from(secs),
+        );
+    }
+    response
 }
 
 /// Resolves the path segment to append to `agent_base` for this forward. A bare `/` (the chat
@@ -775,6 +870,173 @@ fn complete_flow(db: &sqlx::PgPool, flow_id: &str) {
     });
 }
 
+/// 404 when a message send names a harness session that is someone else's. Resolving the
+/// session is `find_or_create_for_harness`, so an unknown contextId is created for the caller
+/// and a foreign one is indistinguishable from a missing one. A body without a contextId needs
+/// no check: `ensure_chat_session` mints a fresh one. Returns the resolved session so the turn
+/// does not look it up again.
+async fn reject_foreign_harness_session(
+    state: &AppState,
+    claims: &Claims,
+    agent_id: Uuid,
+    body: &[u8],
+) -> Result<Option<crate::sessions::SessionRow>, StatusCode> {
+    let Some(context_id) = message_send_context_id(body) else {
+        return Ok(None);
+    };
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let session = crate::sessions::SessionStore::new(state.db.clone())
+        .find_or_create_for_harness(agent_id, user_id, &context_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: harness session lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    session.map(Some).ok_or(StatusCode::NOT_FOUND)
+}
+
+/// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
+/// the other harness errors here, the refusal's body as its `data`. `None` for a request that
+/// sends no message (it starts no turn) and for an admitted one.
+async fn refuse_harness_turn(
+    state: &AppState,
+    claims: &Claims,
+    target: &crate::coding::proxy::HarnessTarget,
+    body: &[u8],
+) -> Result<Option<Response>, StatusCode> {
+    let Some(id) = message_send_id(body) else {
+        return Ok(None);
+    };
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let refusal = refuse_session(state, user_id, &target.harness_id).await;
+    Ok(refusal.map(|refusal| {
+        axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
+    }))
+}
+
+/// The request id of a message send, `None` for any other request.
+fn message_send_id(body: &[u8]) -> Option<serde_json::Value> {
+    let rpc: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let method = rpc.get("method")?.as_str()?;
+    MESSAGE_SEND_METHODS
+        .contains(&method)
+        .then(|| rpc.get("id").cloned().unwrap_or(serde_json::Value::Null))
+}
+
+/// Refuses a request that would have an agent drive a harness or coding-agent session, with a
+/// JSON-RPC error on a 200 like the other coding-agent errors. Covers the `tasks/*` methods too.
+async fn refuse_agent_driving_coding_target(
+    state: &AppState,
+    agent_id: Uuid,
+    req: Request,
+) -> Result<EarlyAnswer, StatusCode> {
+    let target = crate::coding::proxy::load_agent_target(&state.db, agent_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: target lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if target.is_none() {
+        return Ok(EarlyAnswer::Continue(req));
+    }
+    let bytes = axum::body::to_bytes(req.into_body(), 10 * 1024 * 1024)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let id = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|rpc| rpc.get("id").cloned())
+        .unwrap_or(serde_json::Value::Null);
+    tracing::warn!(%agent_id, "agent proxy: an agent tried to drive a harness or coding-agent session");
+    let error = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": id,
+        "error": { "code": -32600, "message": "agents cannot drive a harness session" },
+    });
+    Ok(EarlyAnswer::Answered(
+        axum::response::IntoResponse::into_response(axum::Json(error)),
+    ))
+}
+
+/// A coding turn this server is not set up to run, answered as a `503` JSON-RPC error carrying the
+/// setup message, in the same shape the orchestrator dispatch uses, instead of an empty `502`.
+fn not_configured_answer(message: &str) -> Response {
+    let error = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": null,
+        "error": { "code": -32603, "message": message },
+    });
+    axum::response::IntoResponse::into_response((
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(error),
+    ))
+}
+
+/// What [`answer_harness_task`] decided.
+enum EarlyAnswer {
+    /// A task request to a harness session, already answered.
+    Answered(Response),
+    /// Anything else: the request, body intact, to carry on with.
+    Continue(Request),
+}
+
+/// Answer a harness session's `tasks/*` request, if this is one. Only a POST whose JSON-RPC
+/// method is a task method is looked into any further (so every other request costs one body
+/// parse and no query), and only a harness target answers it; the body is put back otherwise.
+async fn answer_harness_task(
+    state: &AppState,
+    claims: &Claims,
+    agent_id: Uuid,
+    req: Request,
+) -> Result<EarlyAnswer, StatusCode> {
+    if req.method() != axum::http::Method::POST {
+        return Ok(EarlyAnswer::Continue(req));
+    }
+    let (parts, body) = req.into_parts();
+    let bytes = axum::body::to_bytes(body, 10 * 1024 * 1024)
+        .await
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
+    let request = harness_task_request(&bytes);
+    let restored = || Request::from_parts(parts.clone(), axum::body::Body::from(bytes.clone()));
+    let Some((method, rpc)) = request else {
+        return Ok(EarlyAnswer::Continue(restored()));
+    };
+    let target = crate::coding::proxy::load_agent_target(&state.db, agent_id)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: target lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    if !matches!(target, Some(crate::coding::proxy::AgentTarget::Harness(_))) {
+        return Ok(EarlyAnswer::Continue(restored()));
+    }
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(EarlyAnswer::Answered(
+        crate::sessions::tasks::handle(state, agent_id, user_id, method, &rpc).await,
+    ))
+}
+
+/// The task request in `body`, if it is one: its method and the parsed JSON-RPC request.
+fn harness_task_request(
+    body: &[u8],
+) -> Option<(crate::sessions::tasks::TaskMethod, serde_json::Value)> {
+    let rpc: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let method = crate::sessions::tasks::task_method(rpc.get("method")?.as_str()?)?;
+    Some((method, rpc))
+}
+
+/// The non-empty `params.message.contextId` of a message-send request, if it is one.
+fn message_send_context_id(body: &[u8]) -> Option<String> {
+    let rpc: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let method = rpc.get("method")?.as_str()?;
+    if !MESSAGE_SEND_METHODS.contains(&method) {
+        return None;
+    }
+    rpc.pointer("/params/message/contextId")?
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_owned)
+}
+
 /// A2A JSON-RPC methods that carry a user message and therefore must be bound
 /// to a chat session — both the v1 names and the pre-1.0 ones still spoken by
 /// older agent images.
@@ -791,7 +1053,8 @@ const MESSAGE_SEND_METHODS: &[&str] = &[
 /// JSON-RPC `method not found` error (echoing the request id) rather than a bare
 /// 501, so clients degrade gracefully.
 fn coding_non_chat_response(
-    target: &crate::coding::proxy::CodingAgentTarget,
+    name: &str,
+    task_methods: bool,
     agent_id: Uuid,
     forwarded_path: &str,
     body: &[u8],
@@ -799,18 +1062,11 @@ fn coding_non_chat_response(
     use axum::response::IntoResponse;
 
     if forwarded_path.contains("agent-card") || forwarded_path.contains(".well-known") {
-        let card = serde_json::json!({
-            "protocolVersion": "0.3.0",
-            "name": target.name,
-            "description": "ACP coding agent — driven over a stdio turn; accepts message/send and message/stream only.",
-            "url": format!("/api/agents/{agent_id}"),
-            "preferredTransport": "JSONRPC",
-            "version": "1.0.0",
-            "capabilities": { "streaming": true },
-            "defaultInputModes": ["text/plain"],
-            "defaultOutputModes": ["text/plain"],
-            "skills": [],
-        });
+        let card = nasiko_types::a2a::synthetic_coding_card(
+            name,
+            &format!("/api/agents/{agent_id}"),
+            task_methods,
+        );
         return axum::Json(card).into_response();
     }
 
@@ -897,12 +1153,84 @@ struct PreparedRequest {
 }
 
 impl PreparedRequest {
-    /// Not an A2A send, so nothing was selected and nothing is persisted.
+    /// The body goes on unchanged and no session is recorded for it: a request that is not an A2A
+    /// message send, or an agent→agent leg.
     fn passthrough(body: axum::body::Bytes) -> Self {
         Self {
             body,
             persist: None,
             context_report: None,
+        }
+    }
+}
+
+/// The organization policy (L0) block for this message, unless it continues a task: a message
+/// carrying a `taskId` is a human's answer to a question the agent paused on, the task was opened
+/// by a message that did carry the policy, and prepending a block to a literal answer ("yes",
+/// "owner/repo") risks the agent reading the block as the answer. The server-side resume
+/// dispatchers behave the same way.
+async fn org_context_for(state: &AppState, message: &serde_json::Value) -> Option<String> {
+    let is_task_continuation = message
+        .get("taskId")
+        .and_then(|v| v.as_str())
+        .is_some_and(|t| !t.is_empty());
+    if is_task_continuation {
+        return None;
+    }
+    state.prompt_context.org_context().await
+}
+
+/// Appends `org` to `message` as its own part (never spliced into the text part, which may carry
+/// the history glue's marker; see `nasiko_agent_proxy::context_part`). Returns the block's length
+/// once it was appended, `None` when there was nothing to append or no `parts` array to append to.
+fn append_org_context(
+    message: &mut serde_json::Value,
+    org: Option<&str>,
+    tagging: nasiko_agent_proxy::context_part::PartTagging,
+) -> Option<usize> {
+    let org = org?;
+    nasiko_agent_proxy::context_part::append_context_part(message, org, tagging)?;
+    Some(org.len())
+}
+
+/// The body of an agent→agent message send, with organization policy and the current time
+/// appended exactly as on a user's chat: both concern every agent invocation, whoever made it.
+/// Everything else about the caller's chat (session, history, contextId, transcript) is left
+/// alone.
+async fn prepare_agent_call(state: &AppState, body_bytes: axum::body::Bytes) -> PreparedRequest {
+    let Ok(mut rpc) = serde_json::from_slice::<serde_json::Value>(&body_bytes) else {
+        return PreparedRequest::passthrough(body_bytes);
+    };
+    let method = rpc
+        .get("method")
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    if !MESSAGE_SEND_METHODS.contains(&method.as_str()) {
+        return PreparedRequest::passthrough(body_bytes);
+    }
+    let Some(message) = rpc.pointer_mut("/params/message") else {
+        return PreparedRequest::passthrough(body_bytes);
+    };
+    let org = org_context_for(state, message).await;
+    let tagging = nasiko_agent_proxy::context_part::tagging_for_method(&method);
+    let org_added = append_org_context(message, org.as_deref(), tagging).is_some();
+    // After the policy, as on a user's chat. An agent forwarding its own input already carries
+    // the time, and is not given a second one (`append_current_time`).
+    let time_added =
+        crate::current_time::append_current_time(message, state.agent_clock(), tagging);
+    if !org_added && !time_added {
+        return PreparedRequest::passthrough(body_bytes);
+    }
+    match serde_json::to_vec(&rpc) {
+        Ok(rewritten) => PreparedRequest {
+            body: rewritten.into(),
+            persist: None,
+            context_report: None,
+        },
+        Err(e) => {
+            tracing::error!(error = %e, "agent proxy: failed to re-serialize an agent call with platform context");
+            PreparedRequest::passthrough(body_bytes)
         }
     }
 }
@@ -1077,15 +1405,7 @@ async fn ensure_chat_session(
     // (`hitl/mod.rs::deliver` and the MAF executor's `continue_paused_step`) already behave this
     // way; without this the proxy was the odd one out, so the same deployment policed a resume or
     // not depending on which route delivered it.
-    let is_task_continuation = message
-        .get("taskId")
-        .and_then(|v| v.as_str())
-        .is_some_and(|t| !t.is_empty());
-    let org_context = if is_task_continuation {
-        None
-    } else {
-        state.prompt_context.org_context().await
-    };
+    let org_context = org_context_for(state, message).await;
 
     let mut context_report = None;
     if stitch_history && !user_text.is_empty() && same_agent_session {
@@ -1094,7 +1414,7 @@ async fn ensure_chat_session(
         // agents, which an inline `WHERE id = $1` does not.
         let compress_history =
             nasiko_orchestrator::agent_compression_enabled(&state.db, agent_id).await;
-        let history_store = state.history_vector_store();
+        let history_store = state.history_vector_store(user_id).await;
         // A direct chat: this agent's own switch decides history compression.
         let history = context_selection::fetch_for_user(
             &state.db,
@@ -1131,14 +1451,18 @@ async fn ensure_chat_session(
     // `org_context()` already returns a complete, self-headed block ("## Organization
     // Policy\n\n...") — no extra heading to add here, and this covers the file-only case (empty
     // `user_text`) too: there is nothing to find-and-replace, only a new part to append.
-    if let Some(org) = org_context.as_deref()
-        && nasiko_agent_proxy::context_part::append_context_part(message, org, tagging).is_some()
-    {
+    if let Some(chars) = append_org_context(message, org_context.as_deref(), tagging) {
         rewrite_needed = true;
         // Set only once the append actually happened, so the span cannot claim policy was applied
         // to a message that had no `parts` array to append to.
         persist_info.org_applied = true;
-        persist_info.org_policy_chars = org.len();
+        persist_info.org_policy_chars = chars;
+    }
+    // The current time, its own part after the policy, for the same reason. Skipped on a task
+    // continuation like the policy is. A harness or coding turn reads only `user_text`, never
+    // these parts.
+    if crate::current_time::append_current_time(message, state.agent_clock(), tagging) {
+        rewrite_needed = true;
     }
 
     if injected {
@@ -1222,6 +1546,9 @@ struct SseReplyText {
     /// `pause_kind`/`build_pause_question`/`paused_task_id` to read. Once set, stays set: a
     /// pause is a terminal disposition for this stream, not something a later chunk un-does.
     pause_data: Option<String>,
+    /// The last task state any event reported; a terminal one closes the task, anything else
+    /// leaves it open (see `open_tasks::note_observed`).
+    last_task: Option<crate::agents::open_tasks::Observed>,
 }
 
 impl SseReplyText {
@@ -1242,6 +1569,9 @@ impl SseReplyText {
                     == nasiko_types::a2a::StreamDisposition::Paused
             {
                 self.pause_data = Some(data.to_string());
+            }
+            if let Some(observed) = crate::agents::open_tasks::observe(&event) {
+                self.last_task = Some(observed);
             }
             let result = event.get("result").unwrap_or(&event);
             if let Some(text) = artifact_chunk_text(result) {
@@ -1300,7 +1630,8 @@ enum RelayStep {
     /// Still relaying the agent's own bytes.
     Read(
         std::pin::Pin<Box<dyn futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Send>>,
-        SseReplyTap,
+        // Boxed with the guard: the tap and the guard would bloat every `RelayStep`.
+        Box<SseReplyTap>,
         // Boxed: the guard carries the metric handles and would bloat every `RelayStep`.
         Box<AgentRequestGuard>,
     ),
@@ -1322,6 +1653,9 @@ enum RelayStep {
 /// persistence exactly) for the case `build_pause_injection` was never reached at all — it always
 /// finds `pause_data` already taken in the normal case, so it's a no-op then.
 struct SseReplyTap {
+    /// False for an agent→agent leg: the flow is the calling agent's, so this proxy never
+    /// completes it.
+    owns_flow: bool,
     db: sqlx::PgPool,
     hitl_store: std::sync::Arc<dyn nasiko_hitl::HitlStore>,
     /// Chat session to persist the collected reply into — absent for proxied
@@ -1350,8 +1684,10 @@ impl SseReplyTap {
         agent_id: Uuid,
         flow_id: String,
         owner_user_id: Option<Uuid>,
+        owns_flow: bool,
     ) -> Self {
         Self {
+            owns_flow,
             db,
             hitl_store,
             session_id,
@@ -1389,7 +1725,13 @@ impl SseReplyTap {
         // against — logged the same way, so the two paths read as one convention, not two.
         let (Some(session_id), Some(owner_user_id)) = (self.session_id.clone(), self.owner_user_id)
         else {
-            tracing::error!(flow_id = %self.flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
+            // An agent→agent leg has no session of its own: a pause there is the peer's to
+            // report, not a fault.
+            if self.owns_flow {
+                tracing::error!(flow_id = %self.flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
+            } else {
+                tracing::debug!(flow_id = %self.flow_id, "agent proxy: a peer call paused; nothing to persist for the caller");
+            }
             return None;
         };
 
@@ -1451,6 +1793,14 @@ impl Drop for SseReplyTap {
             return;
         };
 
+        // Before the pause branch returns: a paused task is an open one too.
+        if let Some(observed) = self.collector.last_task.take() {
+            let (db, agent_id) = (self.db.clone(), self.agent_id);
+            handle.spawn(async move {
+                crate::agents::open_tasks::note_observed(&db, agent_id, &observed).await;
+            });
+        }
+
         if let Some(pause_data) = self.collector.pause_data.take() {
             let db = self.db.clone();
             let hitl_store = self.hitl_store.clone();
@@ -1458,6 +1808,7 @@ impl Drop for SseReplyTap {
             let agent_id = self.agent_id;
             let flow_id = std::mem::take(&mut self.flow_id);
             let owner_user_id = self.owner_user_id;
+            let owns_flow = self.owns_flow;
             handle.spawn(async move {
                 let question = crate::router::a2a_dispatch::build_pause_question(&pause_data);
                 let message_text = question
@@ -1502,6 +1853,9 @@ impl Drop for SseReplyTap {
                             .await;
                         }
                     }
+                    _ if !owns_flow => {
+                        tracing::debug!(%flow_id, "agent proxy: a peer call paused; nothing to persist for the caller");
+                    }
                     _ => {
                         tracing::error!(%flow_id, "agent proxy: HITL pause detected but no session/caller user id to correlate — pause not persisted");
                     }
@@ -1525,14 +1879,50 @@ impl Drop for SseReplyTap {
                 .await;
             }
         });
-        // Stream ended (or the client disconnected): close the flow row.
-        complete_flow(&self.db, &self.flow_id);
+        // Stream ended (or the client disconnected): close the flow row, if it is this proxy's.
+        if self.owns_flow {
+            complete_flow(&self.db, &self.flow_id);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{SseReplyText, resolve_forwarded_path};
+    use super::{SseReplyText, message_send_context_id, resolve_forwarded_path, resolve_refusal};
+    use crate::agent_resolver::ResolveError;
+    use axum::http::{StatusCode, header::RETRY_AFTER};
+
+    #[test]
+    fn a_request_that_met_a_park_is_told_when_to_try_again() {
+        let parked = resolve_refusal(&ResolveError::ParkedMidRequest);
+        assert_eq!(parked.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(parked.headers()[RETRY_AFTER], "2");
+
+        let gone = resolve_refusal(&ResolveError::NotFound);
+        assert_eq!(gone.status(), StatusCode::NOT_FOUND);
+        assert!(gone.headers().get(RETRY_AFTER).is_none());
+    }
+
+    #[test]
+    fn context_id_is_read_only_from_a_message_send() {
+        let send = |method: &str, ctx: &str| {
+            serde_json::json!({"method": method, "params": {"message": {"contextId": ctx}}})
+                .to_string()
+        };
+        assert_eq!(
+            message_send_context_id(send("message/stream", "c1").as_bytes()).as_deref(),
+            Some("c1")
+        );
+        assert_eq!(
+            message_send_context_id(send("message/stream", "").as_bytes()),
+            None
+        );
+        assert_eq!(
+            message_send_context_id(send("tasks/get", "c1").as_bytes()),
+            None
+        );
+        assert_eq!(message_send_context_id(b"not json"), None);
+    }
 
     #[test]
     fn root_mounted_agent_resolves_to_an_empty_segment_not_a_literal_slash() {
@@ -1576,6 +1966,31 @@ data: {"result":{"statusUpdate":{"status":{"state":"TASK_STATE_COMPLETED"}}}}
 "#,
         );
         assert_eq!(c.finish().as_deref(), Some("Hello world"));
+    }
+
+    #[test]
+    fn a_stream_that_ends_terminal_leaves_a_terminal_task_event() {
+        let mut c = SseReplyText::default();
+        c.feed(
+            br#"data: {"result":{"statusUpdate":{"taskId":"t1","status":{"state":"TASK_STATE_SUBMITTED"}}}}
+data: {"result":{"statusUpdate":{"taskId":"t1","status":{"state":"TASK_STATE_WORKING"}}}}
+data: {"result":{"artifactUpdate":{"artifact":{"parts":[{"text":"hi"}]}}}}
+data: {"result":{"statusUpdate":{"taskId":"t1","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}}
+"#,
+        );
+        let observed = c.last_task.take().expect("a task state");
+        assert_eq!(observed.task_id, "t1");
+        assert!(observed.terminal);
+    }
+
+    #[test]
+    fn a_stream_that_stops_working_leaves_an_open_task_event() {
+        let mut c = SseReplyText::default();
+        c.feed(
+            br#"data: {"result":{"statusUpdate":{"taskId":"t1","status":{"state":"TASK_STATE_WORKING"}}}}
+"#,
+        );
+        assert!(!c.last_task.take().unwrap().terminal);
     }
 
     #[test]

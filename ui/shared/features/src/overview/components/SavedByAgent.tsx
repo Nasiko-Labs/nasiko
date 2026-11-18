@@ -5,7 +5,6 @@
  */
 import { Link } from '@tanstack/react-router'
 import { useRef } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { seriesAt } from '@nasiko/ui/lib/chart'
 import { fmtTokens } from '@nasiko/ui/lib/format'
 import type { SavedByAgent as SavedByAgentData } from '../api'
@@ -24,6 +23,8 @@ export function SavedByAgent({ data, className }: { data: SavedByAgentData; clas
   const max = Math.max(0, ...bars.map((b) => b.tokens))
   const bases = new Set(rows?.map((r) => r.basis))
   const basis = bases.size > 1 ? 'mixed' : ([...bases][0] ?? null)
+  // Nothing saved in the range: the card steps out (user 2026-11-06). Only the Overview draws this card.
+  if (rows && !bars.length) return null
   return (
     <Card
       id="overview-saved"
@@ -39,8 +40,6 @@ export function SavedByAgent({ data, className }: { data: SavedByAgentData; clas
         <CardSkeleton rows={SAVED_BARS} />
       ) : !rows ? (
         <CardError what={copy.saved.what} onRetry={data.retry} titleRef={titleRef} />
-      ) : !bars.length ? (
-        <EmptyState title={copy.saved.none} className="py-6 md:py-6" />
       ) : (
         <div className="flex flex-col gap-2">
           <ol className="m-0 flex list-none flex-col gap-2.5 p-0" aria-label={copy.saved.title}>

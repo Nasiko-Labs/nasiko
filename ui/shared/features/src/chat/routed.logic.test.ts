@@ -205,9 +205,10 @@ describe('dispatch body and errors (§2.2, §5.6)', () => {
       key: 'routedNoAgents',
       certainty: 'rejected-before-run',
     })
+    // An HTML error page is no reason: it is dropped, never shown.
     expect(dispatchError(502, '<html>', send)).toMatchObject({
       key: 'routedInternal',
-      serverDetail: '<html>',
+      serverDetail: undefined,
     })
     // Direct keeps v1a's mapping.
     expect(dispatchError(503, null)).toMatchObject({ key: 'noAgents' })
@@ -507,7 +508,7 @@ describe('server contract (§5.3, §5.6, NC-5)', () => {
       tokens: 'NASIKO_FLOW_MAX_TOKENS',
       timeout: 'NASIKO_FLOW_TIMEOUT_SECS',
     })
-    expect(policyCopy.stopped(policyCopy.fanOut)).toBe('Stopped by an OpenRuntime limit: fan-out.')
+    expect(policyCopy.stopped(policyCopy.fanOut)).toBe('Stopped by an Open Runtime limit: fan-out.')
     expect(policyCopy.raise(POLICY_ENV.fanOut!)).toBe(
       'Ask your admin to raise NASIKO_FLOW_MAX_FAN_OUT.',
     )

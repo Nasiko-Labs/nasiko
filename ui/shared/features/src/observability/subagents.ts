@@ -39,6 +39,7 @@ const rowSchema = z.looseObject({
 
 const childSchema = z.looseObject({
   session_id: id,
+  title: optional(z.string().min(1)),
   subagent_type: optional(z.string().min(1)),
   spawn_tool_call_id: optional(id),
   turns: count,
@@ -79,6 +80,8 @@ export interface RowSubagents extends ParentLink {
 /** One subagent run, from either source (a `?parent=` row or a detail's `subagents` entry). */
 export interface SubagentRun {
   sessionId: string
+  /** What the harness called the run; null when it has none (and for `?parent=` rows, which carry none). */
+  title: string | null
   type: string | null
   spawnToolCallId: string | null
   turns: number | null
@@ -126,6 +129,7 @@ export function detailSubagents(detail: SessionDetail): DetailSubagents {
     ...link(r.data),
     subagents: r.data.subagents.map((c) => ({
       sessionId: c.session_id,
+      title: c.title,
       type: c.subagent_type,
       spawnToolCallId: c.spawn_tool_call_id,
       turns: c.turns,
@@ -142,6 +146,7 @@ export function childRun(row: SessionSummary): SubagentRun {
   const f = rowSubagents(row)
   return {
     sessionId: row.session_id,
+    title: null,
     type: f.subagentType,
     spawnToolCallId: f.spawnToolCallId,
     turns: row.num_traces ?? null,

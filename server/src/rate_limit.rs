@@ -95,7 +95,19 @@ impl RateLimiter {
     }
 }
 
-pub(crate) fn too_many_requests() -> Response {
+/// A 429 that says how long until the caller's window resets.
+pub(crate) fn too_many_requests_after(retry_after: Duration) -> Response {
+    let mut response = too_many_requests();
+    let seconds = retry_after.as_secs().max(1).to_string();
+    if let Ok(value) = axum::http::HeaderValue::from_str(&seconds) {
+        response
+            .headers_mut()
+            .insert(axum::http::header::RETRY_AFTER, value);
+    }
+    response
+}
+
+fn too_many_requests() -> Response {
     (
         StatusCode::TOO_MANY_REQUESTS,
         "rate limit exceeded, try again shortly",
@@ -111,10 +123,9 @@ pub async fn limit_by_user(
     req: Request,
     next: Next,
 ) -> Response {
-    if limiter.allow(&claims.sub) {
-        next.run(req).await
-    } else {
-        too_many_requests()
+    match limiter.check(&claims.sub) {
+        Ok(()) => next.run(req).await,
+        Err(retry_after) => too_many_requests_after(retry_after),
     }
 }
 
@@ -130,10 +141,9 @@ pub async fn limit_globally(
     req: Request,
     next: Next,
 ) -> Response {
-    if limiter.allow("global") {
-        next.run(req).await
-    } else {
-        too_many_requests()
+    match limiter.check("global") {
+        Ok(()) => next.run(req).await,
+        Err(retry_after) => too_many_requests_after(retry_after),
     }
 }
 
@@ -202,6 +212,38 @@ mod tests {
         assert!(limiter.check_with_limit("a", 1).is_err());
         assert_eq!(limiter.check_with_limit("a", 2), Ok(()));
         assert!(limiter.check_with_limit("a", 2).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_global_refusal_carries_retry_after() {
+        use axum::body::Body;
+        use axum::routing::get;
+        use tower::ServiceExt;
+
+        let limiter = RateLimiter::new(1, Duration::from_secs(60));
+        let app = axum::Router::new()
+            .route("/", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn_with_state(
+                limiter,
+                limit_globally,
+            ));
+        let call = || {
+            app.clone()
+                .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        };
+
+        assert_eq!(call().await.unwrap().status(), StatusCode::OK);
+        let refused = call().await.unwrap();
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        let seconds: u64 = refused
+            .headers()
+            .get(axum::http::header::RETRY_AFTER)
+            .expect("a 429 must say when to retry")
+            .to_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!((1..=60).contains(&seconds), "{seconds}");
     }
 
     #[test]

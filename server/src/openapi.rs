@@ -42,6 +42,7 @@ use crate::state::AppState;
         crate::catalog::routes::registry_user_agents,
         crate::catalog::routes::get_by_registry_id,
         crate::catalog::agent_secrets::list_secrets,
+        crate::catalog::agent_secrets::list_inherited_secrets,
         crate::catalog::agent_secrets::set_secret,
         crate::catalog::agent_secrets::delete_secret,
         crate::catalog::agent_secrets::import_secrets,
@@ -55,6 +56,9 @@ use crate::state::AppState;
         crate::agents::llm_config::get_llm_config,
         crate::agents::llm_config::update_llm_config,
         crate::agents::llm_config::delete_llm_config,
+        crate::agents::llm_config::get_my_llm_config,
+        crate::agents::llm_config::set_my_llm_config,
+        crate::agents::llm_config::delete_my_llm_config,
         crate::agents::llm_config::issue_llm_token,
         crate::agents::llm_config::revoke_llm_tokens,
         crate::agents::llm_config::issue_mcp_token,
@@ -113,7 +117,9 @@ use crate::state::AppState;
         crate::observability::handler::get_finops_spend_calendar_day,
         crate::observability::handler::get_finops_attributions,
         crate::observability::handler::get_finops_insights,
+        crate::observability::handler::get_model_routing,
         crate::observability::handler::get_agent_hours,
+        crate::observability::coding_agents::get_coding_agent_usage,
         // CX-1: the `/api/me/*` preference routes and `/api/settings/context-tiers` predate the
         // OpenAPI rollout and were never annotated, so the UI has always typed them by hand.
         crate::context_selection::get_context_strategy,
@@ -125,6 +131,7 @@ use crate::state::AppState;
         crate::context_selection::get_settings_history,
         crate::coding_agent_onboarding::report_sync,
         crate::coding_agent_onboarding::request_sync_retry,
+        crate::coding_agent_onboarding::coding_agent_privacy,
         crate::coding_agent_onboarding::list_sync_runs,
         crate::settings::get_context_tiers,
         crate::settings::update_context_tiers,
@@ -160,6 +167,7 @@ use crate::state::AppState;
         crate::catalog::routes::RegistryUserAgentsResponse,
         crate::catalog::routes::RegistryUserAgentSummary,
         crate::catalog::agent_secrets::SecretListEntry,
+        crate::catalog::agent_secrets::InheritedSecret,
         crate::catalog::agent_secrets::SetSecretRequest,
         crate::catalog::agent_secrets::ImportSecretsRequest,
         crate::catalog::agent_secrets::ImportSecretsResponse,
@@ -175,6 +183,9 @@ use crate::state::AppState;
         crate::agents::llm_config::AttachLlmConfigRequest,
         crate::agents::llm_config::LlmConfigUpdateResponse,
         crate::agents::llm_config::LlmConfigUpdateEnvelope,
+        crate::agents::llm_config::MyLlmConfigResponse,
+        crate::agents::llm_config::MyLlmConfigEnvelope,
+        crate::agents::llm_config::SetMyLlmConfigRequest,
         crate::agents::llm_config::LlmTokenResponse,
         crate::agents::llm_config::LlmTokenEnvelope,
         crate::agents::llm_config::McpTokenResponse,
@@ -289,6 +300,16 @@ use crate::state::AppState;
         crate::observability::service::AgentHoursRow,
         crate::observability::service::AgentHoursBucket,
         crate::observability::service::AgentHoursBucketAgent,
+        crate::observability::coding_agents::UsageEnvelope,
+        crate::observability::coding_agents::UsageResponse,
+        crate::observability::coding_agents::UsageScope,
+        crate::observability::coding_agents::UsageWindow,
+        crate::observability::coding_agents::HarnessTotals,
+        crate::observability::coding_agents::HarnessEntry,
+        crate::observability::coding_agents::HarnessModel,
+        crate::observability::coding_agents::HarnessTool,
+        crate::observability::coding_agents::SeriesPoint,
+        crate::observability::coding_agents::RecentSession,
         crate::observability::logs::LogLine,
         crate::coding_agent_onboarding::SyncClient,
         crate::coding_agent_onboarding::SyncPhase,
@@ -300,6 +321,7 @@ use crate::state::AppState;
         crate::coding_agent_onboarding::SyncWindow,
         crate::coding_agent_onboarding::SyncReport,
         crate::coding_agent_onboarding::SyncRun,
+        crate::coding_agent_onboarding::CodingAgentPrivacy,
         crate::coding_agent_onboarding::SyncRunsResponse,
         EmptyEnvelope,
     )),
@@ -362,5 +384,6 @@ mod tests {
         assert!(json.contains("/api/observability/session/list"));
         assert!(json.contains("/api/mcp/connectors"));
         assert!(json.contains("/api/usage/summary"));
+        assert!(json.contains("/api/observability/coding-agents/usage"));
     }
 }

@@ -17,6 +17,11 @@ interface Size {
   /** Where the fitted area starts in map units, when it reaches past the map's origin (0, 0 when absent). */
   x0?: number
   y0?: number
+  /**
+   * Fit the width only and start at y0, the rest running below the fold (the Map's home view: Fleet Runtime and
+   * TokenOps across the canvas, from nasiko-ui-lab).
+   */
+  widthOnly?: boolean
 }
 
 /** Options: `anywhere` lets a drag start on a node too (the village is dense); it captures the pointer only once
@@ -64,12 +69,12 @@ function createViewport(setPct: (n: number) => void, opts: ViewportOptions = {})
     // On a phone the whole map would be too small to read: it opens at a readable size and pans sideways.
     const z = Math.max(
       el.clientWidth < 640 ? 0.5 : 0.2,
-      Math.min(aw / size.width, ah / size.height, 1.25),
+      Math.min(aw / size.width, size.widthOnly ? Infinity : ah / size.height, 1.25),
     )
     return {
       z,
       x: (size.x0 ?? 0) - 16 / z - Math.max(0, (aw / z - size.width) / 2),
-      y: (size.y0 ?? 0) - top / z - Math.max(0, (ah / z - size.height) / 2),
+      y: (size.y0 ?? 0) - top / z - (size.widthOnly ? 0 : Math.max(0, (ah / z - size.height) / 2)),
     }
   }
   const fit = () => {
@@ -270,16 +275,16 @@ export function useViewport(
 ) {
   const [pct, setPct] = useState(100)
   const [ctl] = useState(() => createViewport(setPct, opts))
-  const { width, height, x0, y0 } = size
+  const { width, height, x0, y0, widthOnly } = size
   const ease = !!opts?.easeReserve
   const lastReserve = useRef(reserve)
   useEffect(() => {
     const moved = lastReserve.current !== reserve
     lastReserve.current = reserve
-    ctl.configure({ width, height, x0, y0 }, reserve)
+    ctl.configure({ width, height, x0, y0, widthOnly }, reserve)
     if (moved && ease) ctl.refitSmooth()
     else ctl.reapply()
-  }, [ctl, width, height, x0, y0, reserve, ease])
+  }, [ctl, width, height, x0, y0, widthOnly, reserve, ease])
   useEffect(() => {
     const node = zone.current
     if (!node) return

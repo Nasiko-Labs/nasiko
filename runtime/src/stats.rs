@@ -338,7 +338,7 @@ pub fn cpu_percent(
     Some((cpu_delta as f64 / system_delta as f64) * online_cpus as f64 * 100.0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "docker"))]
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};

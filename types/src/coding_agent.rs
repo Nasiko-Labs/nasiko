@@ -247,6 +247,39 @@ fn validate_parent(parent: &CodingAgentSessionParent, child_source_id: &str) -> 
 }
 
 impl CodingAgentEventV1 {
+    /// The event with no conversation in it: the prompt, the response, the session title and
+    /// every tool call's arguments, output, raw transcript and error are dropped, and the policy
+    /// becomes [`CapturePolicy::MetadataOnly`]. What prices the turn — model, provider, token
+    /// counts, accounting, timestamps — and the identities are kept, so the event id still holds.
+    pub fn without_content(self) -> Self {
+        let turn = CodingAgentTurn {
+            prompt: None,
+            response: None,
+            tool_calls: self
+                .turn
+                .tool_calls
+                .into_iter()
+                .map(|tool| CodingAgentToolCall {
+                    arguments: None,
+                    output: None,
+                    raw: None,
+                    error: None,
+                    ..tool
+                })
+                .collect(),
+            ..self.turn
+        };
+        Self {
+            session: CodingAgentSession {
+                title: None,
+                ..self.session
+            },
+            turn,
+            capture_policy: CapturePolicy::MetadataOnly,
+            ..self
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.version != CODING_AGENT_EVENT_VERSION {
             return Err(format!(
@@ -662,6 +695,64 @@ mod tests {
         event.turn.prompt = Some("question".into());
         event.turn.response = Some("answer".into());
         event
+    }
+
+    #[test]
+    fn without_content_drops_every_text_field_and_keeps_what_prices_the_turn() {
+        let mut captured = content_event();
+        captured.session.title = Some("refactor the billing module".into());
+        let at = captured.turn.started_at;
+        captured.turn.llm_calls.push(CodingAgentLlmCall {
+            id: "call".into(),
+            provider: "anthropic".into(),
+            model: "claude-sonnet".into(),
+            input_tokens: 10,
+            output_tokens: 20,
+            cache_read_tokens: 30,
+            cache_creation_tokens: 40,
+            accounting: None,
+            started_at: at,
+            ended_at: at,
+        });
+        captured.turn.tool_calls.push(CodingAgentToolCall {
+            id: "tool".into(),
+            name: "Read".into(),
+            kind: "read".into(),
+            model_call_id: None,
+            status: CodingAgentToolCallStatus::Failed,
+            arguments: Some(serde_json::json!({"path": "src/secret.rs"})),
+            output: Some(serde_json::json!("fn main() {}")),
+            raw: Some("raw transcript".into()),
+            error: Some("permission denied: src/secret.rs".into()),
+            started_at: Some(at),
+            ended_at: Some(at),
+            duration_ms: Some(5),
+            association: CodingAgentToolAssociation::Turn,
+            timestamp_quality: CodingAgentTimestampQuality::Unknown,
+        });
+
+        let stripped = captured.clone().without_content();
+
+        assert_eq!(stripped.capture_policy, CapturePolicy::MetadataOnly);
+        assert_eq!(stripped.session.title, None);
+        assert_eq!(
+            (&stripped.turn.prompt, &stripped.turn.response),
+            (&None, &None)
+        );
+        let tool = &stripped.turn.tool_calls[0];
+        assert_eq!(
+            (&tool.arguments, &tool.output, &tool.raw, &tool.error),
+            (&None, &None, &None, &None)
+        );
+        assert_eq!(tool.status, CodingAgentToolCallStatus::Failed);
+        assert_eq!(stripped.turn.llm_calls, captured.turn.llm_calls);
+        assert_eq!(stripped.event_id, captured.event_id);
+        assert!(stripped.validate().is_ok());
+    }
+
+    #[test]
+    fn without_content_leaves_a_metadata_only_event_unchanged() {
+        assert_eq!(event().without_content(), event());
     }
 
     #[test]

@@ -28,6 +28,28 @@ describe('resolveSlots', () => {
     expect(s.granteeKinds.map((k) => k.key)).toEqual(['units', 'workspaces'])
     expect(s.harnessOrgScope).toBeNull()
   })
+
+  it('lets an upper layer’s settings section replace a lower one’s with the same key, in place', () => {
+    const section = (key: string, label: string) => ({
+      key,
+      label,
+      group: 'security' as const,
+      Section: () => null,
+    })
+    const ee: EditionLayer = {
+      id: 'ee',
+      slots: { settingsSections: [section('sso', 'Single sign-on'), section('alerts', 'Alerts')] },
+    }
+    const mt: EditionLayer = {
+      id: 'mt',
+      slots: { settingsSections: [section('sso', 'SSO and domain'), section('extra', 'Extra')] },
+    }
+    expect(resolveSlots([ee, mt]).settingsSections.map((x) => x.label)).toEqual([
+      'SSO and domain',
+      'Alerts',
+      'Extra',
+    ])
+  })
 })
 
 describe('applyNav', () => {
@@ -42,7 +64,7 @@ describe('applyNav', () => {
       ],
     }
     const urls = applyNav(NAV_ITEMS, [layer]).map((i) => i.to)
-    expect(urls.slice(0, 4)).toEqual(['/', '/agents', '/users', '/workflows'])
+    expect(urls.slice(0, 5)).toEqual(['/', '/chat', '/agents', '/users', '/harnesses'])
     expect(urls).not.toContain('/builds')
     expect(urls.at(-1)).toBe('/custom-views')
     expect(applyNav(NAV_ITEMS, [])).toEqual(NAV_ITEMS)

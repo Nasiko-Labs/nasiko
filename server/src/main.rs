@@ -168,14 +168,13 @@ async fn main() {
     nasiko_server::serve::serve(listener, app).await;
 }
 
-/// The open-source shell loads no third-party script; its inline scripts are pinned by hash from
-/// `csp.json`. The one extra host is the Calendly frame on the free assessment's last step.
+/// The open-source shell loads no third-party script, so the CSP names no extra host. Its inline
+/// scripts are pinned by hash from `csp.json`.
 const CSP_EXTRAS: spa::CspExtras = spa::CspExtras {
     script_src: &[],
     connect_src: &[],
     img_src: &[],
-    // The free assessment's last step embeds the sales Calendly as a plain iframe (no script).
-    frame_src: &["https://calendly.com"],
+    frame_src: &[],
 };
 
 /// Release caches the parsed manifest here; debug re-reads it per request so a

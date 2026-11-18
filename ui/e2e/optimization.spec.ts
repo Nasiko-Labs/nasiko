@@ -78,10 +78,13 @@ test('the bulk turn-on confirm keeps focus, passes axe and announces the end', a
   await expectAccessible(page)
   for (let i = 0; i < 6; i++) {
     await page.keyboard.press('Tab')
-    expect(
-      await dialog.evaluate((d) => d.contains(document.activeElement)),
-      'focus stays in the dialog',
-    ).toBe(true)
+    // Tab past the last control lands on Base UI's focus guard, which moves focus back to the first
+    // one on the next animation frame; a busy runner can look in between, so wait for it.
+    await expect
+      .poll(() => dialog.evaluate((d) => d.contains(document.activeElement)), {
+        message: 'focus stays in the dialog',
+      })
+      .toBe(true)
   }
   await dialog.getByRole('button', { name: /^Turn on for \d+$/ }).click()
   await expect(page.getByText(/^Turned on Token optimization for \d+ agents\.$/)).toBeAttached()

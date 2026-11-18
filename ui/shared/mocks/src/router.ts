@@ -50,6 +50,8 @@ interface MockCustomProvider extends CustomProvider {
 export interface RouterState {
   configs: MockConfig[]
   routing: Map<string, MockRouting>
+  /** The viewer's own config choice per agent they do not own (`agent_user_llm_configs`). */
+  mine: Map<string, string>
   secrets: Map<string, SecretEntry[]>
   custom: MockCustomProvider[]
   registry: ModelMapping[]
@@ -190,6 +192,7 @@ export function buildRouterState(
   return {
     configs,
     routing,
+    mine: new Map(),
     secrets: new Map([
       [ADMIN_ID, [secret('ANTHROPIC_API_KEY'), secret('OPENAI_API_KEY')]],
       ...others.map((o) => [o, [secret('ANTHROPIC_API_KEY')]] as [string, SecretEntry[]]),
@@ -495,6 +498,33 @@ export function patchRouting(
   return patched
 }
 
+/**
+ * `my-llm-config` (agents/llm_config.rs): the caller's own choice on an agent they can use but do not own. The owner
+ * gets 400; a choice of a deleted config reads as none; a PUT of anyone else's config is a 404.
+ */
+export function myChoice(
+  s: RouterState,
+  agent: MockAgent,
+  user: string,
+  write?: { configId: string | null },
+) {
+  if (agent.owner_id === user)
+    throw new MockHttpError(
+      400,
+      'you own this agent: set its model with PATCH /api/agents/{id}/llm-config',
+    )
+  if (write?.configId) {
+    findConfig(s, write.configId, user)
+    s.mine.set(agent.id, write.configId)
+  } else if (write) s.mine.delete(agent.id)
+  const chosen = live(s, user).find((c) => c.id === s.mine.get(agent.id))
+  return {
+    agent_id: agent.id,
+    llm_config_id: chosen?.id ?? null,
+    llm_config: chosen ? routingConfigJson(chosen) : null,
+  }
+}
+
 // ─── secrets, registry, custom providers ────────────────────────────────────
 
 /** secrets/routes.rs `create_secret`: an upsert (a known name gets the new value and `updated_at`). */
@@ -671,7 +701,7 @@ export function usageByAgent(
     const row = by.get(t.agent_id) ?? {
       agent_id: t.agent_id,
       agent_name: names.get(t.agent_id) ?? null,
-      request_count: 0,
+      traces: 0,
       total_input_tokens: 0,
       total_output_tokens: 0,
       total_tokens: 0,
@@ -679,7 +709,7 @@ export function usageByAgent(
       avg_latency_ms: null,
       _lat: 0,
     }
-    row.request_count++
+    row.traces++
     row.total_input_tokens += t.input_tokens
     row.total_output_tokens += t.output_tokens
     row.total_tokens += t.input_tokens + t.output_tokens
@@ -691,7 +721,7 @@ export function usageByAgent(
     .map(({ _lat, ...r }) => ({
       ...r,
       total_cost_usd: Math.round(r.total_cost_usd * 1e6) / 1e6,
-      avg_latency_ms: r.request_count ? _lat / r.request_count : null,
+      avg_latency_ms: r.traces ? _lat / r.traces : null,
     }))
     .sort((a, b) => b.total_tokens - a.total_tokens)
 }

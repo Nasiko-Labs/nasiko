@@ -1,5 +1,5 @@
 import { z } from 'zod/mini'
-import { opt } from '@nasiko/ui/lib/search'
+import { flag, opt } from '@nasiko/ui/lib/search'
 import { nameProblem } from './name'
 
 /** URL state for the Builds page (plans/feat-deploy.md §3, §6); junk values fall back instead of throwing. */
@@ -27,5 +27,14 @@ export const deploySearchSchema = z.object({
   // Only a name the server would accept: a link can't pre-fill shell characters into the copied CLI command.
   name: opt(z.string().check(z.refine((n) => nameProblem(n) === null))),
   version: opt(z.string().check(z.maxLength(40))),
+  /**
+   * A new version of the agent `name` names: the name can't change. The server keys an agent on owner and name
+   * (`agents/upload.rs`, `ON CONFLICT (owner_id, name)`), so another name would deploy a second agent, not a version.
+   */
+  newVersion: opt(flag),
 })
+
+/** The name a new-version deploy is fixed to, or null when the name is free. */
+export const lockedName = (search: DeploySearch): string | null =>
+  search.newVersion && search.name ? search.name : null
 export type DeploySearch = z.infer<typeof deploySearchSchema>

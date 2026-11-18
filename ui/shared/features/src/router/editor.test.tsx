@@ -53,7 +53,7 @@ const openEdit = async (name: string) => {
 const fillNew = async (sheet: HTMLElement, name: string, secretName: string) => {
   await userEvent.type(within(sheet).getByLabelText(copy.fieldName), name)
   await choose(within(sheet).getByLabelText(copy.fieldProvider), 'openai')
-  await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o')
+  await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o{Tab}')
   await userEvent.click(within(sheet).getByRole('radio', { name: copy.keyAdd }))
   const nameInput = within(sheet).getByLabelText(copy.secretName)
   await userEvent.clear(nameInput)
@@ -133,7 +133,7 @@ describe('keys', () => {
     await ready()
     const sheet = await openNew()
     await userEvent.type(within(sheet).getByLabelText(copy.fieldName), 'missing')
-    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o')
+    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o{Tab}')
     await userEvent.click(within(sheet).getByRole('radio', { name: copy.keyUseSaved }))
     await choose(within(sheet).getByRole('combobox', { name: copy.keyUseSaved }), 'OPENAI_API_KEY')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
@@ -189,7 +189,7 @@ describe('edit safety', () => {
     await ready()
     const sheet = await openEdit('anthropic-default')
     const add = within(sheet).getByRole('combobox', { name: copy.addFallback })
-    await userEvent.type(add, 'openai/gpt-4o')
+    await userEvent.type(add, 'openai/gpt-4o{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.addFallback }))
     within(sheet)
       .getByRole('button', { name: copy.moveUp('openai/gpt-4o') })
@@ -411,7 +411,7 @@ describe('review fixes', () => {
     const sheet = await screen.findByRole('dialog', { name: copy.editorNew })
     await within(sheet).findByLabelText(copy.fieldName)
     await userEvent.type(within(sheet).getByLabelText(copy.fieldName), 'x')
-    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o')
+    await userEvent.type(within(sheet).getByLabelText(copy.fieldModel), 'gpt-4o{Tab}')
     expect(within(sheet).getByRole('button', { name: copy.save })).toBeDisabled()
   })
 
@@ -431,13 +431,36 @@ describe('review fixes', () => {
     expect(within(dup).getByLabelText(copy.tierLabels[1])).toHaveValue('gpt-4o-mini')
   })
 
+  it('Add fallback: Enter on a highlighted suggestion fills the field, the next Enter adds it', async () => {
+    renderApp('/router')
+    await ready()
+    const sheet = await openEdit('anthropic-default')
+    const add = within(sheet).getByRole('combobox', { name: copy.addFallback })
+    await userEvent.type(add, 'openai/gpt-4o')
+    await userEvent.keyboard('{ArrowDown}')
+    const id = await waitFor(() => {
+      const v = add.getAttribute('aria-activedescendant')
+      if (!v) throw new Error('nothing highlighted yet')
+      return v
+    })
+    const picked = document.getElementById(id)?.textContent ?? ''
+    await userEvent.keyboard('{Enter}')
+    expect(add).toHaveValue(picked)
+    expect(within(sheet).queryByRole('button', { name: copy.removeFallback(picked) })).toBeNull()
+    await userEvent.keyboard('{Enter}')
+    expect(
+      await within(sheet).findByRole('button', { name: copy.removeFallback(picked) }),
+    ).toBeInTheDocument()
+    expect(add).toHaveValue('')
+  })
+
   it('a moved fallback keeps keyboard focus on its arrow', async () => {
     renderApp('/router')
     await ready()
     const sheet = await openEdit('anthropic-default')
     await userEvent.type(
       within(sheet).getByRole('combobox', { name: copy.addFallback }),
-      'openai/gpt-4o',
+      'openai/gpt-4o{Tab}',
     )
     await userEvent.click(within(sheet).getByRole('button', { name: copy.addFallback }))
     within(sheet)

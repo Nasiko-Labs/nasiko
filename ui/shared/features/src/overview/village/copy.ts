@@ -5,6 +5,7 @@
  * provider), so every inspector line says what the place stands for.
  */
 import { fmtMoney } from '@nasiko/ui/lib/format'
+import type { StepId } from '../estate/setup'
 import type { Beacon, LogKind, Pose } from './model'
 import type { Kind } from './zones'
 
@@ -46,7 +47,7 @@ export const villageCopy = {
     orb: 'Opportunities',
     orbSub: 'Ways to spend fewer tokens',
     observatory: 'Observability',
-    observatorySub: 'Traces of the agents OpenRuntime runs',
+    observatorySub: 'Traces of the agents Open Runtime runs',
     outpost: 'Coding-tool observatory',
     workflows: 'Workflows',
     workflowsSub: 'Every workflow, and how often it ran',
@@ -162,6 +163,24 @@ export const villageCopy = {
     foot: 'Everything I flag stays in the Control center up top.',
     quietTitle: 'All quiet.',
     quiet: "Nothing needs you right now. I'll raise my hand when something does.",
+    /**
+     * The setup checklist (the canvases' setup steps, `estate/setup.ts`): in full while nothing has run, else the steps
+     * left under All quiet. The next step says what it brings to life here.
+     */
+    setup: {
+      title: 'Get your village going',
+      intro: 'The village builds itself from what runs. Each step brings a part of it to life.',
+      left: 'Still to set up:',
+      progress: (done: number, all: number) => `${done} of ${all} done`,
+      done: 'done',
+      place: {
+        chat: 'Your agents get to work, and their spend flows into the village.',
+        harness: 'Lights the coding-tool observatory, with what each session costs.',
+        mcp: 'Opens the MCP gateway: the tools your agents can call.',
+        router: 'Raises a router gate on the road to the providers.',
+        workflows: 'Starts a project yard that fills with each run.',
+      } satisfies Record<StepId, string>,
+    },
     request: 'Someone is waiting on your answer.',
   },
   settings: {
@@ -185,7 +204,7 @@ export const villageCopy = {
     title: 'Build',
     sub: 'Pick what you want to add, then a green plot for it. Each one opens the page where you set it up; it lands on that plot once it exists.',
     tabs: { fleet: 'Fleet', buildings: 'Buildings', savings: 'Savings', guardrails: 'Guardrails' },
-    soon: 'Not in OpenRuntime yet',
+    soon: 'Not in Open Runtime yet',
     opens: (page: string) => `Opens ${page}`,
     pick: (page: string) => `Pick a plot, then ${page}`,
     full: 'No open plot on this plan',
@@ -206,24 +225,6 @@ export const villageCopy = {
     label: 'Ask the Orchestrator',
     placeholder: 'Ask the Orchestrator about your fleet…',
     send: 'Ask',
-  },
-  /** The find box (the Map's Go to): find any part or problem and open it. */
-  query: {
-    label: 'Find on the canvas',
-    placeholder: 'Find a team, agent, model, tool or problem…',
-    goTo: 'Go to…',
-    scopeLabel: 'Look in',
-    scopes: {
-      all: 'All',
-      problems: 'Problems',
-      agents: 'Agents',
-      teams: 'Teams',
-      models: 'Models',
-      tools: 'Tools',
-    },
-    problems: 'Problems',
-    parts: 'Parts',
-    empty: 'Nothing here matches.',
   },
   panel: {
     orgBudget: 'Budget this month',
@@ -246,7 +247,7 @@ export const villageCopy = {
     routers: 'Routers',
     guardrailsTitle: 'Guardrails',
     guardrailsNote:
-      'Guardrails will stand here as walls around teams and checkpoints on the token lines. They aren’t in OpenRuntime yet.',
+      'Guardrails will stand here as walls around teams and checkpoints on the token lines. They aren’t in Open Runtime yet.',
     orchestrator: (live: number) =>
       live ? `Coordinating ${n(live, 'running agent', 'running agents')}` : 'Quiet',
     waiting: (k: number) =>
@@ -272,7 +273,7 @@ export const villageCopy = {
     runs: 'Runs',
     success: 'Success',
     watchNote:
-      'The eye walks the park, watching the agents OpenRuntime runs. Coding tools have their own, on the dirt plot.',
+      'The eye walks the park, watching the agents Open Runtime runs. Coding tools have their own, on the dirt plot.',
     openSessions: 'Open Sessions',
     openFlows: 'Open Flows',
     railsTitle: 'Workflows',

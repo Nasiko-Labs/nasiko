@@ -1,6 +1,8 @@
 /**
  * The CLI guide (`/cli`, the sidebar's help rows): install, the first steps against this cluster and a card per task
  * that opens its docs page. docs.nasiko.com can't be framed (X-Frame-Options: DENY), so the reference stays a link.
+ * The first steps are the setup guide's (onboarding/HarnessStep.tsx): install, then connect, which signs in itself
+ * (through SSO where the server has it) and then asks which coding agents to connect.
  */
 import {
   ArrowUpRight,
@@ -18,6 +20,7 @@ import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { CLI_DOCS_URL, cliDocsUrl } from '@nasiko/app-core/links'
+import { connectCommand } from './commands'
 import { copy, TASKS } from './copy'
 
 const ICONS = {
@@ -29,16 +32,10 @@ const ICONS = {
   observe: ChartNoAxesColumn,
 } as const
 
-/** This server's address for `nasiko connect`, or a placeholder where the page isn't served over http(s). */
-const clusterUrl = () =>
-  /^https?:$/.test(window.location.protocol) ? window.location.origin : 'https://<your-cluster>'
-
 export function CliGuidePage() {
   const steps = [
     { label: copy.start.install, command: copy.install.unixCommand },
-    { label: copy.start.connect, command: `nasiko connect ${clusterUrl()}` },
-    { label: copy.start.signIn, command: 'nasiko auth login' },
-    { label: copy.start.deploy, command: 'nasiko upload' },
+    { label: copy.start.connect, command: connectCommand() },
   ]
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-8">

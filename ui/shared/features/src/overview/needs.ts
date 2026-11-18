@@ -9,8 +9,17 @@
 import type { HitlKind } from '@nasiko/features/chat/types'
 import { fmtMoney, fmtShortDay } from '@nasiko/ui/lib/format'
 import { copy } from './copy'
+import type { Dimension } from './health'
 
 export type SourceId = 'requests' | 'agents' | 'budgets' | 'sessions'
+/** A platform feature under the alerts: a suggestion while it isn't set up, never an alert (and never "failed"). */
+export type SetupId = 'router' | 'workflows' | 'mcp'
+/** One setup item and how much of it exists: 0 is not set up; `more` when the count is a full page, not the total. */
+export interface SetupItem {
+  id: SetupId
+  count: number
+  more?: boolean
+}
 type SourceState<T> =
   { state: 'loading' } | { state: 'failed' } | { state: 'absent' } | { state: 'ok'; value: T }
 
@@ -68,6 +77,8 @@ export type NeedRow =
       failed: number
       agents: string[]
     }
+  /** Watch agents, promoted into an otherwise empty inbox (`watchSummary`); never part of `mergeNeeds`. */
+  | { key: string; kind: 'watch'; severity: 'watch'; count: number; detail: string }
 
 export interface Needs {
   rows: NeedRow[]
@@ -75,6 +86,8 @@ export interface Needs {
   failed: SourceId[]
   /** Sources the server has (not absent): all of them failing is one card error. */
   available: number
+  /** Sources that answered in full, in inbox order: what an all-clear vouches for. */
+  checked: SourceId[]
   /** Some available source hasn't answered yet. */
   loading: boolean
   /** Every available source answered and none has anything: the only time "Nothing needs you" may show. */
@@ -124,6 +137,7 @@ export function mergeNeeds(i: NeedsInput): Needs {
     rows,
     failed,
     available: states.filter(([, s]) => s !== 'absent').length,
+    checked: states.filter(([id, s]) => s === 'ok' && !failed.includes(id)).map(([id]) => id),
     loading,
     empty: !loading && !failed.length && !rows.length,
     waitingCount:
@@ -162,5 +176,30 @@ export function budgetView(b: Omit<BudgetItem, 'id'>): { title: string; detail: 
   return {
     title: copy.needs.budget(b.label, 'warning', b.crossed),
     detail: copy.needs.budgetDetailFor(b.period, b.covers),
+  }
+}
+
+const DIMENSIONS: readonly Dimension[] = ['reliability', 'cost', 'activity', 'latency']
+
+/**
+ * Watch agents as one row for an inbox that is otherwise empty (user 2026-11-05): how many, and why. One shared reason
+ * is said as is ("All idle 7 days while deployed"); mixed ones are counted by what they're about, by each agent's
+ * first (worst) reason. Null when there are none.
+ */
+export function watchSummary(
+  watch: readonly { reasons: readonly { dimension: Dimension; text: string }[] }[],
+): { count: number; detail: string } | null {
+  const first = watch.flatMap((a) => (a.reasons[0] ? [a.reasons[0]] : []))
+  if (!watch.length) return null
+  const texts = new Set(first.map((r) => r.text))
+  const [only] = texts
+  if (first.length === watch.length && texts.size === 1 && only)
+    return { count: watch.length, detail: copy.needs.watchSame(watch.length, only) }
+  const by = (d: Dimension) => first.filter((r) => r.dimension === d).length
+  return {
+    count: watch.length,
+    detail: DIMENSIONS.filter((d) => by(d) > 0)
+      .map((d) => copy.needs.watchBy[d](by(d)))
+      .join(' · '),
   }
 }

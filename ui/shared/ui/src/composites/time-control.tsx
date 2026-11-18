@@ -3,7 +3,11 @@
  * it to a select on narrow screens). `TimePresets` and `CustomRange` are its two halves, for a page that puts the
  * presets in the top bar (which is one fixed-height row) and the custom dates in the page.
  */
-import { Input } from '@nasiko/ui/primitives/input'
+import { useState } from 'react'
+import { CalendarIcon } from 'lucide-react'
+import { Button } from '@nasiko/ui/primitives/button'
+import { Calendar } from '@nasiko/ui/primitives/calendar'
+import { Popover, PopoverContent, PopoverTrigger } from '@nasiko/ui/primitives/popover'
 import {
   Select,
   SelectContent,
@@ -12,7 +16,9 @@ import {
   SelectValue,
 } from '@nasiko/ui/primitives/select'
 import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
-import { PRESETS, type Preset } from '@nasiko/ui/lib/search'
+import { fmtShortDay } from '@nasiko/ui/lib/format'
+import { isRealDate, PRESETS, type Preset } from '@nasiko/ui/lib/search'
+import { useMediaQuery } from '@nasiko/ui/lib/useMediaQuery'
 import { cn } from '@nasiko/ui/lib/utils'
 
 const LABELS: Record<Preset, string> = {
@@ -88,9 +94,22 @@ export function TimePresets({ preset, from, to, today, onChange }: TimeControlPr
   )
 }
 
+/** A UTC day key as a date, and back: the picker runs in UTC (`timeZone`), like every day key the server sends. */
+const utcDay = (key: string) => new Date(`${key}T00:00:00Z`)
+const dayKey = (d: Date) => d.toISOString().slice(0, 10)
+/** Two days as a range, earlier first. */
+const span = (a: Date, b: Date) => (b < a ? { from: b, to: a } : { from: a, to: b })
+/** The month and year dropdowns' first month (product call, NAS-1516). */
+const EARLIEST_MONTH = utcDay('2025-01-01')
+
 /**
- * The custom range's From and To dates; nothing unless the preset is Custom. `noteElsewhere` drops the invalid-range
- * note for a one-line home (the top bar): the page renders `InvalidRangeNote` instead, which the To input still names.
+ * The custom range's picker; nothing unless the preset is Custom. The first day clicked starts a range and the second
+ * ends it (either order); only the whole range is saved (NAS-1516: native date inputs saved every keystroke, so typing
+ * a year refetched with years like 0002, and their look and day order changed with the browser). Picking Custom opens
+ * it; a link to a custom range doesn't. Between the clicks the range follows the pointer, and a line under the months
+ * says which end comes next; two months from 48rem, the range's last month on the right, with month and year dropdowns
+ * back to `EARLIEST_MONTH`. `noteElsewhere` drops the invalid-range note for a one-line home (the top bar): the page
+ * renders `InvalidRangeNote` instead, which the button still names.
  */
 export function CustomRange({
   preset,
@@ -101,37 +120,83 @@ export function CustomRange({
   onChange,
   noteElsewhere = false,
 }: TimeControlProps & { noteElsewhere?: boolean }) {
-  return preset === 'custom' ? (
+  const [open, setOpen] = useState(false)
+  const [start, setStart] = useState<Date>()
+  const [hover, setHover] = useState<Date>()
+  const wide = useMediaQuery('(min-width: 48rem)')
+  // Mounted before the preset changes, so only a switch to Custom opens it: a page loaded on Custom starts shut.
+  const [seenPreset, setSeenPreset] = useState(preset)
+  if (seenPreset !== preset) {
+    setSeenPreset(preset)
+    setOpen(preset === 'custom')
+  }
+  if (preset !== 'custom') return null
+  const shown = (d?: string) => (d && isRealDate(d) ? fmtShortDay(d) : (d ?? '…'))
+  const label = `${shown(from)} – ${shown(to)}`
+  const saved = !invalid && from && to ? { from: utcDay(from), to: utcDay(to) } : undefined
+  const end = utcDay(to && isRealDate(to) ? to : today)
+  const reset = () => {
+    setStart(undefined)
+    setHover(undefined)
+  }
+  return (
     <div className="flex flex-wrap items-center gap-1 text-xs">
-      <label className="sr-only" htmlFor="tw-from">
-        From (UTC)
-      </label>
-      <Input
-        id="tw-from"
-        type="date"
-        className="h-8 w-36"
-        value={from ?? ''}
-        max={to ?? today}
-        onChange={(e) => onChange({ preset: 'custom', from: e.target.value, to })}
-      />
-      <span aria-hidden>–</span>
-      <label className="sr-only" htmlFor="tw-to">
-        To (UTC)
-      </label>
-      <Input
-        id="tw-to"
-        type="date"
-        className="h-8 w-36"
-        value={to ?? ''}
-        min={from}
-        max={today}
-        onChange={(e) => onChange({ preset: 'custom', from, to: e.target.value })}
-        aria-invalid={invalid || undefined}
-        aria-describedby={invalid ? 'tw-invalid' : undefined}
-      />
+      <Popover
+        open={open}
+        onOpenChange={(next) => {
+          setOpen(next)
+          reset()
+        }}
+      >
+        <PopoverTrigger
+          render={
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 gap-1.5 text-xs font-normal"
+              aria-label={`Custom range (UTC): ${label}`}
+              aria-invalid={invalid || undefined}
+              aria-describedby={invalid ? 'tw-invalid' : undefined}
+            />
+          }
+        >
+          <CalendarIcon aria-hidden />
+          {label}
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-auto p-0">
+          <Calendar
+            mode="range"
+            timeZone="UTC"
+            captionLayout="dropdown"
+            showOutsideDays={false}
+            numberOfMonths={wide ? 2 : 1}
+            today={utcDay(today)}
+            selected={start ? span(start, hover ?? start) : saved}
+            defaultMonth={
+              wide ? new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth() - 1)) : end
+            }
+            startMonth={EARLIEST_MONTH}
+            endMonth={utcDay(today)}
+            disabled={{ after: utcDay(today) }}
+            onDayMouseEnter={(day, m) => !m.disabled && setHover(day)}
+            onSelect={(_, day) => {
+              if (!start) return setStart(day)
+              const range = span(start, day)
+              setOpen(false)
+              reset()
+              onChange({ preset: 'custom', from: dayKey(range.from), to: dayKey(range.to) })
+            }}
+          />
+          <p aria-live="polite" className="border-t px-3 py-2 text-xs text-muted-foreground">
+            {start
+              ? `${fmtShortDay(dayKey(start))} – now pick the last day`
+              : 'Pick the first and last day (UTC)'}
+          </p>
+        </PopoverContent>
+      </Popover>
       {invalid && !noteElsewhere ? <InvalidRangeNote className="basis-full" /> : null}
     </div>
-  ) : null
+  )
 }
 
 /** Why the page shows 30d although the URL asks for a custom range. */

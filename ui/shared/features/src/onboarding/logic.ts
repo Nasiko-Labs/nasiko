@@ -1,18 +1,20 @@
 /** Pure onboarding rules (plan Task 1): the step model, where each persona lands, and the home's Setup guide ticks. */
-import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
 import type { Onboarding, Persona } from './types'
 
-export const STEPS = ['welcome', 'role', 'model', 'agent', 'optimize', 'ready'] as const
+/** `start` is one step for the first agent and the model key (every model call is billed to the user's own key, so Continue
+ *  waits for one); `harness` ends the guide with the CLI and coding harnesses (user request 2026-11-05: no Spend less, no Ready).
+ *  No role step (user request 2026-11-09): the guide no longer asks for a persona. */
+export const STEPS = ['welcome', 'start', 'harness'] as const
 export type StepId = (typeof STEPS)[number]
 
-/** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. */
-export type PersonaPage =
-  '/' | '/agents' | '/router' | '/tokenops' | '/harnesses' | '/chat' | '/sessions'
+/** The page a persona opens first (spec §3). Data analysts get TokenOps: Weave is EE and dev only. Nobody is sent to
+ *  Coding harnesses: connecting a local harness comes after a first chat, not during setup. */
+export type PersonaPage = '/' | '/agents' | '/router' | '/tokenops' | '/chat' | '/sessions'
 const OPENS: Record<Persona, PersonaPage> = {
   developer: '/agents',
   platform_engineer: '/router',
   finance: '/tokenops',
-  engineering_manager: '/harnesses',
+  engineering_manager: '/tokenops',
   product_manager: '/chat',
   data_analyst: '/tokenops',
   support_lead: '/chat',
@@ -28,34 +30,88 @@ export function guideDue(data: Onboarding | undefined, skipped: boolean): boolea
 }
 
 export interface Ticks {
-  role: boolean
   model: boolean
   agent: boolean
 }
-export function ticks(v: { persona: Persona | null; configs: number; agents: number }): Ticks {
-  return { role: v.persona !== null, model: v.configs > 0, agent: v.agents > 0 }
+export function ticks(v: { configs: number; agents: number }): Ticks {
+  return { model: v.configs > 0, agent: v.agents > 0 }
 }
+
+/** Resume at the first step not done yet; all done: the coding harnesses step, which has no tick of its own. */
+export function firstOpenStep(t: Ticks): StepId {
+  if (!t.model || !t.agent) return 'start'
+  return 'harness'
+}
+
+/** Minutes left on step n (1-based) of the two-minute guide: two on Welcome, one on the Agent and key step, none on the
+ *  last (user review 2026-11-05). */
+export const minutesLeft = (n: number) =>
+  n >= STEPS.length ? 0 : Math.ceil((STEPS.length - n + 1) / 2)
+
+/** How long the Agent and key step's Continue stays off, counting down in its label, so the step is read before it is
+ *  passed (user request 2026-11-05: that step only). */
+export const CONTINUE_HOLD_SECONDS = 5
+
+/** A prebuilt agent the Agent and key step offers to deploy: a Nasiko agent package on the public registry. */
+export interface SeededAgent {
+  /** The agent's name once deployed: the repository's last segment, as the server's registry import names it. */
+  name: string
+  /** What the guide shows. */
+  title: string
+  line: string
+  /** What the registry import is sent (`host/owner/name:tag`). */
+  reference: string
+  runs: number
+  /** Share of `runs` that succeeded, 0–1. */
+  success: number
+}
+
+const seeded = (
+  name: string,
+  title: string,
+  line: string,
+  runs: number,
+  success: number,
+): SeededAgent => ({
+  name,
+  title,
+  line,
+  reference: `registry.nasiko.com/nasiko/${name}:1.0.0`,
+  runs,
+  success,
+})
 
 /**
- * Resume at the first step not done yet; all done: Ready.
- *
- * `optimise` has no tick of its own and is skipped on resume: it configures nothing by itself, so a
- * returning user would be stopped by a page they have already read. A first run still walks through
- * it, which is the audience it exists for.
+ * The prebuilt agents (user request 2026-11-09), Nasiko's packages on registry.nasiko.com. ponytail: the run and
+ * success figures are demo values; a server list of seeded agents with their real metrics replaces them.
  */
-export function firstOpenStep(t: Ticks): StepId {
-  if (!t.role) return 'role'
-  if (!t.model) return 'model'
-  if (!t.agent) return 'agent'
-  return 'ready'
-}
+export const SEEDED_AGENTS: readonly SeededAgent[] = [
+  seeded(
+    'meeting-notes-processor',
+    'Meeting Notes Processor',
+    'Turns a transcript into decisions and actions.',
+    5_200,
+    0.98,
+  ),
+  seeded('summarizer', 'Summarizer', 'Condenses long threads, calls and reports.', 3_400, 0.9),
+  seeded('reply-drafter', 'Reply Drafter', 'Drafts replies to emails and messages.', 2_900, 0.93),
+  seeded(
+    'task-breakdown',
+    'Task Breakdown',
+    'Splits a goal into ordered, doable tasks.',
+    1_800,
+    0.95,
+  ),
+  seeded('humanizer', 'Humanizer', 'Rewrites stiff text so it reads naturally.', 2_100, 0.92),
+  seeded('translator', 'Translator', 'Translates text while keeping its tone.', 2_600, 0.96),
+]
 
-/** Minutes left on step n (1-based), the prototype's estimate; none on Ready. */
-export const minutesLeft = (n: number) =>
-  n >= STEPS.length ? 0 : Math.max(1, 4 - Math.ceil(n / 2))
+/** The agent Home's try-a-run card runs (overview/tryRun.ts): the first of the agents every new workspace is given. */
+export const MANDATORY = 'meeting-notes-processor'
 
-/** "Skip guide" lasts until sign-out: under the drafts prefix, so sign-out's draft clearing drops it too. */
-export const skipKey = (sub: string) => `${DRAFT_PREFIX}${sub}:meta:guideSkipped`
+/** The guide opens on its own once per user (user request 2026-11-05): set when it does, and not under the drafts prefix,
+ *  so sign-out keeps it and an unfinished guide never comes back by itself. The Setup guide still reopens it. */
+export const skipKey = (sub: string) => `openruntime.guideShown:${sub}`
 
 /** The built-in providers' display names (settings/copy.ts lists the same three); anything else shows its id. */
 const PROVIDER_NAMES: Record<string, string> = {

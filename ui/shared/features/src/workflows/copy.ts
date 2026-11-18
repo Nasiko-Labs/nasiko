@@ -38,6 +38,9 @@ export const AGE_FILTER_LABEL: Record<RunAgeFilter, string> = {
 
 export const HEALTH_LABEL = { healthy: 'Healthy', degraded: 'Degraded', unhealthy: 'Unhealthy' }
 
+/** A server sentence used mid-message: trimmed, without its closing full stop (the message adds its own). */
+const clause = (said: string) => said.trim().replace(/\.$/, '')
+
 export const copy = {
   nav: { deployed: 'Deployed', drafts: 'Drafts', runs: 'Runs', label: 'Workflows' },
   title: 'Workflows',
@@ -73,9 +76,9 @@ export const copy = {
   noMatchText: 'Try a different search term.',
   clearSearch: 'Clear search',
   retry: 'Retry',
-  draftsAbsent: 'Drafts need a newer OpenRuntime server',
+  draftsAbsent: 'Drafts need a newer Open Runtime server',
   draftsAbsentText:
-    'This server keeps deployed workflows only. Create a workflow and deploy it, or update OpenRuntime to save drafts.',
+    'This server keeps deployed workflows only. Create a workflow and deploy it, or update Open Runtime to save drafts.',
   actions: 'Workflow actions',
   open: 'Open workflow',
   runNow: 'Run now',
@@ -127,13 +130,19 @@ export const copy = {
   regenerate: 'Regenerate plan',
   generating: 'Generating your workflow...',
   plan: {
-    'no-key':
-      "AI drafting isn't available — this server has no OpenAI API key configured. You can still add steps manually below.",
+    // The server's reason says which key (yours or the server's) and where it goes; this is the wording without one.
+    'no-key': (said: string | null) =>
+      said
+        ? `AI drafting isn't available: ${clause(said)}. You can still add steps manually below.`
+        : "AI drafting isn't available: this server has no model API key configured. You can still add steps manually below.",
+    // maf.rs `planning_failed` already opens with "AI drafting failed:", so it isn't said twice.
+    'key-rejected': (said: string | null) =>
+      `AI drafting failed: ${said ? clause(said.replace(/^AI drafting failed:\s*/i, '')) : 'the model provider rejected the API key'}. You can still add steps manually below.`,
     noAgentsBefore: "You don't have any agents yet, so there's nothing to plan with.",
     noAgentsLink: 'Deploy an agent',
     noAgentsAfter: 'first, then draft steps.',
     planner:
-      "OpenRuntime couldn't draft steps from that description — try rephrasing it, or add the steps manually below.",
+      "Open Runtime couldn't draft steps from that description — try rephrasing it, or add the steps manually below.",
     other: (why: string) => `Drafting failed: ${why}`,
   },
   replaceTitle: 'Replace your steps?',
@@ -219,6 +228,22 @@ export const copy = {
   viewTrace: 'View trace',
   couldNotStart: 'Could not start the run.',
   runsList: 'Workflow runs',
+  stop: 'Stop',
+  stopRun: 'Stop run',
+  stopRunTitle: (title: string) => `Stop ${title}?`,
+  stopRunText:
+    'The run ends where it is. Finished steps keep their results and the rest are marked stopped. What it has spent so far stays on record. A stopped run can be rerun, not resumed.',
+  stopRuns: (n: number) => `Stop ${n} unfinished ${n === 1 ? 'run' : 'runs'}`,
+  stopRunsTitle: (name: string) => `Stop the unfinished runs of ${name || 'this workflow'}?`,
+  stopRunsText:
+    "Every run of this workflow that hasn't finished ends where it is, queued and paused ones included. Finished runs aren't touched.",
+  keepRunning: 'Keep running',
+  confirmStop: 'Stop',
+  runStopped: 'Run stopped',
+  runsStopped: (n: number) =>
+    n ? `${n} ${n === 1 ? 'run' : 'runs'} stopped` : 'Nothing was left to stop',
+  runAlreadyFinished: 'The run had already finished.',
+  stopFailed: (why: string) => `Stop failed: ${why}`,
   thisAgent: 'This agent',
 }
 

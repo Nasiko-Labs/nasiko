@@ -12,6 +12,8 @@ export const LIST_STALE_MS = 10_000
 export const DEFAULT_GROUP_MIN = 3
 /** A name search appears above Your agents from this many agents. */
 export const AGENT_SEARCH_MIN = 20
+/** "Shared with you" lists this many agents until Show all: each row is a read, and a superuser sees every agent. */
+export const SHARED_VISIBLE = 20
 /** Spend is a 30-day aggregate: re-read after this long, never on focus. */
 export const SPEND_STALE_MS = 5 * 60_000
 /** Router-metered spend window (E1), in days. */

@@ -3,7 +3,7 @@
 /// All tests manipulate environment variables and must be isolated. We use
 /// `#[serial]` from the `serial_test` crate so tests never run in parallel
 /// against each other (env vars are process-global state).
-use nasiko_config::Config;
+use nasiko_config::{Config, SandboxProviderSetting};
 use serial_test::serial;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -216,9 +216,10 @@ fn optional_fields_use_defaults_when_not_set() {
     assert_eq!(cfg.seed_agents, None);
     assert_eq!(cfg.openai_api_key, None);
     assert_eq!(cfg.openai_base_url, None);
-    assert_eq!(cfg.openai_model, "gpt-4o-mini");
-    assert_eq!(cfg.router_model, "gpt-4o-mini");
-    assert_eq!(cfg.capability_generator_model, "gpt-4o-mini");
+    // Blank task models let the LLM router pick its provider's default.
+    assert_eq!(cfg.openai_model, "");
+    assert_eq!(cfg.router_model, "");
+    assert_eq!(cfg.capability_generator_model, "");
     assert_eq!(cfg.a2a_discovery_url, None);
     assert_eq!(cfg.otel_endpoint, None);
     assert_eq!(cfg.otel_protocol, "grpc");
@@ -363,7 +364,7 @@ fn router_shortlist_size_is_parsed_from_env() {
 fn build_concurrency_is_parsed_and_clamped() {
     set_required_vars();
 
-    for (env_value, expected) in [("2", 2), ("1", 1), ("0", 1), ("1000", 16)] {
+    for (env_value, expected) in [("2", 2), ("1", 1), ("0", 1), ("64", 64), ("1000", 256)] {
         unsafe { std::env::set_var("BUILD_CONCURRENCY", env_value) };
         let cfg = Config::from_env().unwrap();
         assert_eq!(
@@ -661,10 +662,10 @@ fn openai_api_key_is_read_from_env() {
 #[serial]
 fn cp_domain_is_read_from_env() {
     set_required_vars();
-    unsafe { std::env::set_var("CP_DOMAIN", "example.nasiko.dev") };
+    unsafe { std::env::set_var("CP_DOMAIN", "example.app.nasiko.com") };
 
     let cfg = Config::from_env().unwrap();
-    assert_eq!(cfg.domain, Some("example.nasiko.dev".to_string()));
+    assert_eq!(cfg.domain, Some("example.app.nasiko.com".to_string()));
 
     unsafe { std::env::remove_var("CP_DOMAIN") };
     unset_required_vars();
@@ -704,7 +705,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
     unsafe {
         std::env::set_var(
             "REGISTRY_IMPORT_ALLOWED_HOSTS",
-            "ghcr.io,quay.io,registry.nasiko.dev",
+            "ghcr.io,quay.io,registry.nasiko.com",
         )
     };
 
@@ -714,7 +715,7 @@ fn registry_import_allowed_hosts_parses_comma_separated_list() {
         vec![
             "ghcr.io".to_string(),
             "quay.io".to_string(),
-            "registry.nasiko.dev".to_string(),
+            "registry.nasiko.com".to_string(),
         ]
     );
 
@@ -847,5 +848,207 @@ fn admin_username_can_be_overridden() {
     assert_eq!(cfg.admin_username, "superadmin");
 
     unsafe { std::env::remove_var("ADMIN_USERNAME") };
+    unset_required_vars();
+}
+
+const SESSION_KEYS: [&str; 7] = [
+    "SANDBOX_PROVIDER",
+    "SESSION_IDLE_GRACE_SECS",
+    "SESSION_CPU_QUIESCENT_MILLICORES",
+    "SESSION_REAPER_INTERVAL_SECS",
+    "HARNESS_IMAGE_PREFIX",
+    "CODING_AGENT_IDLE_TTL_SECS",
+    "AGENT_PARK_IDLE_SECS",
+];
+
+#[test]
+#[serial]
+fn sandbox_and_reaper_keys_default_when_unset() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    let cfg = Config::from_env().unwrap();
+    assert_eq!(cfg.sandbox_provider, SandboxProviderSetting::Docker);
+    assert_eq!(cfg.session_idle_grace_secs, 120);
+    assert_eq!(cfg.session_cpu_quiescent_millicores, 20);
+    assert_eq!(cfg.session_reaper_interval_secs, 30);
+    assert_eq!(cfg.harness_image_prefix, "nasiko/harness-");
+    assert_eq!(cfg.coding_agent_idle_ttl_secs, 900);
+
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn sandbox_provider_is_read_from_env_and_unknown_fails_startup() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    unsafe { std::env::set_var("SANDBOX_PROVIDER", " Shared-Pod ") };
+    assert_eq!(
+        Config::from_env().unwrap().sandbox_provider,
+        SandboxProviderSetting::SharedPod
+    );
+
+    unsafe { std::env::set_var("SANDBOX_PROVIDER", "firecracker") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(
+        err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, shared-pod, harness-agent")
+    );
+
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn session_reaper_interval_is_clamped() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    for (env_value, expected) in [("45", 45), ("1", 5), ("0", 5), ("100000", 600)] {
+        unsafe { std::env::set_var("SESSION_REAPER_INTERVAL_SECS", env_value) };
+        assert_eq!(
+            Config::from_env().unwrap().session_reaper_interval_secs,
+            expected,
+            "SESSION_REAPER_INTERVAL_SECS={env_value}"
+        );
+    }
+
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn idle_ttl_below_grace_fails_startup_but_zero_or_larger_passes() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+    unsafe { std::env::set_var("SESSION_IDLE_GRACE_SECS", "120") };
+
+    unsafe { std::env::set_var("CODING_AGENT_IDLE_TTL_SECS", "60") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(err.contains("CODING_AGENT_IDLE_TTL_SECS") && err.contains("inside the idle TTL"));
+
+    for ok in ["0", "120", "900"] {
+        unsafe { std::env::set_var("CODING_AGENT_IDLE_TTL_SECS", ok) };
+        assert!(Config::from_env().is_ok(), "TTL={ok} should pass");
+    }
+
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn lease_heartbeat_must_fit_twice_in_the_lease() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+    unsafe { std::env::set_var("CODING_AGENT_TURN_LEASE_SECS", "60") };
+
+    for bad in ["0", "31", "60"] {
+        unsafe { std::env::set_var("CODING_AGENT_LEASE_HEARTBEAT_SECS", bad) };
+        let err = Config::from_env().unwrap_err().to_string();
+        assert!(
+            err.contains("CODING_AGENT_LEASE_HEARTBEAT_SECS")
+                && err.contains("CODING_AGENT_TURN_LEASE_SECS"),
+            "heartbeat={bad}: {err}"
+        );
+    }
+    for ok in ["1", "20", "30"] {
+        unsafe { std::env::set_var("CODING_AGENT_LEASE_HEARTBEAT_SECS", ok) };
+        assert!(Config::from_env().is_ok(), "heartbeat={ok} should pass");
+    }
+
+    unsafe {
+        std::env::remove_var("CODING_AGENT_TURN_LEASE_SECS");
+        std::env::remove_var("CODING_AGENT_LEASE_HEARTBEAT_SECS");
+    }
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn the_agent_park_window_defaults_to_an_hour_is_off_at_zero_and_must_cover_one_call() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 3600);
+
+    // Unset, it rises with a long call timeout instead of failing startup: 3600 s of call, 60 s
+    // of stamp throttle and one 30 s reaper interval.
+    unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", "3600") };
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 3690);
+    unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
+
+    // 600 s of call + 60 s of throttle + 30 s of interval.
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "689") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(err.contains("AGENT_PARK_IDLE_SECS") && err.contains("AGENT_CALL_TIMEOUT_SECS"));
+
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "690") };
+    assert_eq!(Config::from_env().unwrap().agent_park_idle_secs, 690);
+
+    // 0 is the one switch that turns agent parking off; the floor does not apply to it.
+    unsafe { std::env::set_var("AGENT_PARK_IDLE_SECS", "0") };
+    let off = Config::from_env().unwrap();
+    assert_eq!(off.agent_park_idle_secs, 0);
+    assert!(!off.parks_agents());
+    // Session suspension is a separate switch: off here, agent parking stays on.
+    unsafe {
+        std::env::remove_var("AGENT_PARK_IDLE_SECS");
+        std::env::set_var("CODING_AGENT_IDLE_TTL_SECS", "0");
+    }
+    assert!(Config::from_env().unwrap().parks_agents());
+
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn agent_call_timeout_must_not_outlive_the_session_token() {
+    set_required_vars();
+    unset_vars(&SESSION_KEYS);
+
+    unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", "3601") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(err.contains("AGENT_CALL_TIMEOUT_SECS") && err.contains("SESSION_TOKEN_TTL_SECS"));
+
+    for ok in ["600", "3600"] {
+        unsafe { std::env::set_var("AGENT_CALL_TIMEOUT_SECS", ok) };
+        assert!(Config::from_env().is_ok(), "timeout={ok} should pass");
+    }
+
+    unsafe { std::env::remove_var("AGENT_CALL_TIMEOUT_SECS") };
+    unset_vars(&SESSION_KEYS);
+    unset_required_vars();
+}
+
+#[test]
+#[serial]
+fn agent_peer_call_rate_limit_defaults_and_clamps() {
+    set_required_vars();
+    unset_vars(&["AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE"]);
+    assert_eq!(
+        Config::from_env()
+            .unwrap()
+            .agent_peer_call_rate_limit_per_minute,
+        300
+    );
+
+    for (env_value, expected) in [("5", 5), ("0", 1), ("-2", 300), ("99999", 10_000)] {
+        unsafe { std::env::set_var("AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE", env_value) };
+        assert_eq!(
+            Config::from_env()
+                .unwrap()
+                .agent_peer_call_rate_limit_per_minute,
+            expected,
+            "AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE={env_value}"
+        );
+    }
+
+    unset_vars(&["AGENT_PEER_CALL_RATE_LIMIT_PER_MINUTE"]);
     unset_required_vars();
 }

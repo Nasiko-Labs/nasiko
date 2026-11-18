@@ -78,8 +78,11 @@ export function usageFromMessage(m: ChatMessage): TurnUsage | null {
   const output = m.output_tokens ?? null
   const cost = toNumber(m.cost_usd)
   if (input === null && output === null && cost === null && m.duration_ms == null) return null
+  // `input_tokens` is only the uncached part of the prompt; the live stream's total counts the
+  // cached prompt too, so the saved reply must add it back or a cache hit shrinks the count.
+  const cached = (m.cache_read_tokens ?? 0) + (m.cache_creation_tokens ?? 0)
   return {
-    tokens: input === null && output === null ? null : (input ?? 0) + (output ?? 0),
+    tokens: input === null && output === null ? null : (input ?? 0) + cached + (output ?? 0),
     cost,
     durationMs: m.duration_ms ?? null,
     model: m.model ?? null,
@@ -170,7 +173,7 @@ export function announcement(
   switch (next.phase) {
     case 'done':
       return prev && isLivePhase(prev.phase) ? copy.announceReply(agent) : null
-    // A routed pause names the agent that asked (awaiting_human), not OpenRuntime.
+    // A routed pause names the agent that asked (awaiting_human), not Open Runtime.
     // A chained pause has no awaiting_human: `askedBy` is the agent of the request being resumed.
     case 'paused':
       return copy.announceRequest(next.state.awaiting?.agent ?? askedBy ?? agent)

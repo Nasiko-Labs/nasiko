@@ -181,7 +181,7 @@ describe('Deploy from a registry: errors', () => {
     renderApp('/deploy?method=registry')
     await userEvent.type(
       await screen.findByRole('textbox', { name: copy.registry.reference }, T),
-      'registry.nasiko.dev/acme/bot:1.0.0',
+      'registry.nasiko.com/acme/bot:1.0.0',
     )
     await userEvent.click(screen.getByRole('button', { name: copy.registry.submit }))
     expect(await screen.findByText(copy.deploy.failed, {}, T)).toBeInTheDocument()
@@ -246,7 +246,6 @@ describe('Deploy: upload form branches', () => {
     expect(fd?.get('env')).toBe('{"API_URL":"https://x"}')
     expect(fd?.get('writable')).toBe('true')
     expect(fd?.get('writable_path')).toBe('/data')
-    expect(fd?.has('inbound_format')).toBe(false)
   })
 })
 

@@ -29,34 +29,58 @@ const PAGES: Record<string, readonly string[]> = {
     'overview-needs',
     'overview-health',
     'overview-spend',
+    'overview-harness-activity',
     'overview-sessions',
     'overview-saved',
     'overview-chats',
-    'overview-actions',
   ],
   // The village (OSS) stands where the summary does.
   '/?view=village': ['overview-views', 'overview-range', 'overview-canvas', 'overview-needs'],
   '/chat': ['chat-rail', 'chat-target', 'chat-composer'],
   '/agents': ['section-nav', 'page-actions', 'agents-toolbar', 'agents-grid'],
   '/agents/mine': ['mine-status-tabs', 'mine-table'],
-  // The facts column moved to the Details tab with the agent hub; the tour drops the step on other tabs.
-  [`/agents/${seed.agents[0]?.id}?tab=details`]: ['agent-header', 'agent-tabs', 'agent-facts'],
+  // The page opens on the hub (Overview); the facts are on the Details tab.
+  [`/agents/${seed.agents[0]?.id}`]: ['agent-header', 'agent-tabs', 'agent-overview'],
+  [`/agents/${seed.agents[0]?.id}?tab=details`]: ['agent-facts'],
   '/deploy': ['deploy-methods', 'deploy-upload-form', 'deploy-requirements', 'deploy-cli'],
+  '/deploy?method=github': ['deploy-github'],
+  '/deploy?method=registry': ['deploy-registry'],
   '/builds': ['builds-filters', 'builds-panel'],
   '/workflows': ['workflows-toolbar', 'workflows-list'],
   '/workflows/runs': ['runs-filters', 'runs-list'],
   '/router': ['router-how', 'router-tabs', 'router-agent-filters', 'router-agents'],
   '/mcp': ['mcp-toolbar', 'mcp-grid'],
   '/sessions': ['sessions-toolbar', 'sessions-list'],
-  [`/sessions/${SHOWCASE_SESSION}`]: ['session-narrative', 'session-spans', 'session-span-panel'],
-  '/flows': ['flows-charts', 'flows-table'],
+  [`/sessions/${SHOWCASE_SESSION}`]: [
+    'session-actions',
+    'session-narrative',
+    'session-spans',
+    'session-span-panel',
+  ],
+  '/flows': ['flows-filters', 'flows-charts', 'flows-table'],
   '/tokenops': ['tokenops-filters', 'tokenops-summary', 'tokenops-sections'],
-  '/optimization': ['optimization-header', 'optimization-lead', 'optimization-settings'],
-  '/harnesses': ['harnesses-header', 'harnesses-summary', 'harnesses-cards'],
-  '/settings': ['settings-sections', 'settings-form', 'settings-save'],
+  '/optimization': [
+    'optimization-header',
+    'optimization-lead',
+    'optimization-attention',
+    'optimization-by-agent',
+    'optimization-senders',
+    'optimization-settings',
+  ],
+  '/harnesses': [
+    'harnesses-header',
+    'harnesses-summary',
+    'harnesses-cards',
+    'harnesses-sessions',
+    'harnesses-connect',
+  ],
+  '/settings': ['settings-sections', 'settings-form'],
+  '/settings?section=mcp': ['settings-mcp'],
+  '/settings/optimization-tiers': ['settings-tiers'],
   '/settings/secrets': ['secrets-list', 'secrets-add'],
   '/account/appearance': ['settings-sections', 'appearance-mode', 'appearance-theme'],
   '/account/password': ['password-form'],
+  '/account/shortcuts': ['shortcuts-list'],
   '/status': ['status-backend'],
   '/workflows/new': ['wf-name', 'wf-plan', 'wf-steps', 'wf-save'],
 }
@@ -72,21 +96,42 @@ const DETAILS: [string, () => string, readonly string[]][] = [
   [
     'draft workflow',
     () => `/workflows/${workflowsMockState().workflows.find((w) => w.status === 'draft')?.id}`,
-    ['wf-steps', 'wf-plan', 'wf-danger'],
+    ['wf-steps', 'wf-plan', 'wf-save', 'wf-danger'],
+  ],
+  [
+    'workflow run',
+    () => {
+      const run = workflowsMockState().runs.find((r) => r.outcome.kind === 'success')
+      return `/workflows/${run?.maf_id}?run=${run?.id}`
+    },
+    ['wf-run-steps', 'wf-run-output'],
   ],
   [
     'MCP server',
     () => `/mcp/${mcpMockState().connectors.find((c) => c.name === 'docs-search')?.id}`,
-    ['mcp-detail-header', 'mcp-detail-actions', 'mcp-detail-tabs', 'mcp-detail-overview'],
+    ['mcp-detail-actions', 'mcp-detail-tabs', 'mcp-detail-overview'],
   ],
   [
     'flow',
     () => `/flows/${flowsMockState().flows.find((f) => f.title?.startsWith('Refund order'))?.id}`,
-    ['flow-narrative', 'flow-kpis', 'flow-view'],
+    ['flow-narrative', 'flow-kpis', 'flow-view', 'flow-steps'],
   ],
 ]
-/** Only in states the seed doesn't open on: a list's Previous/Next, the empty fleet's setup card and its CLI half. */
-const CONDITIONAL = ['page-stepper', 'overview-setup-guide', 'overview-cli']
+/**
+ * Only in states the seed doesn't open on: a list's Previous/Next, the empty fleet's setup card, its CLI half, its
+ * "Works before your first agent" panel and the agents' empty states; the Overview's try-a-run card (after the setup
+ * guide's pick); agents needing attention; the sidebar's Views group (a layer's).
+ */
+const CONDITIONAL = [
+  'page-stepper',
+  'overview-setup-guide',
+  'overview-cli',
+  'overview-actions',
+  'overview-try-run',
+  'agents-empty',
+  'mine-needs',
+  'nav-views',
+]
 
 const has = (target: string) => document.querySelector(`[data-tour~="${target}"]`) !== null
 

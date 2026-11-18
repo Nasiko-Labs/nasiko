@@ -123,7 +123,12 @@ export function EditFace({
       </h1>
       <div className="flex flex-col gap-2">
         <Label htmlFor="wf-name">{copy.nameLabel}</Label>
-        <Input id="wf-name" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input
+          id="wf-name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={copy.namePlaceholder}
+        />
       </div>
       <PlanComposer
         value={desc}
@@ -141,7 +146,7 @@ export function EditFace({
         <StepEditor steps={steps} onChange={setSteps} agents={agentOptions(agents.data ?? [])} />
       )}
       {children}
-      <div className="flex flex-wrap justify-end gap-2">
+      <div data-tour="wf-save" className="flex flex-wrap justify-end gap-2">
         {live ? (
           <>
             <Button variant="ghost" disabled={busy} onClick={onCancel}>

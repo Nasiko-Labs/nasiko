@@ -19,16 +19,19 @@
 //! bytes that never change once sent. One input besides the content meets it — the tool call that
 //! produced the result. A result whose call asked for an exact line range is sent whole
 //! ([`crate::range_view`]): the agent asked for those lines, and cutting them only makes it read
-//! them again. Recovery handles meet it too: they are derived from the flow and the content, and
-//! minted only when the request offers the recovery tool, which is fixed for an agent.
+//! them again. So is the result of a `recover_compressed` call: it is an original this layer
+//! already cut, and cutting it again returns the same text under the same handle. Recovery handles
+//! meet it too: they are derived from the flow and the content, and minted only when the request
+//! offers the recovery tool, which is fixed for an agent.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use nasiko_compress::{Compressed, ContentType, Policy, compress};
 use serde_json::Value;
 
 use crate::config::GatewayConfig;
-use crate::ir::ChatRequest;
+use crate::ir::{ChatRequest, Message};
 use crate::range_view;
 use crate::resolver::ResolvedConfig;
 
@@ -196,7 +199,8 @@ pub(crate) fn apply(
     }
 
     let started = Instant::now();
-    let requested_ranges = range_view::requested_range_call_ids(&req.messages);
+    let mut sent_whole = range_view::requested_range_call_ids(&req.messages);
+    sent_whole.extend(recovery_call_ids(&req.messages));
     for msg in req.messages.iter_mut() {
         // Assistant turns carrying tool calls are never tool results, whatever their role says.
         if msg.role != "tool" || msg.tool_calls.is_some() {
@@ -205,7 +209,7 @@ pub(crate) fn apply(
         if msg
             .tool_call_id
             .as_ref()
-            .is_some_and(|id| requested_ranges.contains(id))
+            .is_some_and(|id| sent_whole.contains(id))
         {
             continue;
         }
@@ -216,6 +220,18 @@ pub(crate) fn apply(
     stats.applied = !policy.dry_run && stats.bytes_out < stats.bytes_in;
     stats.elapsed_us = started.elapsed().as_micros() as u64;
     stats
+}
+
+/// The ids of every call to [`RECOVER_TOOL`]. Its result is an original this layer already cut
+/// once; cutting it again hands the model the same text under the same handle, so recovery could
+/// never deliver the original and the agent loops on it.
+fn recovery_call_ids(messages: &[Message]) -> impl Iterator<Item = String> + '_ {
+    messages
+        .iter()
+        .filter_map(|m| m.tool_calls.as_deref())
+        .flatten()
+        .filter(|call| call.function.name.ends_with(RECOVER_TOOL))
+        .map(|call| call.id.clone())
 }
 
 /// What a compression pass leaves for the usage row: its metadata block and, when it really reduced
@@ -261,12 +277,30 @@ pub(crate) fn apply_responses_input(
     };
 
     let started = Instant::now();
+    // Same rule as `recovery_call_ids`: a recovered original is sent whole.
+    let recovered: HashSet<String> = items
+        .iter()
+        .filter(|item| {
+            item.get("name")
+                .and_then(Value::as_str)
+                .is_some_and(|name| name.ends_with(RECOVER_TOOL))
+        })
+        .filter_map(|item| item.get("call_id").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
     for item in items.iter_mut() {
         let is_output = item
             .get("type")
             .and_then(Value::as_str)
             .is_some_and(|kind| RESPONSES_TOOL_OUTPUTS.contains(&kind));
         if !is_output {
+            continue;
+        }
+        if item
+            .get("call_id")
+            .and_then(Value::as_str)
+            .is_some_and(|id| recovered.contains(id))
+        {
             continue;
         }
         match item.get_mut("output") {
@@ -725,6 +759,60 @@ mod tests {
     }
 
     #[test]
+    fn a_recovered_original_is_sent_whole() {
+        let log = noisy_log();
+        let mut recover = call("recover", "");
+        recover.function.name = "nasiko__recover_compressed".into();
+        let mut assistant = msg("assistant", Value::Null);
+        assistant.tool_calls = Some(vec![call("read", "cat app.log"), recover]);
+        let mut r = req(vec![
+            assistant,
+            result_of("read", &log),
+            result_of("recover", &log),
+        ]);
+
+        let stats = apply(&mut r, &on(), recovery());
+
+        assert_eq!(stats.messages_touched, 1, "only the first read is cut");
+        assert!(
+            r.messages[1]
+                .content
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .len()
+                < log.len()
+        );
+        assert_eq!(
+            r.messages[2].content.as_ref().unwrap().as_str().unwrap(),
+            log
+        );
+        assert_eq!(
+            stats.originals.len(),
+            1,
+            "the recovered copy mints no handle"
+        );
+    }
+
+    #[test]
+    fn a_recovered_original_is_sent_whole_on_the_responses_surface() {
+        let log = noisy_log();
+        let mut input = json!([
+            {"type": "function_call", "call_id": "c1", "name": "shell", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c1", "output": log},
+            {"type": "function_call", "call_id": "c2", "name": "recover_compressed", "arguments": "{}"},
+            {"type": "function_call_output", "call_id": "c2", "output": log},
+        ]);
+
+        let stats = apply_responses_input(&mut input, &on(), None);
+
+        assert_eq!(stats.messages_touched, 1);
+        assert!(input[1]["output"].as_str().unwrap().len() < log.len());
+        assert_eq!(input[3]["output"], log.as_str());
+    }
+
+    #[test]
     fn json_for_an_agent_that_cannot_recover_keeps_every_item() {
         // No recovery handle: cutting 96 of 100 search results would lose them for good.
         let items: Vec<String> = (0..100)
@@ -883,6 +971,23 @@ mod tests {
         assert!(stats.dry_run);
         assert!(stats.bytes_out < stats.bytes_in);
         assert_eq!(stats.to_metadata().unwrap()["dry_run"], true);
+    }
+
+    #[test]
+    fn dry_run_over_the_input_ceiling_reports_without_mutating() {
+        let mut r = req(vec![msg("tool", json!(noisy_log()))]);
+        let before = serde_json::to_string(&r).unwrap();
+        let policy = Policy {
+            dry_run: true,
+            max_input_bytes: 1000,
+            ..on()
+        };
+
+        let stats = apply(&mut r, &policy, None);
+
+        assert_eq!(serde_json::to_string(&r).unwrap(), before);
+        assert!(!stats.applied);
+        assert!(stats.bytes_out < stats.bytes_in);
     }
 
     #[test]

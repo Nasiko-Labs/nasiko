@@ -5,6 +5,32 @@ use uuid::Uuid;
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::build::BuildStatus;
 
+/// How long [`answers_http`] waits for one answer.
+const ANSWER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Where an agent at `agent_url` serves its card: the current well-known name, then the older one.
+fn agent_card_urls(agent_url: &str) -> [String; 2] {
+    let base = agent_url.trim_end_matches('/');
+    [
+        format!("{base}/.well-known/agent-card.json"),
+        format!("{base}/.well-known/agent.json"),
+    ]
+}
+
+/// Whether the agent at `agent_url` is serving: it answers a card request with any HTTP status.
+/// An error status still proves its server is listening, which is all a caller about to forward
+/// to it needs to know; a refused or timed-out connection means it is not up yet. HTTP rather than
+/// a bare TCP connect, because a port mapped by a container runtime's proxy accepts connections
+/// before the agent inside listens.
+pub(crate) async fn answers_http(http: &reqwest::Client, agent_url: &str) -> bool {
+    let [card_url, _] = agent_card_urls(agent_url);
+    http.get(card_url)
+        .timeout(ANSWER_PROBE_TIMEOUT)
+        .send()
+        .await
+        .is_ok()
+}
+
 /// Fetch the agent's card from its runtime endpoint and persist the fields
 /// clients depend on: display_name, description, skills, tags, capabilities,
 /// and `transport_path` (see [`nasiko_types::a2a::extract_transport_path`]).
@@ -15,6 +41,7 @@ use crate::build::BuildStatus;
 pub(crate) async fn fetch_and_apply_agent_card(
     db: &sqlx::PgPool,
     http: &reqwest::Client,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
     agent_id: Uuid,
     agent_url: &str,
 ) -> bool {
@@ -22,12 +49,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
         return false;
     }
 
-    let base = agent_url.trim_end_matches('/');
-
-    let urls = [
-        format!("{base}/.well-known/agent-card.json"),
-        format!("{base}/.well-known/agent.json"),
-    ];
+    let urls = agent_card_urls(agent_url);
 
     let mut card: Option<serde_json::Value> = None;
     for url in &urls {
@@ -48,7 +70,7 @@ pub(crate) async fn fetch_and_apply_agent_card(
     if !apply_agent_card(db, agent_id, &card).await {
         return false;
     }
-    embed_updated_agent(db, agent_id).await;
+    embed_updated_agent(db, backend, agent_id).await;
 
     true
 }
@@ -121,29 +143,36 @@ pub(crate) async fn apply_agent_card(
 /// doesn't have to do it lazily on the next `route()` call. Best-effort —
 /// failures are logged and never block the deploy/update flow.
 ///
-/// Reads `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`EMBEDDING_MODEL` straight from
-/// the environment rather than threading `Config` through every deploy path
-/// (seed / upload / update / rollback) that reaches this function — same
-/// env-driven approach `nasiko_config::Config` itself uses for these fields.
-async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
-    let Ok(api_key) = std::env::var("OPENAI_API_KEY") else {
-        return;
-    };
+/// Reads `OPENAI_BASE_URL`/`EMBEDDING_MODEL` straight from the environment
+/// rather than threading `Config` through every deploy path (seed / upload /
+/// update / rollback) that reaches this function — same env-driven approach
+/// `nasiko_config::Config` itself uses for these fields. The key is the
+/// owner's saved one, else `OPENAI_API_KEY`.
+///
+/// `backend` is the caller's `AppState::llm_backend` (the in-process router); it is
+/// passed explicitly so each server instance (and each test) uses its own router.
+async fn embed_updated_agent(
+    db: &sqlx::PgPool,
+    backend: Option<&nasiko_orchestrator::llm_backend::SharedLlmBackend>,
+    agent_id: Uuid,
+) {
     let base_url =
         std::env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com".into());
     let model =
         std::env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "text-embedding-3-small".into());
 
-    let row: Option<(String, Option<String>, Vec<String>)> =
-        sqlx::query_as("SELECT name, description, tags FROM agents WHERE id = $1")
+    let row: Option<(String, Option<String>, Vec<String>, Uuid)> =
+        sqlx::query_as("SELECT name, description, tags, owner_id FROM agents WHERE id = $1")
             .bind(agent_id)
             .fetch_optional(db)
             .await
             .unwrap_or(None);
 
-    let Some((name, description, tags)) = row else {
+    let Some((name, description, tags, owner_id)) = row else {
         return;
     };
+    let saved_key: Option<String> =
+        nasiko_orchestrator::user_key::saved_openai_key(db, owner_id).await;
 
     let agent = nasiko_orchestrator::AgentCard {
         id: agent_id,
@@ -156,9 +185,37 @@ async fn embed_updated_agent(db: &sqlx::PgPool, agent_id: Uuid) {
         embedding_content_hash: None,
     };
 
-    if let Err(e) =
-        nasiko_orchestrator::embed_and_store_agent(db, &agent, &api_key, &base_url, &model).await
-    {
+    let result = match (saved_key, backend) {
+        (Some(key), _) => {
+            let direct_model: String =
+                nasiko_orchestrator::providers::direct_embedding_model(&model, &base_url);
+            nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &direct_model)
+                .await
+        }
+        (None, Some(backend)) => {
+            let routed = nasiko_orchestrator::vector_store::RoutedEmbedder {
+                backend: std::sync::Arc::clone(backend),
+                call: nasiko_orchestrator::llm_backend::LlmCallContext {
+                    user_id: owner_id,
+                    component: nasiko_orchestrator::llm_backend::PlatformComponent::AgentEmbedding
+                        .to_string(),
+                    session_id: None,
+                },
+            };
+            nasiko_orchestrator::vector_store::embed_and_store_agent_routed(
+                db, &agent, &routed, &model,
+            )
+            .await
+        }
+        (None, None) => match std::env::var("OPENAI_API_KEY") {
+            Ok(key) => {
+                nasiko_orchestrator::embed_and_store_agent(db, &agent, &key, &base_url, &model)
+                    .await
+            }
+            Err(_) => return,
+        },
+    };
+    if let Err(e) = result {
         tracing::warn!(%agent_id, error = %e, "proactive agent embedding failed (non-fatal, will be computed lazily on next route())");
     }
 }
@@ -232,17 +289,41 @@ pub(crate) async fn ensure_deployment_tracked(
     .await;
 }
 
+/// How long a card fetch waits for a freshly deployed agent to become reachable. A bulk
+/// deploy queues an agent's pod behind thousands of others on Kubernetes: at 15,000 agents
+/// the last pods started over an hour after their deploy was accepted.
+const CARD_ROUTABLE_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60 * 60);
+
 /// Retry wrapper around [`fetch_and_apply_agent_card`] for freshly deployed
-/// containers that need a few seconds to become healthy.
+/// containers that need a few seconds to become healthy. With no `agent_url` (an agent
+/// with no address until it runs, such as a Kubernetes agent reached at its pod's IP), it
+/// first waits for the runtime to report one.
 pub(crate) async fn fetch_agent_card_with_retry(
     db: sqlx::PgPool,
     http: reqwest::Client,
+    runtime: Arc<dyn nasiko_runtime::ContainerRuntime>,
+    backend: nasiko_orchestrator::llm_backend::SharedLlmBackend,
     agent_id: Uuid,
     agent_url: String,
 ) {
+    let agent_url = if agent_url.is_empty() {
+        let container_id = nasiko_runtime::ContainerId::from_uuid(agent_id);
+        match runtime
+            .wait_routable(&container_id, CARD_ROUTABLE_WAIT)
+            .await
+        {
+            Ok(url) => url,
+            Err(e) => {
+                tracing::warn!(%agent_id, %e, "agent card fetch: the agent never became reachable");
+                return;
+            }
+        }
+    } else {
+        agent_url
+    };
     for attempt in 1..=30u32 {
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if fetch_and_apply_agent_card(&db, &http, agent_id, &agent_url).await {
+        if fetch_and_apply_agent_card(&db, &http, Some(&backend), agent_id, &agent_url).await {
             return;
         }
         tracing::debug!(%agent_id, attempt, "agent card fetch attempt failed");
@@ -288,6 +369,11 @@ pub(crate) async fn delete_agent_or_mark_failed(
                 .execute(db)
                 .await;
     } else {
+        // Deleting the agent nulls `agent_id` on its sessions, which hides them from everything
+        // that would later clean up after them. Their sandbox credentials are revoked now; a
+        // sandbox itself is released only where a provider is at hand (the user and session
+        // delete paths), and an agent that failed its build has none.
+        crate::sessions::teardown::revoke_tokens_of_agent(db, agent_id).await;
         let deleted = sqlx::query("DELETE FROM agents WHERE id = $1")
             .bind(agent_id)
             .execute(db)
@@ -314,6 +400,80 @@ pub(crate) async fn set_build_status(db: &sqlx::PgPool, build_id: Uuid, status: 
             .await
     {
         tracing::error!(build_id = %build_id, ?status, %e, "failed to update build status");
+    }
+}
+
+/// Persist a build's captured output on its `agent_builds` row, so the Builds tab and
+/// `GET /api/builds/{id}/logs` can show what the build did (success) or why it failed. Best effort:
+/// a write failure is logged, never fatal — the build result stands on its own. Empty logs are
+/// skipped so a runtime that keeps none leaves the column untouched rather than blanking it.
+pub(crate) async fn set_build_logs(db: &sqlx::PgPool, build_id: Uuid, logs: &str) {
+    if logs.trim().is_empty() {
+        return;
+    }
+    if let Err(e) =
+        sqlx::query("UPDATE agent_builds SET logs = $2, updated_at = now() WHERE id = $1")
+            .bind(build_id)
+            .bind(logs)
+            .execute(db)
+            .await
+    {
+        tracing::error!(build_id = %build_id, %e, "failed to persist build logs");
+    }
+}
+
+/// The object-storage key a build's logs live under. One object per build attempt,
+/// keyed by the build id (so a retry of the same build overwrites, never piles up).
+pub(crate) fn build_logs_key(build_id: Uuid) -> String {
+    format!("build-logs/{build_id}")
+}
+
+/// Persists build logs to object storage and records only the pointer in
+/// `agent_builds.logs_url` (`blob:<key>`), keeping the log bytes out of Postgres.
+///
+/// The same path serves Docker (S3) and Kubernetes (S3/Azure) builds — `storage`
+/// is the shared [`BlobStore`](nasiko_runtime::BlobStore) seam the OCI registry
+/// already uses. The object is uploaded **first**; the row is pointed at it only
+/// after the upload succeeds, so the database never references an object that was
+/// not written. If the upload fails, it falls back to the `logs` column, so a
+/// storage hiccup never loses the only record of why a build failed.
+/// `get_build_logs` reads either shape back.
+pub(crate) async fn store_build_logs(
+    db: &sqlx::PgPool,
+    storage: &dyn nasiko_runtime::BlobStore,
+    build_id: Uuid,
+    logs: &str,
+) {
+    if logs.trim().is_empty() {
+        return;
+    }
+    let key = build_logs_key(build_id);
+    match storage
+        .put_blob(&key, bytes::Bytes::copy_from_slice(logs.as_bytes()))
+        .await
+    {
+        Ok(_) => {
+            // Upload succeeded: point the row at the object and clear any text a
+            // fallback left behind, so the reader never serves a stale DB copy.
+            if let Err(e) = sqlx::query(
+                "UPDATE agent_builds SET logs_url = $2, logs = NULL, updated_at = now() WHERE id = $1",
+            )
+            .bind(build_id)
+            .bind(format!("blob:{key}"))
+            .execute(db)
+            .await
+            {
+                tracing::error!(build_id = %build_id, %e, "failed to record build log pointer");
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                build_id = %build_id,
+                %e,
+                "build log upload to object storage failed; falling back to the logs column"
+            );
+            set_build_logs(db, build_id, logs).await;
+        }
     }
 }
 
@@ -344,5 +504,24 @@ pub(crate) async fn set_upload_status(
     .await
     {
         tracing::warn!(%e, upload_id, "failed to update upload_status");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_logs_key_is_stable_and_namespaced() {
+        let id = Uuid::parse_str("279f0b99-c789-405b-bd4f-a4ae0bc249a8").unwrap();
+        // The key must stay `build-logs/<id>`: it is the object-storage path a build's
+        // logs live under, and `get_build_logs` resolves `blob:<key>` back to it, so a
+        // change here would orphan every already-stored log.
+        assert_eq!(
+            build_logs_key(id),
+            "build-logs/279f0b99-c789-405b-bd4f-a4ae0bc249a8"
+        );
+        // Namespaced away from image blobs, and one object per build id.
+        assert!(build_logs_key(id).starts_with("build-logs/"));
     }
 }

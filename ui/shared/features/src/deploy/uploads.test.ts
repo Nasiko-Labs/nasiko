@@ -1,6 +1,7 @@
 import { MutationCache, QueryClient } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
-import { ApiError } from '@nasiko/data-access/client'
+import { afterEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { ApiError, apiUrl, setApiBase } from '@nasiko/data-access/client'
+import { sendRegistryImport } from './api'
 import {
   cancelUpload,
   clearUploads,
@@ -78,9 +79,23 @@ afterEach(() => {
   clearUploads()
   if (prev) setXhrFactory(prev)
   FakeXhr.last = null
+  setApiBase('')
 })
 
 describe('upload registry (eng review R1, R2, R3, R7)', () => {
+  it('posts to the API base, not the page, when the control plane is another origin', async () => {
+    // The multi-tenant dashboard: page on app.nasiko.com, API on the workspace's own host.
+    setApiBase('https://acme.nasiko.example')
+    const { qc } = setup()
+    void startUpload(qc, USER, file, 'bot.zip', { name: 'bot' })
+    const x = await xhr()
+    expect([x.method, x.url, x.withCredentials]).toEqual([
+      'POST',
+      'https://acme.nasiko.example/api/agents/upload',
+      true,
+    ])
+  })
+
   it('sends the multipart fields the server reads, only the touched ones', async () => {
     const { qc } = setup()
     void startUpload(qc, USER, file, 'bot.zip', {
@@ -88,10 +103,9 @@ describe('upload registry (eng review R1, R2, R3, R7)', () => {
       version: '1.0.0',
       ports: '8000,9000',
       env: { A: '1' },
-      inboundFormat: 'openai',
     })
     const x = await xhr()
-    expect([x.method, x.url, x.withCredentials]).toEqual(['POST', UPLOAD_PATH, true])
+    expect([x.method, x.url, x.withCredentials]).toEqual(['POST', apiUrl(UPLOAD_PATH).href, true])
     expect(
       Object.fromEntries(
         [...x.body!.entries()].map(([k, v]) => [k, typeof v === 'string' ? v : 'FILE']),
@@ -101,7 +115,6 @@ describe('upload registry (eng review R1, R2, R3, R7)', () => {
       version_tag: '1.0.0',
       ports: '8000,9000',
       env: '{"A":"1"}',
-      inbound_format: 'openai',
       file: 'FILE',
     })
     // Storage is tri-state on the server: sent only when touched.
@@ -220,7 +233,7 @@ describe('registry imports in the registry (eng review R4)', () => {
   it('runs as a QueryClient mutation (a 401 reaches the shared handler) and records the result', async () => {
     const { qc, onError } = setup()
     const { importFor, startImport } = await import('./uploads')
-    const ok = await startImport(qc, USER, 'registry.nasiko.dev/a/b:1.0.0', async () => ({
+    const ok = await startImport(qc, USER, 'registry.nasiko.com/a/b:1.0.0', async () => ({
       agent_id: 'a1',
       build_id: 'b1',
       container_name: 'c',
@@ -233,6 +246,38 @@ describe('registry imports in the registry (eng review R4)', () => {
     expect(failed).toMatchObject({ phase: 'failed', error: { status: 401 } })
     expect(onError).toHaveBeenCalledOnce()
     expect(importFor(USER)?.phase).toBe('failed')
+  })
+
+  it('waits as long as the import takes: the server builds and deploys inside the request', async () => {
+    const fetch = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(Response.json({ agent_id: 'a1', status: 'success' }, { status: 201 }))
+    onTestFinished(() => fetch.mockRestore())
+    await sendRegistryImport('registry.nasiko.com/nasiko/b:1.0.0')
+    // No deadline: apiFetch's 30 s one would report an import still building (minutes) as failed (NAS-1449).
+    expect(fetch.mock.calls[0]?.[1]?.signal).toBeUndefined()
+  })
+
+  it('refreshes the agent lists once it settles, done or failed, but not the restart watches', async () => {
+    const { qc } = setup()
+    const { startImport } = await import('./uploads')
+    const keys = [['agents'], ['agents', 'catalog'], ['agents', 'watch', 'a1']]
+    const stale = () => keys.map((k) => qc.getQueryState(k)?.isInvalidated)
+    const seed = () => keys.forEach((k) => qc.setQueryData(k, []))
+    seed()
+    await startImport(qc, USER, 'registry.nasiko.com/nasiko/b:1.0.0', async () => ({
+      agent_id: 'a1',
+      build_id: 'b1',
+      container_name: 'c',
+      status: 'success',
+    }))
+    expect(stale()).toEqual([true, true, false])
+    // A failed import may still have registered its agent (the row is written before the build).
+    seed()
+    await startImport(qc, USER, 'registry.nasiko.com/nasiko/b:1.0.1', async () => {
+      throw new ApiError(500, null, '/api/import/registry', 'build failed')
+    })
+    expect(stale()).toEqual([true, true, false])
   })
 
   it('is forgotten on sign-out even if the server answers later (R3)', async () => {

@@ -6,18 +6,19 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { screen, waitFor, within } from '@testing-library/react'
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, onTestFinished, vi } from 'vitest'
 import { fmtMoney } from '@nasiko/ui/lib/format'
-import { configureMocks } from '@nasiko/mocks/handlers'
+import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { agentWhere } from '@nasiko/testing/agents'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { recordRequestBodies, recordRequests, server } from '@nasiko/testing/setup'
-import { copy as mcpCopy, STANCE } from '@nasiko/features/mcp/copy'
+import { copy as mcpCopy } from '@nasiko/features/mcp/copy'
+import { Description } from './components/bits'
 import { copy } from './copy'
 
 setupPinnedSeed()
@@ -32,6 +33,15 @@ const running = agent(0)
 const url = (i: number, tab?: string) => `/agents/${agent(i).id}${tab ? `?tab=${tab}` : ''}`
 const title = () => screen.findByRole('heading', { level: 1 })
 const tabNames = () => screen.getAllByRole('tab').map((t) => t.textContent)
+
+// The first render in this file loads the agent page's lazy code, which on a busy runner can take
+// longer than a query waits. That cost belongs to no test, so it is paid once here, with a timeout
+// of its own; otherwise whichever test happens to run first is the one that times out.
+beforeAll(async () => {
+  renderApp(url(0))
+  await screen.findByRole('heading', { level: 1 }, { timeout: 120_000 })
+  cleanup()
+}, 150_000)
 
 describe('resolving the URL', () => {
   it('a unique name redirects to the UUID URL', async () => {
@@ -100,19 +110,127 @@ describe('tabs', () => {
     await waitFor(() => expect(router.state.location.search).toEqual({}))
   })
 
-  it('a non-manager sees four tabs and, on Details, who owns the agent', async () => {
+  it('a non-manager sees five tabs and, on Details, who owns the agent', async () => {
     configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
     renderApp(url(0, 'details'))
     await title()
-    expect(tabNames()).toEqual(['Overview', 'Activity', 'Versions', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Activity', 'Versions', 'MCP', 'Details'])
     expect(
       await screen.findByText(/^Owned by .+ Only the owner or a superuser/),
     ).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
   })
+
+  it("a non-manager's MCP tab lists only their own standing per server, never the owner's", async () => {
+    configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
+    const shown = {
+      connectors: [
+        { connector_id: 'c1', name: 'crm', display_name: 'CRM', status: 'needs_connection' },
+        { connector_id: 'c2', name: 'wiki', display_name: 'Wiki', status: 'not_shared' },
+        { connector_id: 'c3', name: 'docs', display_name: 'Docs', status: 'connected' },
+      ],
+    }
+    server.use(
+      http.get('/api/mcp/agents/:id/my-connections', () =>
+        HttpResponse.json({ data: shown, status_code: 200, message: 'ok' }),
+      ),
+    )
+    renderApp(url(0, 'mcp'))
+    expect(await screen.findByText(mcpCopy.sharedMcpSub)).toBeInTheDocument()
+    const connect = await screen.findByRole('link', { name: mcpCopy.callerNeedsConnection })
+    expect(connect).toHaveAttribute('href', '/mcp/c1')
+    expect(screen.getByText(mcpCopy.callerNotShared)).toBeInTheDocument()
+    expect(screen.getByText(mcpCopy.callerNotSharedNote)).toBeInTheDocument()
+    expect(screen.getByText(mcpCopy.callerConnected)).toBeInTheDocument()
+    // The managers' rules editor is not shown to them.
+    expect(screen.queryByText(mcpCopy.agentMcpSub)).toBeNull()
+  })
+
+  it('a non-manager sees that a stopped agent was stopped by its owner', async () => {
+    configureMocks({ seed, now, loggedIn: true, persona: 'sam' })
+    const me = (await (await fetch('/api/me')).json()) as { sub: string }
+    const stopped = await agentWhere((a) => a.status === 'stopped' && a.owner_id !== me.sub)
+    renderApp(`/agents/${stopped.id}`)
+    await title()
+    expect(await screen.findByText(copy.stoppedByOwner)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+  })
 })
 
 describe('overview', () => {
+  it('opens with a summary: what the agent does, its routing, and a link to Details (NAS-1451)', async () => {
+    renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(
+      within(summary).getByText(`${running.display_name} handles`, { exact: false }),
+    ).toBeInTheDocument()
+    expect(await within(summary).findByText('research-tiers · Attached')).toBeInTheDocument()
+    expect(within(summary).getByText(/^Tiered: gpt-4o \/ /)).toBeInTheDocument()
+    expect(within(summary).getByText('Your key · OPENAI_API_KEY')).toBeInTheDocument()
+    await userEvent.click(within(summary).getByRole('button', { name: /All details/ }))
+    expect(await screen.findByRole('tab', { name: 'Details', selected: true })).toBeInTheDocument()
+  })
+
+  it('a description longer than its clamp gets Show more on Overview and Details; one that fits gets none (NAS-1595)', async () => {
+    // jsdom has no layout: a clamped paragraph reads as 60 px tall with 100 px of text, any other as fitting.
+    const scroll = vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(100)
+    const client = vi.spyOn(Element.prototype, 'clientHeight', 'get').mockImplementation(function (
+      this: Element,
+    ) {
+      return this.tagName === 'P' && /\bline-clamp-\d/.test(this.className) ? 60 : 100
+    })
+    onTestFinished(() => {
+      scroll.mockRestore()
+      client.mockRestore()
+    })
+    const { router } = renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    const text = within(summary).getByText(`${running.display_name} handles`, { exact: false })
+    expect(text).toHaveClass('line-clamp-3')
+    await userEvent.click(within(summary).getByRole('button', { name: copy.showMore }))
+    expect(text).not.toHaveClass('line-clamp-3')
+    expect(within(summary).getByRole('button', { name: copy.showLess })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    )
+
+    await router.navigate({
+      to: '/agents/$agentId',
+      params: { agentId: running.id },
+      search: { tab: 'details' },
+    })
+    const what = await screen.findByRole('region', { name: copy.whatItDoes })
+    const full = within(what).getByText(`${running.display_name} handles`, { exact: false })
+    expect(full).toHaveClass('line-clamp-4')
+    const more = within(what).getAllByRole('button', { name: copy.showMore })[0]!
+    expect(more).toHaveAttribute('aria-controls', full.id)
+    await userEvent.click(more)
+    expect(full).not.toHaveClass('line-clamp-4')
+
+    // Fits: no toggle.
+    client.mockReturnValue(100)
+    await router.navigate({ to: '/agents/$agentId', params: { agentId: running.id } })
+    const fits = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(within(fits).queryByRole('button', { name: copy.showMore })).toBeNull()
+  })
+
+  it('a description keeps its line breaks but folds runs of blank lines into one paragraph break', () => {
+    const { container } = render(
+      <Description text={'\n  One.\nTwo.\n\n\n  \n\nThree.\n\n'} lines={3} />,
+    )
+    expect(container.querySelector('p')!.textContent).toBe('One.\nTwo.\n\nThree.')
+  })
+
+  it("someone else's summary has the description but no routing (owner or superuser only)", async () => {
+    configureMocks({ persona: 'sam' })
+    renderApp(url(0))
+    const summary = await screen.findByRole('region', { name: copy.overviewSummary })
+    expect(
+      within(summary).getByText(`${running.display_name} handles`, { exact: false }),
+    ).toBeInTheDocument()
+    expect(within(summary).queryByText('LLM routing')).toBeNull()
+  })
+
   it('a crashed agent with no recorded reason falls back to recent error lines (OSS writes no crash fields)', async () => {
     renderApp(url(2))
     const card = await screen.findByRole('region', { name: 'This agent crashed' })
@@ -297,6 +415,35 @@ describe('settings', () => {
     expect(within(section).queryByText(/next time the agent is deployed/)).toBeNull()
   })
 
+  // NAS-1458: the owner's Settings → Secrets reach the agent unless it sets its own of the same name.
+  it('lists the owner’s secrets as inherited, and as overridden once the agent sets its own', async () => {
+    renderApp(url(1, 'settings'))
+    const section = await screen.findByRole('region', { name: 'Secrets' })
+    expect(
+      within(section).getByText(/A secret set here overrides one of the same name there/),
+    ).toBeInTheDocument()
+    const inherited = await within(section).findByRole('region', {
+      name: 'From the owner’s secrets',
+    })
+    const row = async (name: string) =>
+      (await within(inherited).findByText(name)).closest('li') as HTMLElement
+    expect(await row('ANTHROPIC_API_KEY')).toHaveTextContent('Inherited')
+    expect(
+      within(inherited).getByRole('link', { name: 'Manage in Settings → Secrets' }),
+    ).toHaveAttribute('href', '/settings/secrets')
+
+    await userEvent.type(
+      within(section).getByRole('textbox', { name: 'Name' }),
+      'ANTHROPIC_API_KEY',
+    )
+    await userEvent.type(within(section).getByLabelText('Value'), 'agent-only')
+    await userEvent.click(within(section).getByRole('button', { name: 'Add or replace' }))
+    await waitFor(async () =>
+      expect(await row('ANTHROPIC_API_KEY')).toHaveTextContent('Overridden here'),
+    )
+    expect(await within(section).findByText('Overrides owner’s secret')).toBeInTheDocument()
+  })
+
   it('leaves self-review off, but usable, when minimal-code mode goes on', async () => {
     // The agent reads an unset CODING_AGENT_SELF_REVIEW as ON, so enabling the ladder used to
     // silently start an extra model call on every edit. Enabling one feature must not enable a
@@ -394,8 +541,10 @@ describe('settings', () => {
     await userEvent.click(screen.getByRole('tab', { name: 'Overview' }))
     const dialog = await screen.findByRole('alertdialog', { name: 'Leave without saving?' })
     await userEvent.click(within(dialog).getByRole('button', { name: 'Stay' }))
+    // The dialog animates out, and the page behind it stays inert until it has gone.
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument())
     expect(router.state.location.search).toEqual({ tab: 'settings' })
-    expect(screen.getByRole('textbox', { name: 'Display name' })).toHaveValue(
+    expect(await screen.findByRole('textbox', { name: 'Display name' })).toHaveValue(
       `${agent(1).display_name} edited`,
     )
   })
@@ -491,6 +640,41 @@ describe('lifecycle errors', () => {
     } finally {
       reqs.stop()
     }
+  })
+
+  it('Stopping an agent shared with others warns that they use it', async () => {
+    server.use(
+      http.get('/api/agents/:id/grants', ({ params }) =>
+        HttpResponse.json({
+          agent_id: String(params.id),
+          is_public: false,
+          user_grants: ['someone-else'],
+          agent_acl: [],
+        }),
+      ),
+    )
+    renderApp(url(0))
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Stop' }))[0]!)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(await within(dialog).findByText(copy.stopSharedWarning)).toBeInTheDocument()
+  })
+
+  it('Stopping an agent nobody else uses has no warning', async () => {
+    server.use(
+      http.get('/api/agents/:id/grants', ({ params }) =>
+        HttpResponse.json({
+          agent_id: String(params.id),
+          is_public: false,
+          user_grants: [],
+          agent_acl: [],
+        }),
+      ),
+    )
+    renderApp(url(0))
+    await userEvent.click((await screen.findAllByRole('button', { name: 'Stop' }))[0]!)
+    const dialog = await screen.findByRole('alertdialog')
+    expect(within(dialog).getByText(copy.stopBody)).toBeInTheDocument()
+    expect(within(dialog).queryByText(copy.stopSharedWarning)).toBeNull()
   })
 
   it('a 401 on an action sends the user to sign in', async () => {
@@ -675,14 +859,59 @@ describe('Try it (chat plan §9)', () => {
     await screen.findByRole('button', { name: 'Start' })
     expect(screen.queryByRole('link', { name: 'Try it' })).toBeNull()
   })
+
+  it('a parked agent links to Chat: the first message wakes it', async () => {
+    deployMockState().setAgentStatus(running.id, 'parked')
+    renderApp(url(0))
+    await title()
+    const link = await screen.findByRole('link', { name: 'Try it' })
+    expect(link).toHaveAttribute('href', `/chat?agent=${running.id}`)
+  })
+
+  it('a parked agent says what Parked means, and Start wakes it (NAS-1487)', async () => {
+    deployMockState().setAgentStatus(running.id, 'parked')
+    const rec = recordRequestBodies()
+    renderApp(url(0))
+    await title()
+    const note = await screen.findByRole('note')
+    expect(note).toHaveTextContent(copy.parkedTitle)
+    expect(note).toHaveTextContent(copy.parkedKeepRunning)
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(screen.queryByRole('note')).toBeNull())
+    await rec.flush()
+    rec.stop()
+    expect(rec.requests.filter((r) => r.method === 'POST').map((r) => r.url.pathname)).toContain(
+      `/api/containers/${running.id}/start`,
+    )
+  })
+
+  it('the parked note opens Settings, where Always on saves parking_policy (NAS-1487)', async () => {
+    deployMockState().setAgentStatus(running.id, 'parked')
+    const rec = recordRequestBodies()
+    renderApp(url(0))
+    await title()
+    const note = await screen.findByRole('note')
+    await userEvent.click(within(note).getByRole('button', { name: copy.tabSettings }))
+    const section = await screen.findByRole('region', { name: copy.availability })
+    const sw = within(section).getByRole('switch', { name: copy.alwaysOn })
+    expect(sw).not.toBeChecked()
+    await userEvent.click(sw)
+    await waitFor(() => expect(sw).toBeChecked())
+    await rec.flush()
+    rec.stop()
+    expect(
+      rec.requests.filter((r) => r.method === 'PUT').map((r) => [r.url.pathname, r.body]),
+    ).toEqual([[`/api/agents/${running.id}`, { parking_policy: 'resident' }]])
+  })
 })
 
 describe('more states (plan §10)', () => {
-  it('a coding harness shows Overview and MCP and points at Coding harnesses', async () => {
+  it('a coding harness shows Overview and Details, no MCP, and points at Coding harnesses', async () => {
     const harness = await agentWhere((a) => !!a.tags?.includes('coding-agent'))
     renderApp(`/agents/${harness.id}`)
     await title()
-    expect(tabNames()).toEqual(['Overview', 'MCP', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Details'])
     expect(screen.getByRole('link', { name: /See usage on Coding harnesses/ })).toHaveAttribute(
       'href',
       expect.stringContaining('/harnesses'),
@@ -697,20 +926,16 @@ describe('more states (plan §10)', () => {
     expect(sw).toHaveAccessibleDescription(
       `${copy.tokenOptimizationHint} ${copy.tokenOptimizationHarness}`,
     )
-    expect(tabNames()).toEqual(['Overview', 'MCP', 'Details'])
+    expect(tabNames()).toEqual(['Overview', 'Details'])
   })
 
-  it('a coding harness’s MCP tab lists servers for its owner, like any agent', async () => {
+  it('a coding harness has no MCP tab: it has its own native MCP client and server config', async () => {
     const harness = await agentWhere((a) => !!a.tags?.includes('coding-agent'))
     renderApp(`/agents/${harness.id}?tab=mcp`)
-    expect(await screen.findByText(mcpCopy.agentMcpSubHarness)).toBeInTheDocument()
-    // No Ask: a harness call has no flow, so the gateway stores no approval to answer (PR #631 reverted f5cb65e7).
-    await userEvent.click(await screen.findByRole('button', { name: mcpCopy.expand('GitHub') }))
-    const groups = await screen.findAllByRole('radiogroup')
-    for (const g of groups) {
-      expect(within(g).getByRole('radio', { name: STANCE.allow.label })).toBeInTheDocument()
-      expect(within(g).queryByRole('radio', { name: STANCE.ask.label })).toBeNull()
-    }
+    await title()
+    expect(screen.queryByRole('tab', { name: 'MCP' })).toBeNull()
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByText(mcpCopy.agentMcpSubHarness)).toBeNull()
   })
 
   it('a harness its viewer can’t manage shows no Token optimization switch', async () => {

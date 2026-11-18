@@ -1,11 +1,14 @@
 /**
  * Catalog (plan §7.1): every agent the caller can see, searched and filtered client-side
  * (the list has no `q`). Page 1 renders at once; later pages stream in. Coding harnesses are
- * hidden unless asked for; they never run and the Harnesses page owns their usage.
+ * hidden unless asked for; they never run and the Harnesses page owns their usage. Agents show
+ * as cards or, with `?view=list`, as a table; a bare `/agents` opens the viewer's last pick
+ * (`viewKey`), else the cards.
  */
 import { useQuery } from '@tanstack/react-query'
-import { Bot, RotateCw, SearchX, X } from 'lucide-react'
+import { Bot, LayoutGrid, List, RotateCw, SearchX, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Label } from '@nasiko/ui/primitives/label'
 import {
@@ -16,6 +19,7 @@ import {
   SelectValue,
 } from '@nasiko/ui/primitives/select'
 import { Switch } from '@nasiko/ui/primitives/switch'
+import { ToggleGroup, ToggleGroupItem } from '@nasiko/ui/primitives/toggle-group'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { SearchInput } from '@nasiko/ui/composites/search-input'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
@@ -25,17 +29,39 @@ import { ErrorState, StateCard } from '@nasiko/features/observability/StateCard'
 import { useFleetHealth } from '@nasiko/features/overview/api'
 import { copy as overviewCopy } from '@nasiko/features/overview/copy'
 import { meQuery } from '@nasiko/data-access/auth'
+import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
 import { useSiblingState } from '@nasiko/app-core/siblings'
 import { useCatalogAgents, useCatalogTabs, useUsers } from './api'
 import { AgentCard } from './components/AgentCard'
+import { AgentTable, AgentTableRow } from './components/AgentTable'
 import { AgentsHeader, FirstRunSteps } from './components/bits'
 import { copy } from './copy'
-import type { CatalogSearch } from './search'
+import type { CatalogSearch, CatalogView } from './search'
 import { isHarness } from './status'
 import { TOP_TAGS } from './tuning'
+import type { Agent } from './types'
 
 /** The Tag filter's "no tag" value (a Select item can't be empty). */
 const ALL_TAGS = '__all'
+
+/** The view a bare `/agents` opens, per viewer, under the drafts prefix (sign-out clears it, as the home's view). */
+const viewKey = (sub: string) => `${DRAFT_PREFIX}${sub}:meta:agentsView`
+function readView(sub: string | undefined): CatalogView {
+  try {
+    return sub && globalThis.localStorage?.getItem(viewKey(sub)) === 'list' ? 'list' : 'grid'
+  } catch {
+    return 'grid'
+  }
+}
+/** Written when the viewer picks a view; arriving with `?view=` alone doesn't. */
+function rememberView(sub: string | undefined, view: CatalogView) {
+  if (!sub) return
+  try {
+    globalThis.localStorage?.setItem(viewKey(sub), view)
+  } catch {
+    // Blocked storage: a bare `/agents` opens the cards.
+  }
+}
 
 export function CatalogPage({
   search,
@@ -53,6 +79,14 @@ export function CatalogPage({
   const [now] = useState(() => new Date())
   // Members never read the fleet-wide spend series (the home and the hub rate them the same way).
   const fleet = useFleetHealth(now, !!search.health, !!me?.is_superuser)
+  const [remembered, setRemembered] = useState(() => readView(me?.sub))
+  const view = search.view ?? remembered
+  const pickView = (v: CatalogView) => {
+    rememberView(me?.sub, v)
+    setRemembered(v)
+    // The cards are the bare URL.
+    setSearch({ view: v === 'grid' ? undefined : v })
+  }
 
   // "/" focuses search unless the user is already typing somewhere.
   useEffect(() => {
@@ -69,10 +103,10 @@ export function CatalogPage({
 
   const all = q.agents
   const harnessCount = useMemo(() => all.filter(isHarness).length, [all])
-  const pool = useMemo(
-    () => (search.harnesses ? all : all.filter((a) => !isHarness(a))),
-    [all, search.harnesses],
-  )
+  // An edition that places agents (MT) lists the local ones by default: the whole fleet in one view (TM-5).
+  const { agentPlacement } = useSlots()
+  const showLocal = search.harnesses ?? agentPlacement
+  const pool = useMemo(() => (showLocal ? all : all.filter((a) => !isHarness(a))), [all, showLocal])
   const rated = fleet.summary?.byId
   const tags = useMemo(() => {
     if (pinnedTabs?.length) return pinnedTabs
@@ -107,8 +141,16 @@ export function CatalogPage({
       }),
     [pool, search.health, rated, search.tag, search.yours, term, me?.sub],
   )
-  // Previous/Next on the agent page walks the cards as shown when one is clicked.
+  // Previous/Next on the agent page walks the cards (or rows) as shown when one is clicked.
   const linkState = useSiblingState(shown.map((a) => a.id))
+  // A card and a row show the same facts.
+  const item = (a: Agent) => ({
+    agent: a,
+    meId: me?.sub,
+    ownerName: names?.get(a.owner_id),
+    reason: search.health ? rated?.get(a.id)?.reasons[0]?.text : undefined,
+    linkState,
+  })
 
   const header = (
     <AgentsHeader
@@ -179,8 +221,25 @@ export function CatalogPage({
             <X className="size-3" aria-hidden />
           </Button>
         ) : null}
-        {/* The filters keep to the right: search reads first, then what narrows it. */}
+        {/* The filters keep to the right: search reads first, then the view, then what narrows it. */}
         <div className="flex flex-wrap items-center gap-2 sm:ml-auto">
+          <ToggleGroup
+            variant="outline"
+            size="sm"
+            value={[view]}
+            onValueChange={(vs) => {
+              const v = vs[0] as string | undefined
+              if (v === 'grid' || v === 'list') pickView(v)
+            }}
+            aria-label={copy.viewLabel}
+          >
+            <ToggleGroupItem value="grid" className="px-2.5 text-xs pointer-coarse:min-h-11">
+              <LayoutGrid aria-hidden /> {copy.viewGrid}
+            </ToggleGroupItem>
+            <ToggleGroupItem value="list" className="px-2.5 text-xs pointer-coarse:min-h-11">
+              <List aria-hidden /> {copy.viewList}
+            </ToggleGroupItem>
+          </ToggleGroup>
           <Select
             value={search.yours ? 'yours' : 'anyone'}
             onValueChange={(v) => setSearch({ yours: v === 'yours' ? true : undefined })}
@@ -218,10 +277,12 @@ export function CatalogPage({
           {harnessCount ? (
             <Label className="gap-2 text-xs font-normal text-muted-foreground">
               <Switch
-                checked={!!search.harnesses}
-                onCheckedChange={(on) => setSearch({ harnesses: on ? true : undefined })}
+                checked={showLocal}
+                onCheckedChange={(on) =>
+                  setSearch({ harnesses: on === agentPlacement ? undefined : on })
+                }
               />
-              {copy.harnessesToggle(harnessCount)}
+              {agentPlacement ? copy.localToggle(harnessCount) : copy.harnessesToggle(harnessCount)}
             </Label>
           ) : null}
         </div>
@@ -250,9 +311,11 @@ export function CatalogPage({
       ) : null}
       {all.length === 0 ? (
         <>
-          <EmptyState icon={Bot} title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
-            {copy.noAgentsCatalogHint}
-          </EmptyState>
+          <div data-tour="agents-empty">
+            <EmptyState icon={Bot} title={copy.noAgentsCatalog} action={<DeployAgentButton />}>
+              {copy.noAgentsCatalogHint}
+            </EmptyState>
+          </div>
           <div>
             <p className="mb-2 text-xs text-muted-foreground">{deployCopy.entry.orCli}</p>
             <FirstRunSteps />
@@ -276,17 +339,17 @@ export function CatalogPage({
         >
           {copy.noResultsHint}
         </EmptyState>
+      ) : view === 'list' ? (
+        <AgentTable>
+          {shown.map((a) => (
+            <AgentTableRow key={a.id} {...item(a)} />
+          ))}
+        </AgentTable>
       ) : (
         <ul data-tour="agents-grid" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((a) => (
             <li key={a.id}>
-              <AgentCard
-                agent={a}
-                meId={me?.sub}
-                ownerName={names?.get(a.owner_id)}
-                reason={search.health ? rated?.get(a.id)?.reasons[0]?.text : undefined}
-                linkState={linkState}
-              />
+              <AgentCard {...item(a)} />
             </li>
           ))}
         </ul>

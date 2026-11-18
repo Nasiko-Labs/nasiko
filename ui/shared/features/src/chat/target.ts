@@ -14,6 +14,16 @@ import { agentParamText } from './search'
 import type { RememberedTarget } from './rememberTarget'
 import type { ChatSessionRow, HitlDto } from './types'
 
+/** A stopped agent someone else owns: this user can't start it, so the chat says its owner stopped it. */
+export function stoppedByOwner(agent: Pick<Agent, 'status' | 'owner_id'>, userId: string) {
+  return agent.status === 'stopped' && agent.owner_id !== userId
+}
+
+/** Takes a message now: a parked agent counts, since the message is what wakes it. */
+export function acceptsMessages(status: Agent['status']) {
+  return status === 'running' || status === 'parked'
+}
+
 export type Target =
   | { kind: 'loading' }
   | { kind: 'choose' }
@@ -86,9 +96,9 @@ function fromAgentId(agentId: string, dir: Directory): Target {
   return a ? { kind: 'direct', agent: a } : { kind: 'readonly', why: 'removed', agentId }
 }
 
-/** The agents the chooser offers: running A2A agents only, never harnesses. */
+/** The agents the chooser offers: running or parked A2A agents only, never harnesses. */
 export function chooserAgents(rows: readonly Agent[] | undefined): Agent[] {
-  return (rows ?? []).filter((a) => chattable(a) && a.status === 'running')
+  return (rows ?? []).filter((a) => chattable(a) && acceptsMessages(a.status))
 }
 
 /**
@@ -169,7 +179,7 @@ export function agentExamples(agent: Agent, max = 3): string[] {
   return out
 }
 
-/** The TargetPicker's agents (v1c §5.4): running ones by display name, then the rest, never harnesses. */
+/** The TargetPicker's agents (v1c §5.4): running or parked ones by display name, then the rest, never harnesses. */
 export function pickerAgents(rows: readonly Agent[] | undefined): {
   running: Agent[]
   stopped: Agent[]
@@ -178,8 +188,8 @@ export function pickerAgents(rows: readonly Agent[] | undefined): {
     .filter(chattable)
     .sort((a, b) => agentLabel(a).localeCompare(agentLabel(b)))
   return {
-    running: all.filter((a) => a.status === 'running'),
-    stopped: all.filter((a) => a.status !== 'running'),
+    running: all.filter((a) => acceptsMessages(a.status)),
+    stopped: all.filter((a) => !acceptsMessages(a.status)),
   }
 }
 

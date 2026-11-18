@@ -6,8 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
 
-use super::queue::{self, DeliveryState, QueueRecord};
+use super::queue::{self, DeliveryState, QueueDestination, QueueRecord};
 use super::sanitize::sanitized;
 
 /// At most this many distinct reasons are reported per agent; the rest are left out of the list (but
@@ -50,11 +51,27 @@ impl Backlog {
 /// Just what counting needs from a record, so a turn's content is skipped rather than kept.
 #[derive(Deserialize)]
 struct RecordHeader {
+    destination: DestinationHeader,
     #[serde(default)]
     last_error: Option<String>,
     #[serde(default)]
     next_attempt_at: Option<DateTime<Utc>>,
     event: EventHeader,
+}
+
+#[derive(Deserialize)]
+struct DestinationHeader {
+    cluster_url: String,
+    principal_id: Uuid,
+}
+
+impl DestinationHeader {
+    /// Whether the turn goes to `to`'s server and account; the name the cluster was saved under
+    /// doesn't matter.
+    fn is(&self, to: &QueueDestination) -> bool {
+        self.principal_id == to.principal_id
+            && self.cluster_url.trim_end_matches('/') == to.cluster_url.trim_end_matches('/')
+    }
 }
 
 #[derive(Deserialize)]
@@ -67,13 +84,18 @@ struct SourceHeader {
     agent_id: String,
 }
 
-/// Counts the queue under `root`. A record that can't be read is not counted (the next delivery
-/// quarantines it).
-pub(super) fn backlog_at(root: &Path) -> Result<Backlog> {
+/// Counts the queue under `root`: only the turns bound for `only` when it is given (the server a
+/// progress report goes to, which must not be told about another server's turns), else every
+/// destination's. A record that can't be read is not counted (the next delivery quarantines it).
+pub(super) fn backlog_at(root: &Path, only: Option<&QueueDestination>) -> Result<Backlog> {
     let mut backlog = Backlog::default();
     let now = Utc::now();
     let mut pauses: HashMap<PathBuf, Option<DateTime<Utc>>> = HashMap::new();
-    for (path, header) in headers(&root.join("queue"))? {
+    let bound_for = |header: &RecordHeader| only.is_none_or(|to| header.destination.is(to));
+    for (path, header) in headers(&root.join("queue"))?
+        .into_iter()
+        .filter(|(_, header)| bound_for(header))
+    {
         backlog
             .agents
             .entry(header.event.source.agent_id)
@@ -96,7 +118,10 @@ pub(super) fn backlog_at(root: &Path) -> Result<Backlog> {
         }
     }
     let mut reasons: HashMap<String, HashMap<String, usize>> = HashMap::new();
-    for (_, header) in headers(&root.join("rejected"))? {
+    for (_, header) in headers(&root.join("rejected"))?
+        .into_iter()
+        .filter(|(_, header)| bound_for(header))
+    {
         let agent_id = header.event.source.agent_id;
         backlog.agents.entry(agent_id.clone()).or_default().rejected += 1;
         let reason = header.last_error.unwrap_or_else(|| "rejected".into());
@@ -259,7 +284,7 @@ mod tests {
             "permanently rejected: bad time",
         );
 
-        let backlog = backlog_at(root).unwrap();
+        let backlog = backlog_at(root, None).unwrap();
 
         assert_eq!((backlog.pending(), backlog.due), (2, 1));
         assert_eq!(backlog.agent("claude").pending, 2);
@@ -276,6 +301,46 @@ mod tests {
     }
 
     #[test]
+    fn a_count_for_one_server_leaves_out_every_other_servers_turns() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let here = record("claude", "a").destination;
+        // Saved under another name and with a trailing slash: still this server.
+        let mut renamed = record("claude", "b");
+        renamed.destination.cluster_name = "renamed".into();
+        renamed.destination.cluster_url = "https://one.example/".into();
+        queue::enqueue_at(root, &renamed).unwrap();
+        let elsewhere = |turn: &str, url: &str, principal_id: Uuid| {
+            let mut record = record("claude", turn);
+            record.destination = QueueDestination {
+                cluster_name: "old".into(),
+                cluster_url: url.into(),
+                principal_id,
+            };
+            record
+        };
+        queue::enqueue_at(root, &elsewhere("c", "http://localhost:8082", Uuid::nil())).unwrap();
+        set_aside(
+            root,
+            &elsewhere("d", "http://localhost:8082", Uuid::nil()),
+            "permanently rejected after 5 delivery attempts: cannot reach control plane",
+        );
+        // This server, but another account.
+        set_aside(
+            root,
+            &elsewhere("e", "https://one.example", Uuid::new_v4()),
+            "permanently rejected: conflict",
+        );
+
+        let claude = backlog_at(root, Some(&here)).unwrap().agent("claude");
+        assert_eq!((claude.pending, claude.rejected), (1, 0));
+        assert!(claude.reasons.is_empty());
+
+        let everywhere = backlog_at(root, None).unwrap().agent("claude");
+        assert_eq!((everywhere.pending, everywhere.rejected), (2, 2));
+    }
+
+    #[test]
     fn reasons_are_capped_in_number_and_length() {
         let dir = tempfile::tempdir().unwrap();
         for i in 0..MAX_REASONS + 2 {
@@ -286,7 +351,7 @@ mod tests {
             );
         }
 
-        let claude = backlog_at(dir.path()).unwrap().agent("claude");
+        let claude = backlog_at(dir.path(), None).unwrap().agent("claude");
 
         assert_eq!(claude.rejected, MAX_REASONS + 2);
         assert_eq!(claude.reasons.len(), MAX_REASONS);
@@ -341,7 +406,7 @@ mod tests {
         assert_eq!(requeued.attempts, 0);
         assert_eq!(requeued.delivery_state, DeliveryState::Pending);
         assert_eq!(requeued.event.turn.prompt.as_deref(), Some("ask"));
-        let still = backlog_at(root).unwrap().agent("claude");
+        let still = backlog_at(root, None).unwrap().agent("claude");
         assert_eq!((still.pending, still.rejected), (1, 1));
         assert!(still.reasons[0].0.contains("nonempty"));
     }

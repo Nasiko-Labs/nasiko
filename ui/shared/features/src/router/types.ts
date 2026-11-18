@@ -48,6 +48,13 @@ export interface AgentRouting {
   pinned_model: string | null
 }
 
+/** GET and PUT /api/agents/{id}/my-llm-config `data`; both config fields are null with no choice (or a deleted one). */
+export interface MyLlmConfig {
+  agent_id: string
+  llm_config_id: string | null
+  llm_config: RoutingConfig | null
+}
+
 export type CreateConfigBody = S['CreateLlmConfigRequest']
 export type UpdateConfigBody = S['UpdateLlmConfigRequest']
 /** Double-option fields: absent leaves the value, null clears (detach / remove override), a value sets it. */

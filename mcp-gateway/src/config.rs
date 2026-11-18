@@ -90,8 +90,6 @@ pub struct McpConfig {
     pub tool_search_tool_limit: usize,
     /// Max tools returned by `nasiko_search_tools` meta-tool.
     pub tool_search_meta_limit: usize,
-    /// OpenAI API key for embedding queries (semantic mode).
-    pub openai_api_key: Option<String>,
     /// Embedding model name (e.g. `text-embedding-3-small`).
     pub embedding_model: String,
     /// The gateway's own sentence advertised in `initialize.instructions`,
@@ -105,6 +103,9 @@ pub struct McpConfig {
     /// (itself `MCP_IDENTITY_SIGNING_KEY`, falling back to `JWT_SECRET`); never
     /// empty past `from_config`, which panics rather than sign with no key.
     pub identity_signing_key: Vec<u8>,
+    /// Whether tool-call spans may carry the model-supplied arguments
+    /// (`OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT`, the switch agents get).
+    pub capture_content: bool,
 }
 
 impl McpConfig {
@@ -143,7 +144,6 @@ impl McpConfig {
             tool_search_mode: ToolSearchMode::parse(&config.mcp_tool_search_mode),
             tool_search_tool_limit: config.mcp_tool_search_tool_limit,
             tool_search_meta_limit: config.mcp_tool_search_meta_limit,
-            openai_api_key: config.openai_api_key.clone(),
             embedding_model: config.embedding_model.clone(),
             // Central `Config` carries the raw (possibly blank) value; this
             // crate owns the default text (it syncs to the public repo, so the
@@ -189,6 +189,7 @@ impl McpConfig {
                 }
                 key.as_bytes().to_vec()
             },
+            capture_content: config.otel_capture_content,
         }
     }
 
@@ -239,10 +240,10 @@ mod tests {
             tool_search_mode: ToolSearchMode::None,
             tool_search_tool_limit: 15,
             tool_search_meta_limit: 10,
-            openai_api_key: None,
             embedding_model: "text-embedding-3-small".to_string(),
             gateway_instructions: String::new(),
             identity_signing_key: b"test-identity-signing-key".to_vec(),
+            capture_content: false,
         }
     }
 

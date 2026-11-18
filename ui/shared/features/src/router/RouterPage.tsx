@@ -1,6 +1,6 @@
 /**
- * The LLM router page (plan §4). Order: title + "How routing works" → tabs: Your agents · Your configs · Providers
- * (`?tab=`, one at a time). The routing summary is the Agents table's own filter tabs, the only thing it filters. It shows configured routing and who pays, not observed calls (R-L5).
+ * The LLM router page (plan §4). Order: title + "How routing works" → tabs: Your agents (then Shared with you, the
+ * agents others own) · Your configs · Providers (`?tab=`, one at a time). The routing summary is the Agents table's own filter tabs, the only thing it filters. It shows configured routing and who pays, not observed calls (R-L5).
  *
  *   useOwnedAgents ─► ids ─► useRowReads (limiter, 4 at a time) ─► rows ─┬─► summary strip / counts / Affects N
  *   useConfigs · useSecrets · useCatalog · useCustomProviders ───────────┴─► sections and sheets
@@ -35,6 +35,7 @@ import { CustomProviderSheet, type CustomMode } from './components/CustomProvide
 import { DeleteConfigDialog } from './components/DeleteConfigDialog'
 import { ProvidersSection } from './components/ProvidersSection'
 import { RoutingSheet } from './components/RoutingSheet'
+import { SharedSection } from './components/SharedSection'
 import { copy } from './copy'
 import { routerError } from './errors'
 import {
@@ -139,7 +140,7 @@ function Page({
     let dropped = 0
     for (const u of usage.data ?? []) {
       if (u.agent_id && owned.has(u.agent_id)) byAgent.set(u.agent_id, u)
-      else dropped += u.request_count
+      else dropped += u.traces
     }
     return {
       byAgent,
@@ -147,7 +148,7 @@ function Page({
       failed: usage.isError,
       pending: usage.isPending && ids.length > 0,
       partial: (usage.data?.length ?? 0) >= SPEND_LIMIT,
-      anyUnpriced: [...byAgent.values()].some((u) => u.request_count > 0 && u.total_cost_usd === 0),
+      anyUnpriced: [...byAgent.values()].some((u) => u.traces > 0 && u.total_cost_usd === 0),
     }
   }, [usage.data, usage.isError, usage.isPending, ids])
 
@@ -329,6 +330,7 @@ function Page({
                 onShowConfig={(id) => goTo('configs', () => focusEl(`config-${id}`))}
                 filterLabel={filterLabel}
               />
+              {me?.sub ? <SharedSection viewer={me.sub} configs={configs.data} /> : null}
             </TabsContent>
             <TabsContent value="configs" keepMounted hidden={tab !== 'configs'} className="pt-4">
               <ConfigsSection

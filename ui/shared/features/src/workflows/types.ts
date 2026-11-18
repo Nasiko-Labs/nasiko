@@ -132,6 +132,17 @@ export const runStartedSchema = z.looseObject({
 })
 export type RunStarted = z.infer<typeof runStartedSchema>
 
+/**
+ * `StopResponse` (`POST /maf/executions/stop`, nasiko-cloud-rs `feat/maf-stop-execution` `f466d7a1`): what a stop did
+ * to each run asked for. A workflow-wide stop lists only the runs it stopped.
+ */
+export const stopReportSchema = z.looseObject({
+  stopped: z.array(z.looseObject({ id: z.string(), previous_status: z.string() })),
+  already_finished: z.array(z.looseObject({ id: z.string(), status: z.string() })),
+  not_found: z.array(z.string()),
+})
+export type StopReport = z.infer<typeof stopReportSchema>
+
 /** A step as sent: `UpdateStepRequest` on `main` requires `step_index` (W-2); create ignores it. */
 export interface StepInput {
   step_index: number

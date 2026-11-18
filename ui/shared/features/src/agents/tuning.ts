@@ -34,15 +34,15 @@ export const USERS_LIMIT = 200
 export const CRASH_LINES_SHOWN = 5
 /** Memory use (% of the container limit) from which the Activity meter turns warning. */
 export const MEMORY_WARN_PCT = 85
-/** Overview's What it does, until Show more: skills and examples per skill shown, and the lengths (characters) past
- * which a description or a skill's description is clamped (4 and 2 lines). */
+/** Details' What it does, until Show more: skills and examples per skill shown, and the length (characters) past
+ * which a skill's description is clamped (2 lines). The agent's description measures its own clamp. */
 export const SKILLS_SHOWN = 3
 export const EXAMPLES_SHOWN = 2
-export const CLAMP_DESCRIPTION_CHARS = 320
 export const CLAMP_SKILL_CHARS = 160
-/** Catalog: tag chips offered, skill chips per card. */
+/** Catalog: tag chips offered, skill chips per card and per list row (fewer, so the row's description has room). */
 export const TOP_TAGS = 8
 export const CARD_SKILLS = 3
+export const ROW_SKILLS = 2
 /** `/api/search/users` needs at least this many characters. */
 export const USER_SEARCH_MIN = 2
 export const USER_SEARCH_MAX = 50

@@ -109,7 +109,7 @@ describe('rejected before run (§6.6)', () => {
     await waitFor(() =>
       expect(
         within(screen.getByTestId('error-notice')).getByText(
-          'OpenRuntime has no running agent for this.',
+          'Open Runtime has no running agent for this.',
         ),
       ).toBeInTheDocument(),
     )
@@ -179,7 +179,8 @@ describe('turn outcomes', () => {
     await waitFor(() =>
       expect(notice().getByText('The agent reported an error.')).toBeInTheDocument(),
     )
-    expect(notice().getByText(/upstream timeout/)).toBeInTheDocument()
+    // The agent's own reason is the notice's second line, not only under Details (NAS-1624).
+    expect(notice().getByTestId('error-notice-reason')).toHaveTextContent(/upstream timeout/)
     expect(notice().getByRole('button', { name: 'Run again' })).toBeInTheDocument()
     expect(
       screen.queryByText('No reply has been saved for this message yet.'),

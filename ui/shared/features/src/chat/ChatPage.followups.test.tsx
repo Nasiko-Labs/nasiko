@@ -152,6 +152,46 @@ describe('the new chat with a target', () => {
     expect(hero).not.toHaveTextContent(copy.heroAgentSubline)
   })
 
+  it('holds a long description to two lines, with More to open it and Less to close it (2026-11-15)', async () => {
+    // jsdom lays nothing out: the description reads as taller than its two clamped lines.
+    const heights = vi
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'hero-description' ? 120 : 0
+      })
+    const clamped = vi
+      .spyOn(HTMLElement.prototype, 'clientHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === 'hero-description' && this.className.includes('line-clamp-2')
+          ? 40
+          : 120
+      })
+    try {
+      const qa = await byName('seed-qa-tester')
+      renderApp(`/chat?agent=${qa.id}`)
+      const text = await screen.findByTestId('hero-description')
+      expect(text).toHaveClass('line-clamp-2')
+      const more = await screen.findByRole('button', { name: copy.heroDescriptionMore })
+      expect(more).toHaveAttribute('aria-expanded', 'false')
+      await userEvent.click(more)
+      expect(text).not.toHaveClass('line-clamp-2')
+      const less = screen.getByRole('button', { name: copy.heroDescriptionLess })
+      expect(less).toHaveAttribute('aria-expanded', 'true')
+      await userEvent.click(less)
+      expect(text).toHaveClass('line-clamp-2')
+    } finally {
+      heights.mockRestore()
+      clamped.mockRestore()
+    }
+  })
+
+  it('a description that fits its two lines gets no More', async () => {
+    const qa = await byName('seed-qa-tester')
+    renderApp(`/chat?agent=${qa.id}`)
+    await screen.findByTestId('hero-description')
+    expect(screen.queryByRole('button', { name: copy.heroDescriptionMore })).toBeNull()
+  })
+
   it('"Choose another agent" opens the list under the chips: the other agents and the Orchestrator', async () => {
     const qa = await byName('seed-qa-tester')
     renderApp(`/chat?agent=${qa.id}`)

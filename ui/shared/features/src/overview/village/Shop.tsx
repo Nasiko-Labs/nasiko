@@ -2,7 +2,7 @@
  * The Build shop (plans/feat-village-overview.md V5, V28). A card that has a district starts placing: the shop closes,
  * that kind's open plots turn green, and picking one opens the page where the thing is set up (it lands on that plot
  * once it exists). A card without a district (Opportunities, the rate-limit tower) opens its page at once. Things
- * OpenRuntime doesn't have yet (team plots in this edition, Route, walls and checkpoints) say so instead of pretending.
+ * Open Runtime doesn't have yet (team plots in this edition, Route, walls and checkpoints) say so instead of pretending.
  */
 import { Link } from '@tanstack/react-router'
 import { Gauge, Milestone, ShieldCheck } from 'lucide-react'

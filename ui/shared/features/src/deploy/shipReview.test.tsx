@@ -29,7 +29,7 @@ describe('/ship review fixes', () => {
   it('forgets an import once its toast announced it, so the Registry tab never jumps to it later', async () => {
     const notices: unknown[] = []
     const off = setNotifier((n) => notices.push(n))
-    await startImport(new QueryClient(), 'u1', 'registry.nasiko.dev/acme/bot:1.0.0', async () => ({
+    await startImport(new QueryClient(), 'u1', 'registry.nasiko.com/acme/bot:1.0.0', async () => ({
       agent_id: 'a1',
       build_id: null,
       container_name: 'c',

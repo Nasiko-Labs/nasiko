@@ -101,6 +101,7 @@ fn main() {
     }
 
     refuse_mock_bundle_in_release(&bundle);
+    refuse_source_maps_in_release(&bundle);
 
     // Absolute, so it does not inherit this crate's depth.
     println!("cargo:rustc-env=NASIKO_UI={}", ui_root.display());
@@ -116,4 +117,34 @@ fn main() {
     // not the directory — so without this an *added* .sql would not rebuild the
     // server, and booting it to apply the migration would silently apply nothing.
     println!("cargo:rerun-if-changed=../migrations");
+}
+
+/// Source maps are uploaded to Sentry and deleted before a release build
+/// (`ui/scripts/sentry-sourcemaps.ts`); one still in the bundle would be served
+/// from `/assets` and publish the UI's source. Debug builds may keep them.
+fn refuse_source_maps_in_release(bundle: &Path) {
+    if std::env::var("PROFILE").as_deref() != Ok("release") {
+        return;
+    }
+    fn first_map(dir: &Path) -> Option<PathBuf> {
+        std::fs::read_dir(dir).ok()?.flatten().find_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                first_map(&path)
+            } else {
+                let name = path.file_name()?.to_str()?;
+                [".map", ".map.br", ".map.gz"]
+                    .iter()
+                    .any(|ext| name.ends_with(ext))
+                    .then_some(path)
+            }
+        })
+    }
+    if let Some(map) = first_map(&bundle.join("assets")) {
+        panic!(
+            "{} is a source map, and a release binary must not serve one. Run \
+             `node scripts/sentry-sourcemaps.ts` (or `--delete-only`) in ui/ before building.",
+            map.display()
+        );
+    }
 }

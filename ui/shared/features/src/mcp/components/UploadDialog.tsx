@@ -60,13 +60,16 @@ export function UploadDialog({ onClose }: { onClose: () => void }) {
         ? { kind: 'zip', ...common, file }
         : { kind: 'github', ...common, url: url.trim() },
       {
-        onSuccess: (r) => {
+        onSuccess: () => {
           onClose()
           toast.success(copy.uploadQueued(common.name), {
             action: {
               label: copy.open,
-              onClick: () =>
-                void navigate({ to: '/mcp/$connectorId', params: { connectorId: r.connector_id } }),
+              // Not `/mcp/$connectorId`: a first-time build failure deletes the connector entirely
+              // (`delete_mcp_connector_or_mark_failed`), and the outcome isn't known yet at this
+              // point — linking there would 404 the moment it fails. The Builds page reads the
+              // durable `mcp_upload_status` record instead, so it resolves either way.
+              onClick: () => void navigate({ to: '/mcp/builds', search: { q: common.name } }),
             },
           })
         },

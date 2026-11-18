@@ -5,16 +5,31 @@ One command, no account and no administrator rights.
 macOS and Linux:
 
 ```console
-$ curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash
+$ curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash
 ```
 
 Windows (PowerShell):
 
 ```powershell
-irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
+irm https://registry.nasiko.com/r/nasiko/install-ps1 | iex
 ```
 
 Then check it: `nasiko --version`.
+
+## Signing in
+
+The published CLI talks to the hosted Nasiko control plane until you connect another one, so the next step is:
+
+```console
+$ nasiko auth login
+```
+
+It signs you in through the control plane's SSO in your browser (`--password` for a username and password
+instead), then offers to connect the coding agents it finds on this machine. `nasiko connect <url>` switches to
+your own control plane.
+
+The default is baked in at build time from `NASIKO_CLOUD_URL`; a CLI built from source has none and starts with
+`nasiko connect <url>`. Setting `NASIKO_CLOUD_URL` when running the CLI overrides it.
 
 ## What the installer does
 
@@ -40,10 +55,10 @@ into a shell isn't allowed where you are, download it, read it, then run it: it'
 |---|---|---|
 | `NASIKO_VERSION` | `latest` | Install a specific release, e.g. `v0.2.0` |
 | `NASIKO_INSTALL_DIR` | `~/.local/bin` (Windows: `%LOCALAPPDATA%\Programs\nasiko`) | Where to install |
-| `NASIKO_REGISTRY` | `registry.nasiko.dev` | Registry to install from (a mirror, say) |
+| `NASIKO_REGISTRY` | `registry.nasiko.com` | Registry to install from (a mirror, say) |
 
 ```console
-$ curl -fsSL https://registry.nasiko.dev/r/nasiko/install | NASIKO_VERSION=v0.2.0 bash
+$ curl -fsSL https://registry.nasiko.com/r/nasiko/install | NASIKO_VERSION=v0.2.0 bash
 ```
 
 ## Updating and removing

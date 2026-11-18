@@ -13,6 +13,7 @@
  * After a reload nothing is followed (Builds is the place to check). Sign-out and another account's sign-in drop
  * everything (`clearFollower`, from `clearUploads` in `stopDeployWork`, R3).
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import type { QueryClient } from '@tanstack/react-query'
 import { recentUploadsQuery } from './api'
 import {
@@ -64,6 +65,26 @@ export function subscribeFollower(listener: () => void): () => void {
 /** Builds still followed: the Builds nav item's count. */
 export const followedCount = () => followed.size
 
+/** The builds still followed, by agent name, with when each started (the onboarding guide's deploy progress). */
+export const followedBuilds = (): { buildId: string; name: string; since: number }[] =>
+  [...followed].map(([buildId, f]) => ({ buildId, name: f.name, since: f.since }))
+
+const finishListeners = new Set<Notify>()
+/**
+ * Every outcome the follower learns, toasted or not: a page showing one itself (the Registry tab, the build's own page)
+ * skips the toast, not this. The onboarding guide's deploy progress listens here (NAS-1450). Returns the unsubscribe.
+ */
+export function onFollowFinished(fn: Notify): () => void {
+  finishListeners.add(fn)
+  return () => void finishListeners.delete(fn)
+}
+const finished = (n: FollowNotice) => {
+  productEvent('agent_deployed', { status: n.kind })
+  // Activation: an agent of theirs is running. PostHog counts the first time per person.
+  if (n.kind === 'running') productEvent('agent_discovered', { kind: 'deployed' })
+  for (const fn of finishListeners) fn(n)
+}
+
 /** The app shell's toaster (one `Toaster`, eng review) registers here. Returns an unregister function. */
 export function setNotifier(fn: Notify): () => void {
   notify = fn
@@ -111,6 +132,7 @@ export function follow(
 /** A registry import finished (it is synchronous, so there is nothing to poll). */
 /** Returns true when it toasted (the Registry tab wasn't open to show it). */
 export function importFinished(n: FollowNotice): boolean {
+  finished(n)
   if (registryOpen > 0) return false
   notify(n)
   return true
@@ -171,7 +193,7 @@ export async function pollOnce(): Promise<void> {
   }
   const byId = new Map((rows ?? []).map((r) => [r.upload_id, r]))
   let changed = false
-  let finished = false
+  let anyFinished = false
   for (const [id, f] of [...followed]) {
     const row = byId.get(id)
     const done = row?.status === 'completed' || row?.status === 'failed'
@@ -181,18 +203,19 @@ export async function pollOnce(): Promise<void> {
     followed.delete(id)
     changed = true
     if (!done || !row) continue
-    finished = true
-    if (id === openBuild) continue
+    anyFinished = true
     const name = row.agent_name || f.name
-    notify(
+    const outcome: FollowNotice =
       row.status === 'completed'
         ? { kind: 'running', buildId: id, agentId: f.agentId, name }
-        : { kind: 'failed', buildId: id, name },
-    )
+        : { kind: 'failed', buildId: id, name }
+    finished(outcome)
+    if (id === openBuild) continue
+    notify(outcome)
   }
   // A finished build changes its agent (status, version, versions): the agent lists and that agent's pages re-read.
   // The restart watches (`['agents','watch',id]`) are cache-only state and stay.
-  if (finished)
+  if (anyFinished)
     void client?.invalidateQueries({
       queryKey: ['agents'],
       predicate: (q) => q.queryKey[1] !== 'watch',

@@ -2,6 +2,7 @@ import { Link, type HistoryState } from '@tanstack/react-router'
 import { memo } from 'react'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Card } from '@nasiko/ui/primitives/card'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { copy } from '../copy'
 import { displayStatus, isHarness } from '../status'
 import { CARD_SKILLS } from '../tuning'
@@ -24,6 +25,7 @@ export const AgentCard = memo(function AgentCard({
   linkState?: () => HistoryState
 }) {
   const harness = isHarness(agent)
+  const { agentPlacement } = useSlots()
   const name = agent.display_name || agent.name
   const mine = agent.owner_id === meId
   const skills = agent.skills ?? []
@@ -74,6 +76,8 @@ export const AgentCard = memo(function AgentCard({
         </div>
       ) : null}
       <div className="mt-auto flex flex-wrap items-center gap-2 pt-1 text-xs text-muted-foreground">
+        {/* A coding harness runs on its owner's machine; everything else runs in the workspace (FR-4). */}
+        {agentPlacement ? <Badge variant="muted">{harness ? copy.local : copy.cloud}</Badge> : null}
         {harness ? (
           <Badge variant="outline">{copy.harnessChip}</Badge>
         ) : (

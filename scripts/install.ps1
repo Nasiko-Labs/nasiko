@@ -1,13 +1,13 @@
 # Nasiko CLI installer for Windows: published to the registry as nasiko/install-ps1 and served at
-# https://registry.nasiko.dev/r/nasiko/install-ps1
+# https://registry.nasiko.com/r/nasiko/install-ps1
 #
 # Usage (PowerShell):
-#   irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex
+#   irm https://registry.nasiko.com/r/nasiko/install-ps1 | iex
 #
 # Environment overrides (see docs/CLI_INSTALL.md):
 #   NASIKO_VERSION      version tag to install (default: latest)
 #   NASIKO_INSTALL_DIR  install destination (default: %LOCALAPPDATA%\Programs\nasiko)
-#   NASIKO_REGISTRY     registry host (default: registry.nasiko.dev)
+#   NASIKO_REGISTRY     registry host (default: registry.nasiko.com)
 #
 # Like install.sh: no administrator rights, anonymous pulls, the binary verified against its
 # content-addressed digest. Unlike install.sh it adds the install folder to the *user* PATH, the
@@ -15,7 +15,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$Registry = if ($env:NASIKO_REGISTRY) { $env:NASIKO_REGISTRY } else { 'registry.nasiko.dev' }
+$Registry = if ($env:NASIKO_REGISTRY) { $env:NASIKO_REGISTRY } else { 'registry.nasiko.com' }
 $Version = if ($env:NASIKO_VERSION) { $env:NASIKO_VERSION } else { 'latest' }
 $Dir = if ($env:NASIKO_INSTALL_DIR) { $env:NASIKO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA 'Programs\nasiko' }
 $Api = "https://$Registry/v2/nasiko/nasiko"
@@ -74,3 +74,7 @@ if (-not (($UserPath -split ';') -contains $Dir)) {
     Write-Host "→ added $Dir to your user PATH (open a new terminal to use it)"
 }
 Write-Host "✓ installed $(& $Exe --version) to $Exe"
+Write-Host ""
+Write-Host "Next: point it at your Nasiko server (skip this for the hosted one), sign in, then connect your coding agents:"
+Write-Host "    nasiko connect https://<your-server> --login=false"
+Write-Host "    nasiko auth login"

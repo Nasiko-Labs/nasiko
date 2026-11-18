@@ -26,9 +26,32 @@ export type MediaKind = 'image' | 'audio' | 'video' | 'pdf' | 'file'
 /** Why a file was turned away. The composer turns each into one line of copy. */
 export type RejectReason = 'too-many' | 'too-large' | 'over-budget' | 'empty'
 
+export type SizeClass = keyof typeof tuning.ATTACHMENT_LIMITS
+
 export interface Rejected {
   name: string
   reason: RejectReason
+  kind?: SizeClass
+}
+
+const TEXT_TYPES = new Set([
+  'application/json',
+  'application/xml',
+  'application/x-yaml',
+  'application/yaml',
+])
+const TEXT_EXTENSIONS = new Set(['txt', 'md', 'csv', 'json', 'xml', 'yaml', 'yml', 'html', 'htm'])
+const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif'])
+
+export function sizeClass(file: Pick<File, 'name' | 'type'>): SizeClass {
+  const type = file.type.split(';')[0].trim().toLowerCase()
+  const dot = file.name.lastIndexOf('.')
+  const extension = dot < 0 ? '' : file.name.slice(dot + 1).toLowerCase()
+  if (type.startsWith('image/') || (!type && IMAGE_EXTENSIONS.has(extension))) return 'image'
+  if (type === 'application/pdf' || (!type && extension === 'pdf')) return 'pdf'
+  if (type.startsWith('text/') || TEXT_TYPES.has(type) || TEXT_EXTENSIONS.has(extension))
+    return 'text'
+  return 'other'
 }
 
 export interface AttachResult {
@@ -85,8 +108,9 @@ export function addFiles(
       rejected.push({ name: file.name, reason: 'empty' })
       continue
     }
-    if (file.size > tuning.ATTACHMENT_MAX_BYTES) {
-      rejected.push({ name: file.name, reason: 'too-large' })
+    const kind = sizeClass(file)
+    if (file.size > tuning.ATTACHMENT_LIMITS[kind]) {
+      rejected.push({ name: file.name, reason: 'too-large', kind })
       continue
     }
     if (total + file.size > tuning.ATTACHMENTS_MAX_TOTAL_BYTES) {

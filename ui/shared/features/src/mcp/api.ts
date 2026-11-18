@@ -19,6 +19,7 @@ import {
   authorizeSchema,
   buildLogsSchema,
   buildStatusSchema,
+  callerConnectionsSchema,
   connectOutcomeSchema,
   connectorDetailSchema,
   connectorListSchema,
@@ -26,6 +27,7 @@ import {
   consumersSchema,
   credentialResultSchema,
   credentialStatusSchema,
+  myUploadsSchema,
   oauthStatusSchema,
   probeSchema,
   shareTargetsSchema,
@@ -40,11 +42,13 @@ import {
   type Authorize,
   type BuildLogs,
   type BuildState,
+  type CallerConnections,
   type ConnectorDetail,
   type ConnectorList,
   type Consumers,
   type CredentialResult,
   type CredentialStatus,
+  type MyUploads,
   type OauthStatus,
   type Probe,
   type ShareTargets,
@@ -70,6 +74,7 @@ export const mcpKeys = {
   connectors: ['mcp', 'connectors'] as const,
   toolkits: ['mcp', 'toolkits'] as const,
   connector: (id: string) => ['mcp', 'connector', id] as const,
+  myUploads: ['mcp', 'my-uploads'] as const,
   credential: (id: string) => ['mcp', 'connector', id, 'credential'] as const,
   oauth: (id: string) => ['mcp', 'connector', id, 'oauth'] as const,
   shares: (id: string) => ['mcp', 'connector', id, 'shares'] as const,
@@ -100,6 +105,28 @@ export const useConnectors = () =>
   useQuery({
     ...connectorsQuery,
     refetchInterval: (q) => (isBuilding(q.state.data) ? BUILD_POLL_MS : false),
+  })
+
+export const myUploadsQuery = {
+  queryKey: mcpKeys.myUploads,
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    apiData<MyUploads>('/api/mcp/connectors/my-uploads', { signal, schema: myUploadsSchema }),
+  staleTime: LIST_STALE_MS,
+}
+
+/**
+ * Every upload attempt the caller made, from `mcp_upload_status` — unlike `useConnectors`, still
+ * answers for one whose connector was deleted after a first-time build failure. The catalog page's
+ * "Recent uploads" panel reads this so a failed/building upload stays trackable without the
+ * one-shot toast (`oss/migrations/0101_mcp_upload_status.sql`). Polls while anything isn't settled.
+ */
+export const useMyUploads = () =>
+  useQuery({
+    ...myUploadsQuery,
+    refetchInterval: (q) =>
+      q.state.data?.some((u) => u.upload_info.upload_status === 'Deploying')
+        ? BUILD_POLL_MS
+        : false,
   })
 
 export const toolkitsQuery = {
@@ -210,6 +237,19 @@ export const useAgentConnectors = (agentId: string, enabled: boolean) =>
       }),
     enabled,
     select: withAlwaysOn,
+  })
+
+/** The agent's servers with where the viewer stands — for someone the agent is shared with. */
+export const useMyConnections = (agentId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: [...mcpKeys.agent(agentId), 'mine'] as const,
+    queryFn: ({ signal }) =>
+      apiData<CallerConnections>(`${A(agentId)}/my-connections`, {
+        signal,
+        schema: callerConnectionsSchema,
+      }),
+    enabled,
+    select: (r) => r.connectors,
   })
 
 // One read per connector until a batch read exists (M-5); this tab's own limiter.

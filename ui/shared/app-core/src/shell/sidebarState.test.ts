@@ -2,16 +2,9 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { copy } from './copy'
-import {
-  EXPANDED_MIN_WIDTH,
-  readSidebarCookie,
-  SIDEBAR_COOKIE,
-  widthDefaultOpen,
-} from './sidebarState'
+import { clearSidebarCookie, readSidebarCookie, SIDEBAR_COOKIE } from './sidebarState'
 
-const originalWidth = window.innerWidth
 afterEach(() => {
-  Object.defineProperty(window, 'innerWidth', { configurable: true, value: originalWidth })
   document.cookie = `${SIDEBAR_COOKIE}=; path=/; max-age=0`
 })
 
@@ -29,15 +22,10 @@ describe('sidebar state', () => {
     expect(readSidebarCookie('')).toBeUndefined()
   })
 
-  it('opens on a first visit from exactly 1280 px (design review 9A)', () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: EXPANDED_MIN_WIDTH })
-    expect(widthDefaultOpen()).toBe(true)
-    Object.defineProperty(window, 'innerWidth', {
-      configurable: true,
-      value: EXPANDED_MIN_WIDTH - 1,
-    })
-    expect(widthDefaultOpen()).toBe(false)
-    // A stored choice winning over the width is AppShell's rule, tested with the /chat default (v1c test 11).
+  it('sign-out forgets the choice', () => {
+    document.cookie = `${SIDEBAR_COOKIE}=true; path=/`
+    clearSidebarCookie()
+    expect(readSidebarCookie()).toBeUndefined()
   })
 })
 

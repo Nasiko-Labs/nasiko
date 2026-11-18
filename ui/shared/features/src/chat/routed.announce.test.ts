@@ -32,11 +32,11 @@ const turn = (phase: LiveTurn['phase'], awaitingAgent?: string): LiveTurn =>
 
 describe('routed announcements', () => {
   it('a routed pause names the agent that asked, else the chat agent', () => {
-    expect(announcement(turn('streaming'), turn('paused', 'deployer'), 'OpenRuntime')).toBe(
+    expect(announcement(turn('streaming'), turn('paused', 'deployer'), 'Open Runtime')).toBe(
       copy.announceRequest('deployer'),
     )
-    expect(announcement(turn('streaming'), turn('paused'), 'OpenRuntime')).toBe(
-      copy.announceRequest('OpenRuntime'),
+    expect(announcement(turn('streaming'), turn('paused'), 'Open Runtime')).toBe(
+      copy.announceRequest('Open Runtime'),
     )
   })
 
@@ -68,7 +68,7 @@ describe('routed announcements', () => {
     ['not_started', copy.announceFailed],
     ['resume_forbidden', copy.announceFailed],
   ] as const)('%s says %s once', (phase, said) => {
-    expect(announcement(turn('streaming'), turn(phase), 'OpenRuntime')).toBe(said)
-    expect(announcement(turn(phase), turn(phase), 'OpenRuntime')).toBeNull()
+    expect(announcement(turn('streaming'), turn(phase), 'Open Runtime')).toBe(said)
+    expect(announcement(turn(phase), turn(phase), 'Open Runtime')).toBeNull()
   })
 })

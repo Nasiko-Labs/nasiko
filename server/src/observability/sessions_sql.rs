@@ -10,15 +10,15 @@
 //!
 //! | Field | Source | Written by |
 //! |---|---|---|
-//! | `num_traces` | `session_traces` | `agent_proxy`, at forward time |
+//! | `num_traces` | `flows` | `flows` row by `session_id`, at turn start |
 //! | tokens, cost, latency, window | `trace_usage` | `trace_materializer` |
 //! | `first_input` / `last_output` | `chat_messages` | the chat path |
 //! | `status`, `failed_flows` | `flows` | `agent_proxy`, `router::a2a_dispatch` |
-//! | `error_count` | `trace_usage.error_count` | `trace_materializer` |
+//! | `error_count` | `trace_usage.error_count` | `trace_materializer`; the LLM router adds its failed calls live |
 //!
 //! A **coding-agent session** (one with `coding_agent_telemetry_events`
 //! receipts) is the exception for turns, tokens, duration and status. Its
-//! turns never cross the proxy, so it has no `session_traces` or `flows` rows,
+//! turns never cross the proxy, so it has no `flows` rows,
 //! and its `trace_usage` arrives only as `receipt_materializer` works through
 //! a Tempo backlog. The receipts are exact and immediate, so for those
 //! sessions:
@@ -30,7 +30,7 @@
 //! | cost | `chat_messages.cost_usd` of the imported turns, else `trace_usage` |
 //! | `status` | `failed` if any turn had an erroring tool call, else `ok` |
 //!
-//! `session_traces` is the authoritative session-to-trace index rather than
+//! `flows` is the authoritative session-to-trace index rather than
 //! `trace_usage`, which only has rows for token-bearing traces: counting from
 //! it would hide every session whose agent never made an LLM call.
 //!
@@ -72,6 +72,7 @@ pub enum StatusFilter {
     Failed,
     Ok,
     Running,
+    TimedOut,
 }
 
 impl StatusFilter {
@@ -80,8 +81,9 @@ impl StatusFilter {
             "failed" => Ok(Self::Failed),
             "ok" => Ok(Self::Ok),
             "running" => Ok(Self::Running),
+            "timed_out" => Ok(Self::TimedOut),
             other => Err(ObservabilityError::BadRequest(format!(
-                "status '{other}' is not one of: failed, ok, running"
+                "status '{other}' is not one of: failed, ok, running, timed_out"
             ))),
         }
     }
@@ -172,9 +174,11 @@ struct Row {
     flow_count: Option<i64>,
     failed_flow_count: Option<i64>,
     running_flow_count: Option<i64>,
+    timed_out_flow_count: Option<i64>,
     /// Coding-agent receipts, one per turn; 0 for every other session.
     turn_count: Option<i64>,
-    failed_turn_count: Option<i64>,
+    /// Whether the session's latest coding-agent turn ended with an erroring tool call.
+    last_turn_failed: Option<bool>,
     turn_tokens: Option<i64>,
     turn_cost: Option<f64>,
     turn_started: Option<DateTime<Utc>>,
@@ -196,15 +200,19 @@ struct Row {
 /// separately as `error_count`, and the two are never mixed.
 ///
 /// A coding-agent turn is the same kind of record — written at ingest, exact —
-/// so its outcome counts too: a turn with an erroring tool call fails the
-/// session, and any recorded turn makes it known. Mirrored by
-/// [`status_predicate`].
+/// so its outcome counts too, and any recorded turn makes the status known. Only
+/// the latest turn decides failure: an erroring tool call in an earlier turn was
+/// followed by more work, so the agent recovered and the session is not failed.
+/// Mirrored by [`status_predicate`].
 fn derive_status(row: &Row) -> Option<&'static str> {
-    let failed = row.failed_flow_count.unwrap_or(0) + row.failed_turn_count.unwrap_or(0);
+    let failed = row.failed_flow_count.unwrap_or(0) + i64::from(row.last_turn_failed == Some(true));
+    let timed_out = row.timed_out_flow_count.unwrap_or(0);
     let running = row.running_flow_count.unwrap_or(0);
     let total = row.flow_count.unwrap_or(0) + row.turn_count.unwrap_or(0);
     if failed > 0 {
         Some("failed")
+    } else if timed_out > 0 {
+        Some("timed_out")
     } else if running > 0 {
         Some("running")
     } else if total > 0 {
@@ -263,6 +271,7 @@ impl Row {
             },
             status: status.map(str::to_owned),
             failed_flows: self.failed_flow_count.unwrap_or(0) as u32,
+            flow_count: u32::try_from(self.flow_count.unwrap_or(0).max(0)).unwrap_or(u32::MAX),
             // `null` while no trace in this session has been materialized yet:
             // "not yet known", never "zero errors". A materialized trace with no
             // unrecovered error span reports 0.
@@ -295,18 +304,26 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
     // every filter below negates exactly what `derive_status` counts.
     const FAILED: &str = "(EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status = 'failed') \
-             OR EXISTS (SELECT 1 FROM coding_agent_telemetry_events e \
-                      WHERE e.session_id = s.session_id AND e.turn_tool_errors > 0))";
+             OR COALESCE((SELECT e.turn_tool_errors > 0 \
+                            FROM coding_agent_telemetry_events e \
+                           WHERE e.session_id = s.session_id \
+                           ORDER BY e.turn_started_at DESC NULLS LAST, e.received_at DESC \
+                           LIMIT 1), FALSE))";
+    // A flow the sweeper closed after its request died (`flow_sweeper`). It reads
+    // below 'failed' and above 'running'.
+    const TIMED_OUT: &str = "EXISTS (SELECT 1 FROM flows f \
+                      WHERE f.session_id = s.session_id AND f.status = 'timed_out')";
     match status {
         None => "TRUE".into(),
         Some(StatusFilter::Failed) => FAILED.into(),
-        // 'failed' wins over 'running' in `derive_status`, so the filter has to
-        // exclude it — otherwise a `status=running` page lists rows whose own
-        // badge reads "failed".
+        Some(StatusFilter::TimedOut) => format!("{TIMED_OUT} AND NOT {FAILED}"),
+        // 'failed' and 'timed_out' win over 'running' in `derive_status`, so the
+        // filter has to exclude them — otherwise a `status=running` page lists
+        // rows whose own badge reads something else.
         Some(StatusFilter::Running) => format!(
             "EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
+             AND NOT {FAILED} AND NOT {TIMED_OUT}"
         ),
         // "ok" is "has a flow or a coding-agent turn, and nothing unfinished
         // or failed".
@@ -316,13 +333,32 @@ fn status_predicate(status: Option<StatusFilter>) -> String {
                           WHERE e.session_id = s.session_id)) \
              AND NOT EXISTS (SELECT 1 FROM flows f \
                       WHERE f.session_id = s.session_id AND f.status IN ('running','paused')) \
-             AND NOT {FAILED}"
+             AND NOT {FAILED} AND NOT {TIMED_OUT}"
         ),
     }
 }
 
 /// Shared WHERE clause for the page and for `matching_count`, so the two can
 /// never drift apart. Binds: `$1` caller, `$2`/`$3` window, `$4` parent.
+/// SQL for the name of the agent that did a session's work, for a session whose
+/// `chat_sessions.agent_id` is empty (an orchestrator-routed chat picks its agent per turn).
+///
+/// It is the agent with the most tokens in `trace_usage`. Rows with no `agent_id` are the
+/// orchestrator's own model calls (`nasiko-cp`), not an agent, so they are left out.
+/// `session_id` is the SQL expression holding the session's id.
+pub(super) fn ran_agent_name(session_id: &str) -> String {
+    format!(
+        "(SELECT u.agent_name
+            FROM trace_usage u
+           WHERE u.session_id = {session_id} AND u.agent_id IS NOT NULL
+           GROUP BY u.agent_name
+           ORDER BY sum(u.input_tokens + u.output_tokens
+                        + u.cache_read_tokens + u.cache_creation_tokens) DESC,
+                    u.agent_name
+           LIMIT 1)"
+    )
+}
+
 fn scope_clause(status: Option<StatusFilter>, level: &ListLevel) -> String {
     let window = match level {
         ListLevel::TopLevel => {
@@ -347,6 +383,7 @@ pub async fn list_sessions(
 ) -> Result<SessionListResponse, ObservabilityError> {
     let scope = scope_clause(q.status, &q.level);
     let subagents = subagent_totals_lateral("p");
+    let ran_agent = ran_agent_name("p.session_id");
     // One extra row answers "is there a next page?" without a second query.
     let fetch = q.limit + 1;
 
@@ -362,7 +399,7 @@ WITH page AS (
      LIMIT $7
 )
 SELECT p.session_id,
-       a.name AS agent_name,
+       COALESCE(a.name, {ran_agent}) AS agent_name,
        p.created_at,
        tr.trace_count,
        tu.total_tokens,
@@ -377,8 +414,9 @@ SELECT p.session_id,
        fl.flow_count,
        fl.failed_flow_count,
        fl.running_flow_count,
+       fl.timed_out_flow_count,
        ct.turn_count,
-       ct.failed_turn_count,
+       ct.last_turn_failed,
        ct.turn_tokens,
        ct.turn_started,
        ct.turn_ended,
@@ -394,8 +432,8 @@ SELECT p.session_id,
   LEFT JOIN agents a ON a.id = p.agent_id
   LEFT JOIN LATERAL (
         SELECT count(*)::bigint AS trace_count
-          FROM session_traces st
-         WHERE st.session_id = p.session_id
+          FROM flows f
+         WHERE f.session_id = p.session_id
   ) tr ON TRUE
   LEFT JOIN LATERAL (
         -- trace_usage is keyed (trace_id, agent_name), so a multi-agent trace
@@ -418,7 +456,7 @@ SELECT p.session_id,
                        min(u.started_at) AS started,
                        max(u.latency_ms) AS latency,
                        sum(u.error_count)::bigint AS errors
-                  FROM trace_usage u
+                  FROM (SELECT trace_id, session_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens, cache_read_tokens::bigint AS cache_read_tokens, cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd, started_at, latency_ms::bigint AS latency_ms, error_count FROM trace_usage UNION ALL SELECT trace_id, session_id, tokens, 0::bigint, 0::bigint, 0::bigint, cost_usd, first_at, max_latency_ms, errors::int FROM trace_totals) u
                  WHERE u.session_id = p.session_id
                  GROUP BY u.trace_id
           ) t
@@ -440,7 +478,8 @@ SELECT p.session_id,
   LEFT JOIN LATERAL (
         SELECT count(*)::bigint AS flow_count,
                count(*) FILTER (WHERE f.status = 'failed')::bigint AS failed_flow_count,
-               count(*) FILTER (WHERE f.status IN ('running','paused'))::bigint AS running_flow_count
+               count(*) FILTER (WHERE f.status IN ('running','paused'))::bigint AS running_flow_count,
+               count(*) FILTER (WHERE f.status = 'timed_out')::bigint AS timed_out_flow_count
           FROM flows f
          WHERE f.session_id = p.session_id
   ) fl ON TRUE
@@ -450,7 +489,13 @@ SELECT p.session_id,
         -- One row per turn: event ids are derived from the turn, but a client
         -- that minted two for one turn must not count it twice.
         SELECT count(*)::bigint AS turn_count,
-               count(*) FILTER (WHERE r.turn_tool_errors > 0)::bigint AS failed_turn_count,
+               -- Only the latest turn decides failure (see `derive_status`). Same
+               -- ordering as `status_predicate`, so the badge and the filter agree.
+               (SELECT e.turn_tool_errors > 0
+                  FROM coding_agent_telemetry_events e
+                 WHERE e.session_id = p.session_id
+                 ORDER BY e.turn_started_at DESC NULLS LAST, e.received_at DESC
+                 LIMIT 1) AS last_turn_failed,
                -- LEAST ignores NULL, so an all-NULL sum (receipts the backfill has not
                -- reached) would read as the cap; keep it NULL instead.
                CASE WHEN count(r.turn_tokens) = 0 THEN NULL
@@ -588,8 +633,9 @@ mod tests {
             flow_count: Some(flow),
             failed_flow_count: Some(failed),
             running_flow_count: Some(running),
+            timed_out_flow_count: Some(0),
             turn_count: Some(0),
-            failed_turn_count: Some(0),
+            last_turn_failed: Some(false),
             turn_tokens: None,
             turn_cost: None,
             turn_started: None,
@@ -604,18 +650,60 @@ mod tests {
         }
     }
 
-    fn coding_row(turns: i64, failed_turns: i64) -> Row {
+    fn coding_row(turns: i64, last_turn_failed: bool) -> Row {
         Row {
             turn_count: Some(turns),
-            failed_turn_count: Some(failed_turns),
+            last_turn_failed: Some(last_turn_failed),
             ..row(0, 0, 0)
         }
     }
 
     #[test]
     fn coding_session_status_comes_from_its_turns() {
-        assert_eq!(derive_status(&coding_row(3, 0)), Some("ok"));
-        assert_eq!(derive_status(&coding_row(3, 1)), Some("failed"));
+        assert_eq!(derive_status(&coding_row(3, false)), Some("ok"));
+        assert_eq!(derive_status(&coding_row(3, true)), Some("failed"));
+    }
+
+    #[test]
+    fn a_timed_out_flow_reads_below_failed_and_above_running() {
+        let timed_out = Row {
+            timed_out_flow_count: Some(1),
+            running_flow_count: Some(1),
+            ..row(2, 0, 1)
+        };
+        assert_eq!(derive_status(&timed_out), Some("timed_out"));
+        let failed_too = Row {
+            failed_flow_count: Some(1),
+            ..timed_out
+        };
+        assert_eq!(derive_status(&failed_too), Some("failed"));
+    }
+
+    #[test]
+    fn timed_out_filter_agrees_with_the_badge() {
+        assert_eq!(
+            StatusFilter::parse("timed_out").unwrap(),
+            StatusFilter::TimedOut
+        );
+        let timed_out = status_predicate(Some(StatusFilter::TimedOut));
+        assert!(timed_out.contains("f.status = 'timed_out'"));
+        assert!(timed_out.contains("AND NOT (EXISTS"));
+        for filter in [StatusFilter::Running, StatusFilter::Ok] {
+            let p = status_predicate(Some(filter));
+            assert!(
+                p.contains("AND NOT EXISTS") && p.contains("f.status = 'timed_out'"),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_failed_flow_still_fails_a_session_whose_last_turn_is_clean() {
+        let row = Row {
+            failed_flow_count: Some(1),
+            ..coding_row(3, false)
+        };
+        assert_eq!(derive_status(&row), Some("failed"));
     }
 
     #[test]
@@ -632,7 +720,7 @@ mod tests {
             turn_cost: Some(1.25),
             turn_started: Some(start),
             turn_ended: Some(end),
-            ..coding_row(4, 0)
+            ..coding_row(4, false)
         }
         .into_summary();
         assert_eq!(summary.num_traces, Some(4));
@@ -645,7 +733,7 @@ mod tests {
     fn coding_session_falls_back_to_traced_cost_when_turns_are_unpriced() {
         let summary = Row {
             total_cost: Some(0.5),
-            ..coding_row(2, 0)
+            ..coding_row(2, false)
         }
         .into_summary();
         assert_eq!(summary.cost_summary.total.cost, Some(0.5));
@@ -766,7 +854,7 @@ mod tests {
             subagent_turns: Some(5),
             subagent_tokens: Some(700),
             subagent_cost: Some(3.5),
-            ..coding_row(1, 0)
+            ..coding_row(1, false)
         }
         .into_summary();
         assert_eq!(summary.token_usage.total, Some(100));

@@ -1,3 +1,4 @@
+pub mod agent_caller;
 pub mod assertion;
 pub mod claims;
 pub mod delegate;
@@ -5,6 +6,7 @@ pub mod login;
 pub mod middleware;
 pub mod rbac;
 
+pub use agent_caller::{AgentCallerAuth, require_user_or_agent};
 pub use claims::Claims;
 pub use delegate::Delegation;
 pub use login::{protected_router as auth_protected_router, public_router as login_router};

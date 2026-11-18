@@ -5,7 +5,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { MessagesSquare, RotateCw } from 'lucide-react'
-import type { ReactNode } from 'react'
+import { type ReactNode, useId, useLayoutEffect, useRef, useState } from 'react'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { relTime } from '@nasiko/features/agents/format'
@@ -25,6 +25,61 @@ import { LIFTED, TOUCH } from './turnStyles'
 const TARGET_ROWS = 6
 const MAX_RECENT = 3
 
+/**
+ * An agent's description, two lines at most. "… More" ends the second line, only when the text runs past it
+ * (measured, so a short description never gets one), and opens it in place; "Less" then ends the text.
+ */
+function ClampedDescription({ text }: { text: string }) {
+  const id = useId()
+  const ref = useRef<HTMLParagraphElement>(null)
+  const [open, setOpen] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+  useLayoutEffect(() => {
+    const el = ref.current
+    if (!el || open) return
+    const measure = () => setOverflows(el.scrollHeight > el.clientHeight + 1)
+    measure()
+    // The pane's width decides where the lines break: measure again when it changes.
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(measure)
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [text, open])
+  const toggle = (label: string) => (
+    <Button
+      type="button"
+      variant="link"
+      size="xs"
+      className="h-auto p-0 align-baseline text-sm pointer-coarse:min-h-11"
+      aria-expanded={open}
+      aria-controls={id}
+      onClick={() => setOpen((o) => !o)}
+    >
+      {label}
+    </Button>
+  )
+  return (
+    <div className="relative max-w-prose">
+      <p
+        id={id}
+        ref={ref}
+        className={cn('text-sm text-muted-foreground', !open && 'line-clamp-2')}
+        data-testid="hero-description"
+      >
+        {text}
+        {open ? <> {toggle(copy.heroDescriptionLess)}</> : null}
+      </p>
+      {/* Over the end of the second line, where the clamp cuts the text: the page's own background hides the cut. */}
+      {!open && overflows ? (
+        <span className="absolute right-0 bottom-0 bg-background pl-1 text-sm text-muted-foreground">
+          <span aria-hidden>… </span>
+          {toggle(copy.heroDescriptionMore)}
+        </span>
+      ) : null}
+    </div>
+  )
+}
+
 /** The hero by target (§5.4). */
 export function NewChatHero({
   target,
@@ -33,12 +88,14 @@ export function NewChatHero({
   target: ChatIdentity | null
   description?: string | null
 }) {
-  // An agent's own description says more than "Ask me anything" (user review, 2026-09-28).
+  // An agent's own description says more than "Ask me anything" (user review, 2026-09-28), held to two lines so a
+  // long one never pushes the composer down (user review, 2026-11-15).
+  const own = target?.kind === 'agent' ? description?.trim() : ''
   const [title, subline] = !target
     ? [copy.heroChooseTitle, copy.heroChooseSubline]
     : target.kind === 'orchestrator'
       ? [copy.heroOrchestratorTitle, copy.heroOrchestratorSubline]
-      : [target.name, description?.trim() || copy.heroAgentSubline]
+      : [target.name, own || copy.heroAgentSubline]
   return (
     <div className="flex flex-col items-center gap-2 text-center" data-testid="new-chat-hero">
       {target ? (
@@ -47,7 +104,11 @@ export function NewChatHero({
         <MessagesSquare aria-hidden className="size-8 text-primary-text" />
       )}
       <h1 className="max-w-full truncate text-2xl font-semibold">{title}</h1>
-      <p className="max-w-prose text-sm text-muted-foreground">{subline}</p>
+      {own ? (
+        <ClampedDescription text={own} />
+      ) : (
+        <p className="max-w-prose text-sm text-muted-foreground">{subline}</p>
+      )}
       {target?.kind === 'agent' && target.status && target.status !== 'running' ? (
         <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
           <StatusDot running={false} />

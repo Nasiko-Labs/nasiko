@@ -154,10 +154,18 @@ export function hitlByStep(steps: StepResult[], hitl: HitlDto[] = []) {
 export const planningTokens = (total: number, steps: StepResult[]) =>
   total - steps.reduce((n, s) => n + (s.tokens_used ?? 0), 0)
 
-export type PlanFailure = 'no-key' | 'no-agents' | 'planner' | 'other'
-/** Which of the planner's refusals this is (`generate_maf`: 503 no key, 400 no agents, 422 planning failed). */
+export type PlanFailure = 'no-key' | 'key-rejected' | 'no-agents' | 'planner' | 'other'
+
+/** The planner's code for a model key the provider refused (maf.rs `generate_maf`, a 502). */
+export const KEY_REJECTED_CODE = 'llm_key_rejected'
+
+/**
+ * Which of the planner's refusals this is (`generate_maf`: 503 no key, 502 + `llm_key_rejected` the key was refused,
+ * 400 no agents, 422 planning failed).
+ */
 export function planFailure(err: unknown): PlanFailure {
   const status = err instanceof ApiError ? err.status : 0
+  if (err instanceof ApiError && err.code === KEY_REJECTED_CODE) return 'key-rejected'
   return status === 503
     ? 'no-key'
     : status === 400

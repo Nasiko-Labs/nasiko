@@ -57,13 +57,16 @@ describe('demo script figures (anchor 2026-09-26)', () => {
     expect(
       await screen.findByRole(
         'heading',
-        { level: 1, name: /^Session · Code Reviewer · Sep 17 16:33 · \$2\.63 · 52 traces/ },
+        { level: 1, name: /^Session · Code Reviewer · Sep 17 16:33/ },
         { timeout: 8000 },
       ),
     ).toBeInTheDocument()
+    expect(screen.getByText('Session total:').parentElement).toHaveTextContent(
+      /^Session total: \$2\.63 · .* · across 52 traces$/,
+    )
     expect(
-      await screen.findByText('$0.10', { selector: 'span' }, { timeout: 8000 }),
-    ).toBeInTheDocument()
+      (await screen.findByText(/^Trace \d+:$/, {}, { timeout: 8000 })).parentElement,
+    ).toHaveTextContent(/^Trace \d+: \$0\.10 · /)
     const story = screen.getByLabelText('What happened')
     await waitFor(
       () => expect(story).toHaveTextContent('This trace cost $0.10; retries cost $0.05.'),

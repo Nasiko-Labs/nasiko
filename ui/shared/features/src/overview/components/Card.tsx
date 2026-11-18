@@ -4,7 +4,7 @@
  * the owning-page link, the header aside and a per-card container.
  */
 import { Link } from '@tanstack/react-router'
-import { AlertTriangle, RotateCw } from 'lucide-react'
+import { AlertTriangle, RotateCw, type LucideIcon } from 'lucide-react'
 import type { ReactNode, RefObject } from 'react'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { Button, asButton } from '@nasiko/ui/primitives/button'
@@ -156,6 +156,44 @@ export function SourceFailed({ what, onRetry }: { what: string; onRetry: () => v
       >
         {copy.retry}
       </Button>
+    </div>
+  )
+}
+
+/**
+ * A card with nothing to show (2026-11-06): what would fill it and the one step that does, never a blank or dashed
+ * box. Centred in whatever height the card's row gives it.
+ */
+export function CardQuiet({
+  Icon,
+  title,
+  detail,
+  action,
+  testId,
+}: {
+  Icon: LucideIcon
+  title: string
+  detail: string
+  /** One link styled as a button. */
+  action: ReactNode
+  testId?: string
+}) {
+  return (
+    <div
+      data-testid={testId}
+      className="my-auto flex flex-col items-center gap-3 py-6 text-center text-pretty"
+    >
+      <span
+        aria-hidden
+        className="flex size-10 items-center justify-center rounded-full bg-muted text-muted-foreground"
+      >
+        <Icon className="size-5" />
+      </span>
+      <div className="flex max-w-sm flex-col gap-1">
+        <p className="text-sm font-medium">{title}</p>
+        <p className="text-sm text-muted-foreground">{detail}</p>
+      </div>
+      {action}
     </div>
   )
 }

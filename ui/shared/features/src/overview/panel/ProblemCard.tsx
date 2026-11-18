@@ -1,13 +1,13 @@
 /**
  * The problem card, the same everywhere a problem shows (the insight panel, a day tile, a flow, a card summary): its
- * kind and tier, the title with its number, why it matters, where the metric is against its target, ten days of
- * trend, who is on it (Assign, Reassign, Unassign, I'll take it), and one primary action into the owning page, then
+ * kind and tier, the title with its number, why it matters, ten days of the metric against its target (`TargetTrend`;
+ * where it is against the target alone when there is no trend, or in a compact list), who is on it (Assign, Reassign, Unassign, I'll take it), and one primary action into the owning page, then
  * the cause chain, the evidence, Snooze and Mark handled. Snooze and Mark handled leave the lists at once and offer
  * Undo; handled reopens tomorrow if the numbers are still behind (the server's rule, OV-2). Without OV-2 the owner
  * row says assigning needs a newer server, and Snooze and Mark handled are left out.
  */
 import { Check, ChevronDown, Link2, UserPlus } from 'lucide-react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import {
@@ -25,7 +25,7 @@ import { cn } from '@nasiko/ui/lib/utils'
 import { estateCopy as copy } from '../estate/copy'
 import type { Metric, Person, Problem, ProblemPatch } from '../estate/types'
 import type { EstateView } from '../estate/useEstateView'
-import { STRONG_BG, STRONG_BORDER, STRONG_STROKE, STRONG_TEXT } from '../map/tones'
+import { STRONG_BG, STRONG_BORDER, STRONG_STROKE, TINT } from '../map/tones'
 import { TargetLink } from './targets'
 
 export interface ProblemActions {
@@ -87,9 +87,12 @@ export function ProblemCard({
       </h4>
       <p className="mt-0.5 text-xs leading-4 text-muted-foreground">{p.why}</p>
       {hasMetric ? (
-        <div className="mt-2.5 flex items-end gap-3">
-          <Distance m={p.metric} kind={p.kind} />
-          {!compact && p.trend.length > 1 ? <Spark values={p.trend} kind={p.kind} /> : null}
+        <div className="mt-2.5">
+          {!compact && p.trend.length > 1 ? (
+            <TargetTrend m={p.metric} values={p.trend} kind={p.kind} />
+          ) : (
+            <Distance m={p.metric} kind={p.kind} />
+          )}
         </div>
       ) : null}
       <Owner p={p} owner={owner} me={me} v={v} actions={actions} />
@@ -354,41 +357,103 @@ export function Distance({ m, kind }: { m: Metric; kind: Problem['kind'] }) {
   )
 }
 
-/** Ten days of the metric, in the problem's colour. Decorative: the distance bar carries the numbers. */
-export function Spark({
+/**
+ * Ten days of the metric against its target (from nasiko-ui-lab): the line in the
+ * problem's colour over a dashed target, and the stretch where it sat on the wrong side of the target shaded between
+ * the two, so how far off it is and since when read at once. Today's value is the dot at the end.
+ */
+export function TargetTrend({
+  m,
   values,
   kind,
-  width = 64,
 }: {
+  m: Metric
   values: readonly number[]
   kind: Problem['kind']
-  width?: number
 }) {
-  const h = 24
-  const mx = Math.max(...values)
-  const mn = Math.min(...values)
-  const r = mx - mn || 1
-  const pts = values
-    .map(
-      (x, i) =>
-        `${((i * (width - 4)) / (values.length - 1) + 2).toFixed(1)},${(h - 3 - ((x - mn) / r) * (h - 6)).toFixed(1)}`,
-    )
-    .join(' ')
+  const clip = useId()
+  const lo0 = Math.min(m.target, ...values)
+  const hi0 = Math.max(m.target, ...values)
+  const pad = (hi0 - lo0 || 1) * 0.18
+  const lo = lo0 - pad
+  const hi = hi0 + pad
+  // In a 100 × 100 box stretched over the chart, so it fills the card at any width.
+  const y = (x: number) => ((hi - x) / (hi - lo)) * 100
+  const x = (i: number) => (i / (values.length - 1)) * 100
+  const ty = y(m.target)
+  const line = values.map((val, i) => `${x(i).toFixed(2)},${y(val).toFixed(2)}`).join(' ')
+  // Behind is above the target for a metric that should be lower, below it for one that should be higher.
+  const above = m.direction === 'lower'
+  const last = values[values.length - 1] ?? m.current
+  const unit = (val: number) => `${fmt(val)}${m.unit}`
+  const [now, vs] = copy.card.vsTarget(unit(m.current), unit(m.target))
   return (
-    <svg
-      aria-hidden
-      viewBox={`0 0 ${width} ${h}`}
-      width={width}
-      height={h}
-      className={cn('shrink-0', STRONG_TEXT[kind])}
-    >
-      <polyline
-        points={pts}
-        fill="none"
-        className={STRONG_STROKE[kind]}
-        strokeWidth={1.6}
-        strokeLinejoin="round"
-      />
-    </svg>
+    <figure className="min-w-0">
+      <figcaption className="mb-1.5 flex justify-between gap-2 text-2xs text-muted-foreground">
+        <span className="truncate">{m.label}</span>
+        <span className="shrink-0 tabular-nums">
+          <b className="font-semibold text-foreground">{now}</b> {vs}
+        </span>
+      </figcaption>
+      <div
+        className="relative h-14"
+        role="img"
+        aria-label={copy.card.trendLabel(
+          m.label,
+          unit(values[0] ?? m.current),
+          unit(last),
+          unit(m.target),
+        )}
+      >
+        <svg
+          aria-hidden
+          viewBox="0 0 100 100"
+          preserveAspectRatio="none"
+          className="absolute inset-0 size-full overflow-visible"
+        >
+          <defs>
+            <clipPath id={clip}>
+              <rect x={0} y={above ? -10 : ty} width={100} height={above ? ty + 10 : 110 - ty} />
+            </clipPath>
+          </defs>
+          <polygon
+            points={`${line} 100,${ty} 0,${ty}`}
+            clipPath={`url(#${clip})`}
+            className={TINT[kind]}
+          />
+          <line
+            x1={0}
+            x2={100}
+            y1={ty}
+            y2={ty}
+            strokeWidth={1}
+            strokeDasharray="3 3"
+            vectorEffect="non-scaling-stroke"
+            className="stroke-muted-foreground"
+          />
+          <polyline
+            points={line}
+            fill="none"
+            strokeWidth={1.75}
+            strokeLinejoin="round"
+            strokeLinecap="round"
+            vectorEffect="non-scaling-stroke"
+            className={STRONG_STROKE[kind]}
+          />
+        </svg>
+        <span
+          aria-hidden
+          className={cn(
+            'absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-card',
+            STRONG_BG[kind],
+          )}
+          style={{ left: '100%', top: `${y(last)}%` }}
+        />
+      </div>
+      <div aria-hidden className="mt-1 flex justify-between text-3xs text-muted-foreground">
+        <span>{copy.card.daysAgo(values.length - 1)}</span>
+        <span>{copy.card.today}</span>
+      </div>
+    </figure>
   )
 }

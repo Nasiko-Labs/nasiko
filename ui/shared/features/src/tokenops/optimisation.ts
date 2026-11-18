@@ -95,7 +95,6 @@ export function summarizeOptimisation(s: SavingsData) {
     costSaved: s.total.saved_cost_usd,
     costSavedPct: s.total.cost_reduction_pct,
     basis: s.total.basis as SavingsBasis,
-    calibratedPct: c.calibrated_pct,
     optimisedCount: c.agents_optimized,
     totalAgents: c.agents_total,
     optimisedSharePct: pct(c.optimized_spend_usd, c.optimized_spend_usd + c.unoptimized_spend_usd),

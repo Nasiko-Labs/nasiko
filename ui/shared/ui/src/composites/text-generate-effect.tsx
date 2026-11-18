@@ -9,6 +9,7 @@
  * - the spaces sit between the word spans, so a screen reader and copy-paste read the plain sentence.
  * - still under reduced motion (`motion-reduce:animate-none`).
  * - replays when its parent remounts: give the parent a `key`.
+ * - `delay` holds the first word back, so a sequence (the onboarding Welcome's rows) can start each line on its turn.
  */
 import { Fragment } from 'react'
 import { enter } from '@nasiko/ui/lib/motion'
@@ -16,10 +17,13 @@ import { enter } from '@nasiko/ui/lib/motion'
 export function TextGenerateEffect({
   words,
   stagger = enter.wordStagger,
+  delay = 0,
 }: {
   words: string
   /** Seconds between two words. */
   stagger?: number
+  /** Seconds before the first word. */
+  delay?: number
 }) {
   return words.split(' ').map((word, i) => (
     // eslint-disable-next-line @eslint-react/no-array-index-key -- a sentence's words are positional, never reordered
@@ -27,7 +31,7 @@ export function TextGenerateEffect({
       {i > 0 ? ' ' : null}
       <span
         className="inline-block animate-word-in motion-reduce:animate-none"
-        style={{ animationDelay: `${i * stagger}s` }}
+        style={{ animationDelay: `${delay + i * stagger}s` }}
       >
         {word}
       </span>

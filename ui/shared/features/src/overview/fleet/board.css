@@ -2,80 +2,13 @@
  * The Map view's board: the "Fleet Runtime / TokenOps" design (2026-10-16) with the Org beside it, at its own
  * coordinates (layout.ts) on a frame the canvas's viewport moves and scales. Unlayered on purpose, so it beats the
  * layered Tailwind utilities on the ui primitives it draws with (`.fb-hit` resets a Button to nothing first). The
- * colours are the design's palette, kept here as variables, light and dark; they mean one thing each: red failing (or,
+ * colours are the design's palette, kept as variables in tones.css, light and dark; they mean one thing each: red failing (or,
  * on a line, spend going up), orange slow or costly, green healthy, grey idle, blue spend. Every state colour is one of
  * the Teams card's tones (its bars: --fb-ok-strong and friends; its people tiles: --fb-ok and friends); brand colours
  * are kept for the providers only. The palette is also scoped to `.fb-tones`, so the System card beside the board
  * draws its dots in the same tones.
  */
-.fb,
-.fb-tones {
-  --fb-canvas: #f4f4f2;
-  --fb-dot: #e2e0db;
-  --fb-card: #ffffff;
-  --fb-line: #e9e9e2;
-  --fb-subline: #ddd5c8;
-  --fb-h: #242628;
-  --fb-ink: #1a1a18;
-  --fb-ink2: #645c52;
-  --fb-ink3: #8a8880;
-  --fb-red: #ef4444;
-  /* The Teams card's tones: its bars (strong) and its people tiles (soft). */
-  --fb-ok-strong: #3ac36d;
-  --fb-warn-strong: #fa9b3c;
-  --fb-bad-strong: #ef4444;
-  --fb-ok: #aeeaa9;
-  --fb-warn: #fdba74;
-  --fb-bad2: #f87171;
-  --fb-bad: var(--fb-bad-strong);
-  --fb-idle: #e4e4e2;
-  --fb-none: #f1f1ef;
-  --fb-good-bg: #e3f6e8;
-  --fb-good: #16a34a;
-  --fb-up-bg: #fde4e4;
-  --fb-up: #dc2626;
-  --fb-spark: var(--fb-ok-strong);
-  --fb-thresh: var(--fb-warn);
-  --fb-spike: var(--fb-warn-strong);
-  --fb-track: #f5f2ec;
-  --fb-saved1: #d9f6d6;
-  --fb-saved2: #aeeaa9;
-  --fb-tick: #1a1a18;
-  --fb-rest: #eee9e1;
-  --fb-anthropic: #f97316;
-  --fb-anthropic-tile: #d97757;
-  --fb-gemini: #3b82f6;
-  --fb-openai: #1a1a18;
-  --fb-cursor: #57534e;
-  --fb-other: #a8a29e;
-  --fb-tooltile: #bdbdbd;
-  --fb-a0: #ea580c;
-  --fb-a1: #fb923c;
-  --fb-a2: #fed7aa;
-  --fb-o0: #1a1a18;
-  --fb-o1: #78716c;
-  --fb-o2: #c8c2bb;
-  --fb-b0: #2563eb;
-  --fb-b1: #60a5fa;
-  --fb-b2: #bfdbfe;
-  --fb-n0: #a8a29e;
-  --fb-n1: #c8c2bb;
-  --fb-n2: #e2ddd6;
-  /* Selection: the sidebar's current-page fill; what it touches gets a lighter one. */
-  --fb-sel: var(--sidebar-accent);
-  --fb-rel: color-mix(in oklab, var(--sidebar-accent) 55%, transparent);
-  --fb-hover: color-mix(in oklab, var(--sidebar-accent) 70%, transparent);
-  --fb-selring: #a8a29e;
-  /* A picked card's ring: a light grey, never the ink. */
-  --fb-cardring: #d6d3cd;
-  --fb-slot: #ecebe8;
-  /* Token lines: spend blue (its tokens a deeper blue), spend going up red, calls a lighter blue. */
-  --fb-flow: #7fb2f7;
-  --fb-token: #1d5fd6;
-  --fb-hot: #f08b8b;
-  --fb-hot-token: #dc2626;
-  --fb-call: #a9c8ef;
-}
+@import "./tones.css";
 .fb {
   position: absolute;
   inset: 0;
@@ -83,52 +16,6 @@
   background-color: var(--fb-canvas);
   background-image: radial-gradient(var(--fb-dot) 1.4px, transparent 1.5px);
   background-size: 22px 22px;
-}
-.dark .fb,
-.dark .fb-tones {
-  --fb-canvas: #17181a;
-  --fb-dot: #2a2c2f;
-  --fb-card: #1f2023;
-  --fb-line: #2e3034;
-  --fb-subline: #3a3c40;
-  --fb-h: #ecebe8;
-  --fb-ink: #ecebe8;
-  --fb-ink2: #b3aba1;
-  --fb-ink3: #8a8880;
-  --fb-red: #f87171;
-  --fb-ok-strong: #34b062;
-  --fb-warn-strong: #e8892f;
-  --fb-bad-strong: #e5484d;
-  --fb-ok: #2f7a45;
-  --fb-warn: #a8673a;
-  --fb-bad2: #a8403f;
-  --fb-idle: #34363a;
-  --fb-none: #26282b;
-  --fb-good-bg: #173524;
-  --fb-good: #4ade80;
-  --fb-up-bg: #3f1d1d;
-  --fb-up: #f87171;
-  --fb-track: #2c2e31;
-  --fb-saved1: #24452c;
-  --fb-saved2: #2f7a45;
-  --fb-tick: #ecebe8;
-  --fb-rest: #34363a;
-  --fb-openai: #ecebe8;
-  --fb-o0: #ecebe8;
-  --fb-o1: #a8a29e;
-  --fb-o2: #57534e;
-  --fb-tooltile: #4a4c50;
-  --fb-n0: #78716c;
-  --fb-n1: #57534e;
-  --fb-n2: #3f3c39;
-  --fb-selring: #78716c;
-  --fb-cardring: #4a4c50;
-  --fb-slot: #2a2c2f;
-  --fb-flow: #3f6fb4;
-  --fb-token: #93c5fd;
-  --fb-hot: #a3484b;
-  --fb-hot-token: #fca5a5;
-  --fb-call: #2f4f7a;
 }
 
 .fb-note {
@@ -186,15 +73,23 @@
   letter-spacing: 0.16px;
   color: var(--fb-h);
 }
+/* A column: its cards stacked, each as tall as it holds, one gap apart (layout.ts GAP). */
+.fb-stack {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+}
 /* Every card has the same padding and the same title row (Ans, 2026-10-17: one set of measurements inside cards). */
 .fb-card {
-  position: absolute;
+  position: relative;
   box-sizing: border-box;
   background: var(--fb-card);
   border: 1px solid var(--fb-line);
-  border-radius: 12px;
+  border-radius: 8px;
   padding: 12px;
   cursor: pointer;
+  /* Each card lifts a little off the canvas (Ans, 2026-11-05). */
+  box-shadow: var(--fb-lift);
 }
 .fb-title {
   display: flex;
@@ -220,16 +115,6 @@
   text-decoration: underline;
   text-decoration-color: var(--fb-subline);
   text-underline-offset: 3px;
-}
-/* The routers' card: its title beside its one row of tiles. */
-.fb-card.fb-inline {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.fb-inline .fb-title {
-  flex: none;
-  margin: 0;
 }
 .fb-count {
   font-size: 12px;
@@ -273,7 +158,7 @@
 .fb-frame .fb-hit,
 .fb-frame .fb-dim,
 .fb-frame .fb-hcol,
-.fb-frame .fb-pcol,
+.fb-frame .fb-prow,
 .fb-frame .fb-card,
 .fb-frame .fb-card > *,
 .fb-frame .fb-cardfade {
@@ -312,33 +197,38 @@
   color: var(--fb-ink);
 }
 /* A picked card: a light grey ring, the other cards faded (with their lines, Lines dims them). */
-.fb .fb-card.fb-cardsel,
-.fb .fb-saved.fb-cardsel {
+.fb .fb-card.fb-cardsel {
   border-color: var(--fb-cardring);
-  box-shadow: 0 0 0 4px color-mix(in oklab, var(--fb-cardring) 55%, transparent);
+  box-shadow:
+    0 0 0 4px color-mix(in oklab, var(--fb-cardring) 55%, transparent),
+    var(--fb-lift);
 }
 /* Only the content fades: the card stays opaque, so the lines under it stay hidden. */
 .fb .fb-card.fb-cardfade > * {
   opacity: 0.35;
 }
-.fb .fb-saved.fb-cardfade {
-  opacity: 0.35;
-}
-.fb-picking .fb-h,
-.fb-picking + .fb-legend {
+.fb-picking .fb-h {
   opacity: 0.6;
 }
-/* A whole card or the globe lit with a selection (the savings, when a router is picked). */
-.fb .fb-card.fb-rel,
-.fb .fb-saved.fb-rel {
+/* A card dimmed by a selection fades its content only, like a faded card, so the lines under it stay hidden. */
+.fb-focus .fb-card.fb-dim {
+  opacity: 1;
+}
+.fb-focus .fb-card.fb-dim > * {
+  opacity: 0.28;
+}
+/* A whole card lit with a selection (the savings, when a router is picked). */
+.fb .fb-card.fb-rel {
   border-color: var(--fb-selring);
-  box-shadow: 0 0 0 4px var(--fb-rel);
+  box-shadow:
+    0 0 0 4px var(--fb-rel),
+    var(--fb-lift);
 }
 @media (prefers-reduced-motion: reduce) {
   .fb-frame .fb-hit,
   .fb-frame .fb-dim,
   .fb-frame .fb-hcol,
-  .fb-frame .fb-pcol,
+  .fb-frame .fb-prow,
   .fb-frame .fb-card,
   .fb-frame .fb-card > *,
   .fb-frame .fb-cardfade {
@@ -359,8 +249,8 @@
 }
 .fb-ln.calls {
   stroke: var(--fb-call);
-  stroke-dasharray: 3 3;
-  opacity: 0.7;
+  stroke-dasharray: 2 4;
+  opacity: 0.5;
 }
 .fb-ln.hot {
   stroke: var(--fb-hot);
@@ -374,40 +264,49 @@
 }
 .fb-ln.calls.on {
   stroke: var(--fb-flow);
+  opacity: 0.6;
+}
+/* Failing: a part in error at one end. Strong red, over the calls' lit blue; calls keep their dash. */
+.fb-ln.failing,
+.fb-ln.calls.failing.on {
+  stroke: var(--fb-bad);
+  opacity: 0.85;
+}
+.fb-ln.failing.on {
+  opacity: 1;
 }
 .fb-ln.off,
-.fb-ln.spend.hot.off {
+.fb-ln.spend.hot.off,
+.fb-ln.failing.off {
   opacity: 0.07;
 }
-/* Hovering the bill: every line it pays for turns green; red stays where spend is going up. */
-.fb-paying .fb-ln.spend:not(.hot),
-.fb-paying .fb-ln.calls:not(.hot) {
+/* Hovering the bill: every line it pays for turns green; red stays where spend is going up or a part fails. */
+.fb-paying .fb-ln.spend:not(.hot, .failing),
+.fb-paying .fb-ln.calls:not(.hot, .failing) {
   stroke: var(--fb-ok-strong);
   opacity: 0.75;
 }
-.fb-paying .fb-run:not(.hot) {
+.fb-paying .fb-run:not(.hot, .failing) {
   stroke: var(--fb-good);
 }
 .fb-run {
   fill: none;
   stroke: var(--fb-token);
   stroke-linecap: round;
-  stroke-dasharray: 0.01 22;
+  stroke-dasharray: 0.01 36;
   opacity: 0.35;
-  animation: fb-run 1.8s linear infinite;
+  animation: fb-run 2.4s linear infinite;
 }
-.fb-run.hot {
+.fb-run.hot,
+.fb-run.failing {
   stroke: var(--fb-hot-token);
 }
-.fb-run.calls {
-  stroke-dasharray: 0.01 22;
-}
 .fb-run.on {
-  opacity: 0.95;
+  opacity: 0.8;
 }
 @keyframes fb-run {
   to {
-    stroke-dashoffset: -22.01;
+    stroke-dashoffset: -36.01;
   }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -417,8 +316,8 @@
     transition: none;
   }
 }
+/* The lines' key, hung from the Map canvas's top right corner (MapCanvas). */
 .fb-legend {
-  position: absolute;
   display: flex;
   gap: 16px;
   white-space: nowrap;
@@ -453,57 +352,63 @@
   background: var(--fb-none);
 }
 
-/* Agents: one row each (so each has its own lines), the big tile today, eighteen days beside it. */
+/* Agents: one row each (so each has its own lines): the name and its dot, the spend, eighteen days as tiles. */
 .fb-agents {
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .fb .fb-agent {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  height: 23px;
+}
+.fb-aname {
   display: flex;
   align-items: center;
-  gap: 10px;
-  height: 21px;
-}
-.fb-agent .fb-name {
-  flex: 1;
+  gap: 7px;
+  min-width: 0;
 }
 .fb-agent .fb-val {
-  width: 56px;
   text-align: right;
-}
-.fb-tiles {
-  display: flex;
-  gap: 5px;
-}
-.fb-big {
-  flex: none;
-  width: 21px;
-  height: 21px;
-  border-radius: 4px;
-}
-.fb-big.t-ok {
-  background: var(--fb-ok-strong);
-}
-.fb-big.t-warn {
-  background: var(--fb-warn-strong);
-}
-.fb-big.t-bad {
-  background: var(--fb-bad-strong);
 }
 .fb-days {
   display: grid;
-  grid-template-columns: repeat(9, 9px);
-  grid-template-rows: 9px 9px;
+  grid-template-columns: repeat(9, 10px);
+  grid-template-rows: 10px 10px;
   gap: 3px;
 }
 .fb-days > span {
   border-radius: 3px;
 }
 
-/* Workflows: the Teams card's row shape (runs as the bar, a tile per step, the state where a team has its pace). */
-.fb-teamlist.fb-flowlist {
-  padding-left: 0;
+/* Workflows: the Teams card's row shape; the bar cut into a segment per step, the last ten days as tiles. */
+.fb-steps {
+  display: flex;
+  gap: 2px;
+  height: 5px;
+}
+.fb-steps > i {
+  flex: 1;
+  border-radius: 3px;
+  background: var(--fb-ok-strong);
+}
+.fb-steps > .b-warn {
+  background: var(--fb-warn-strong);
+}
+.fb-steps > .b-bad {
+  background: var(--fb-bad-strong);
+}
+.fb-steps > .b-idle,
+.fb-steps > .b-none {
+  background: var(--fb-track);
+}
+.fb-flow .fb-people > span {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
 }
 
 .fb-mark {
@@ -544,20 +449,21 @@
   background: var(--fb-other);
 }
 
-/* Connectors and tools: each tool its 16 px mark; a state dot where it needs a look; faded when just turned off. */
-.fb-toolgrid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, 28px);
-  gap: 8px;
+/* Connectors and tools: a row each, its 16 px mark, its name, a dot where it needs a look, what calls it. */
+.fb-tlist {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
-.fb .fb-tool,
-.fb .fb-router {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 6px;
+.fb .fb-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 20px;
+  font-size: 13px;
+}
+.fb-tool .fb-name {
+  flex: 1;
 }
 .fb .fb-tool.fb-off {
   opacity: 0.38;
@@ -571,13 +477,6 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-}
-.fb-tool > .fb-dot,
-.fb-router > .fb-dot {
-  position: absolute;
-  top: -2px;
-  right: -2px;
-  box-shadow: 0 0 0 2px var(--fb-card);
 }
 .fb-dot.t-ok {
   background: var(--fb-ok-strong);
@@ -595,11 +494,11 @@
   background: var(--fb-n2);
 }
 
-/* Local harnesses, across the bottom: a block per kind side by side, 44 seats each (installs by spend, then grey). */
+/* Local harnesses, under the agents: a row per kind, 52 seats each across the card (installs by spend, then grey). */
 .fb-harness {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  column-gap: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 .fb-hcol .fb-row {
   font-size: 13px;
@@ -608,22 +507,42 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+  border-radius: 5px;
+  cursor: pointer;
+}
+/* A kind picked whole: its row filled like a picked part, seats and all. */
+.fb .fb-hcol.fb-sel {
+  background: var(--fb-sel);
+  box-shadow: 0 0 0 4px var(--fb-sel);
+}
+.fb .fb-hcol:not(.fb-sel):hover {
+  background: var(--fb-hover);
+  box-shadow: 0 0 0 4px var(--fb-hover);
+}
+.fb .fb-khead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  height: 20px;
+  border-radius: 4px;
+}
+.fb-hcol.fb-sel .fb-khead .fb-name {
+  font-weight: 500;
 }
 .fb-hgrid {
   display: grid;
-  grid-template-columns: repeat(11, 11px);
-  grid-template-rows: repeat(4, 11px);
+  grid-template-columns: repeat(26, minmax(0, 1fr));
   gap: 3px;
 }
 .fb-slot {
-  width: 11px;
-  height: 11px;
+  aspect-ratio: 1;
   border-radius: 3px;
   background: var(--fb-slot);
 }
 .fb .fb-cell {
-  width: 11px;
-  height: 11px;
+  aspect-ratio: 1;
   border-radius: 3px;
 }
 /* Installs by spend in the teams' greens: busy the bar's green, light use the people tiles' green. */
@@ -727,97 +646,139 @@
   height: 26px;
   border-top: 3px double var(--fb-subline);
 }
-.fb-perday {
-  margin-top: 10px;
-}
-.fb-sparkbox {
-  position: relative;
-  margin-left: -6px;
-}
-.fb-spark {
-  display: block;
-}
-.fb-thresh {
-  stroke: var(--fb-thresh);
-  stroke-width: 1;
-}
-/* A peak day: a dot on the line, a button that opens the day in the drawer. */
-.fb .fb-spike {
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  margin: -5px 0 0 -5px;
-  border-radius: 50%;
-  background: var(--fb-spike);
-  box-shadow: 0 0 0 2px var(--fb-card);
-  transition: transform 120ms ease-out;
-}
-.fb .fb-spike:hover,
-.fb .fb-spike.fb-sel {
-  transform: scale(1.3);
-  box-shadow:
-    0 0 0 2px var(--fb-card),
-    0 0 0 4px var(--fb-selring);
-}
-
-/* LLM routers: a small tile each, its main provider's mark in it; a dot only on one that is down. */
-.fb-chips {
+/* LLM routers: a row each, its main provider's mark, a dot on one that is down, its share of the agents' spend. */
+.fb-rlist {
   display: flex;
-  flex: 1;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
+  flex-direction: column;
+  gap: 14px;
 }
-.fb .fb-router {
-  border: 1px solid var(--fb-line);
-}
-.fb-empty {
-  margin: 0;
-  font-size: 12px;
-  color: var(--fb-ink3);
-}
-
-/* Providers and models: a column per provider, a bar per model on one scale. */
-.fb-pcols {
-  display: grid;
-  column-gap: 14px;
-}
-.fb-pcol {
+.fb .fb-rrow {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  min-width: 0;
+}
+.fb-rrow .fb-row {
+  justify-content: flex-start;
+  font-size: 13px;
+}
+.fb-rrow .fb-name {
+  flex: 1;
+}
+.fb-rshare {
+  background: var(--fb-spark);
+}
+/* No router: its own section under the routers, a dashed mark, its bar grey (nothing routes it). */
+.fb-rlist + .fb-rule {
+  margin: 12px 0 10px;
+}
+/* It sits in the card itself, not a list: a button sizes to its content, so it is told to fill the row. */
+.fb .fb-direct {
+  width: 100%;
+}
+.fb-nomark {
+  background: none;
+  border: 1px dashed var(--fb-ink3);
+}
+.fb-dshare {
+  background: var(--fb-other);
+}
+.fb-dsub {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--fb-ink3);
+}
+/*
+ * An empty card's body (FleetBoard's Blank): ghost rows in the empty tiles' grey, in the card's own shape and fading out
+ * downward, then what lands here and the step that fills it.
+ */
+.fb-blank {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+.fb-ghost {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-self: stretch;
+  mask-image: linear-gradient(#000 25%, transparent);
+}
+.fb-grow {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.fb-gline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.fb-gline i,
+.fb-gtiles {
+  display: block;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--fb-none);
+}
+.fb-gline .fb-gmark {
+  flex: none;
+  width: 12px;
+  height: 12px;
+}
+.fb-gline .fb-gval {
+  flex: none;
+  width: 36px;
+  margin-left: auto;
+}
+.fb-gtiles {
+  background: repeating-linear-gradient(90deg, var(--fb-none) 0 11px, transparent 11px 14px);
+}
+.fb-btext {
+  margin: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--fb-ink2);
+  text-wrap: pretty;
+}
+
+/* Providers and models: a section per provider, its models each a row (name, spend) over a full-width bar. */
+.fb-prows {
+  display: flex;
+  flex-direction: column;
+}
+.fb-prow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.fb-prow + .fb-prow {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fb-line);
 }
 .fb .fb-phead {
   display: flex;
   align-items: center;
-  gap: 5px;
-  height: 18px;
-  margin-bottom: 2px;
-  font-size: 12px;
+  gap: 8px;
+  height: 20px;
   font-weight: 500;
 }
 .fb .fb-model {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-}
-.fb-mrow {
-  display: flex;
-  justify-content: space-between;
   gap: 4px;
-  height: 13px;
-  font-size: 11px;
-  line-height: 13px;
+  font-size: 13px;
 }
-.fb-mrow .fb-name {
+.fb-model .fb-name {
   color: var(--fb-ink2);
 }
+/* Every bar on the board is 5 px tall (Ans, 2026-11-05: "the same height as of in providers and models"). */
 .fb-bar {
   position: relative;
   display: block;
-  height: 4px;
-  border-radius: 2px;
+  height: 5px;
+  border-radius: 3px;
   background: var(--fb-rest);
 }
 .fb-bar > i {
@@ -825,7 +786,7 @@
   left: 0;
   top: 0;
   height: 100%;
-  border-radius: 2px;
+  border-radius: 3px;
 }
 .p-anthropic {
   background: var(--fb-anthropic);
@@ -893,16 +854,11 @@
   line-height: 16px;
   color: var(--fb-ink2);
 }
-.fb-orgport {
-  display: block;
-  height: 0;
-}
 .fb-teamlist {
   display: flex;
   flex-direction: column;
   gap: 16px;
   margin-top: 4px;
-  padding-left: 14px;
 }
 .fb .fb-team {
   display: flex;
@@ -922,7 +878,7 @@
 .fb-bbar {
   position: relative;
   display: block;
-  height: 6px;
+  height: 5px;
   border-radius: 3px;
   background: var(--fb-track);
 }
@@ -948,7 +904,7 @@
 .fb-bbar .fb-btick {
   top: -3px;
   width: 2px;
-  height: 12px;
+  height: 11px;
   margin-left: -1px;
   border-radius: 1px;
   background: var(--fb-tick);
@@ -992,16 +948,6 @@
   color: var(--fb-spike);
 }
 
-/* The overlay over the cards: the org's lines inside the Teams card. */
-.fb-over {
-  position: absolute;
-  left: 0;
-  top: 0;
-  z-index: 2;
-  transform-origin: 0 0;
-  pointer-events: none;
-  font-family: var(--font-sans);
-}
 /* A card's colour key, in the drawer (CardPanel), drawn in the board's tones. */
 .fb-key {
   display: flex;
@@ -1096,36 +1042,17 @@
   height: 18px;
 }
 
-/* Saved: the bubble in the teams' greens, and the ways to save more still open on it. */
-.fb .fb-saved {
-  position: absolute;
-  box-sizing: border-box;
-  border-radius: 50%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  background: radial-gradient(circle at 35% 30%, var(--fb-saved1) 0%, var(--fb-saved2) 100%);
-  box-shadow:
-    0 0 0 6px color-mix(in oklab, var(--fb-ok) 30%, transparent),
-    0 12px 28px -14px color-mix(in oklab, var(--fb-ok-strong) 60%, transparent);
-  color: var(--fb-ink);
-  text-decoration: none;
-  overflow: hidden;
-  transition: transform 160ms ease-out;
+/* Saved: laid out like the bill, a small turning globe in the title row's corner. */
+.fb-savedcard .fb-btotal {
+  font-weight: 600;
 }
-.fb .fb-saved:hover {
-  transform: scale(1.03);
-}
-.fb-saved > span {
-  position: relative;
-}
-/* The globe: a wire sphere, its meridians turning (each one's width eased like a cosine), behind the amount. */
+/* The globe: a wire sphere, its meridians turning (each one's width eased like a cosine). */
 .fb-globe {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
+  flex: none;
+  align-self: center;
+  width: 40px;
+  height: 40px;
+  margin: -10px 0;
   overflow: visible;
 }
 .fb-gshell,
@@ -1134,16 +1061,17 @@
   fill: none;
   stroke: var(--fb-good);
   stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 .fb-gshell {
-  opacity: 0.35;
+  opacity: 0.6;
 }
 .fb-glat {
-  opacity: 0.22;
+  opacity: 0.4;
 }
 .fb-glon {
-  opacity: 0.3;
-  transform-box: view-box;
+  opacity: 0.5;
+  transform-box: fill-box;
   transform-origin: center;
   animation: fb-turn 12s ease-in-out infinite;
 }
@@ -1155,50 +1083,12 @@
     transform: scaleX(-1);
   }
 }
-.fb-savedval {
-  font-size: 24px;
-  line-height: 30px;
-  font-weight: 600;
-  letter-spacing: -0.2px;
-  font-variant-numeric: tabular-nums;
-}
-.fb-savedlabel {
-  font-size: 14px;
-  line-height: 20px;
-}
-.fb-savedsub {
-  font-size: 11px;
-  line-height: 14px;
-  color: var(--fb-ink2);
-}
 @media (prefers-reduced-motion: reduce) {
-  .fb .fb-saved,
-  .fb .fb-spike {
-    transition: none;
-  }
   .fb-glon {
     animation: none;
   }
 }
 
-/* Opportunities: the ways to save more, largest first, each a pick; what they add up to under them. */
-.fb-opps {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.fb .fb-opp {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  height: 20px;
-  font-size: 13px;
-}
 .fb-good {
   color: var(--fb-good);
-}
-.fb-opptotal {
-  margin-top: 2px;
-  color: var(--fb-ink3);
 }

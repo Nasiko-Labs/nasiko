@@ -1,13 +1,10 @@
-# OpenRuntime UI Lab: design notes
+# Open Runtime UI Lab: design notes
 
-What exists today, in one place (app-shell increment, `plans/feat-app-shell.md`, design review 8A; themes from
-`docs/lab-vs-react-migration-review.md` §6.4, decided 2026-09-29). Values live in code: colours in `shared/ui/src/styles/index.css`,
+What exists today, in one place. Values live in code: colours in `shared/ui/src/styles/index.css`,
 motion in `shared/ui/src/lib/motion.ts`, theme logic in `shared/app-core/src/shell/theme.ts`.
 `shared/app-shell/src/shell/design-doc.test.ts` fails if a token named here is missing from `index.css`.
 
 ## Colour tokens
-
-E## Colour tokens
 
 Every colour is a CSS variable in `shared/ui/src/styles/index.css`, exposed to Tailwind through `@theme inline` (`bg-card`,
 `text-muted-foreground`, ...). Never use literal colours in components.
@@ -75,7 +72,7 @@ Every colour is a CSS variable in `shared/ui/src/styles/index.css`, exposed to T
   the series edge token, `--chart-1-edge` … `--chart-5-edge` (≥ 3:1 on white); dark mode turns edges off (edge = fill; fills are 4–13:1 on dark cards).
 - Lines, dots, heat cells and thin bars draw in the edge token (a pastel fill is too light for them on white);
   `shared/ui/src/lib/chart.ts` (`seriesAt`, `OTHER_SERIES`) picks them; the visx kit (`shared/ui/src/charts/`) draws bars
-  with `edge` and stacks with `stackGap={2}`; `components/shared/chart-marks.tsx` `Swatch` is the legend key.
+  with `edge` and stacks with `stackGap={2}`; `shared/ui/src/composites/chart-marks.tsx` `Swatch` is the legend key.
 - **Motion:** bars grow from the baseline, lines sweep left to right, scatter points spring in (staggered), the
   hovered column stays solid while the rest fade, and the tooltip follows with a spring. Under reduced motion every
   chart is drawn at rest.
@@ -92,7 +89,7 @@ Every colour is a CSS variable in `shared/ui/src/styles/index.css`, exposed to T
   one-letter badge), `text-code` 13 px (mono ids and code), `text-lead` 17 px (the trace narrative).
 - Numbers that line up (tables, KPIs, deltas) use `tabular-nums`.
 
-e
+## Spacing and layout
 
 - Tailwind's 4 px scale (Tailwind 4 takes any step, e.g. `h-55` = 220 px, so fixed heights need no `[px]`). Page
   area: `px-4 py-4`, `max-w-page` 1400 px (Chat and Settings fill the viewport instead; Settings centres a `max-w-3xl` column). Sheets: `max-w-sheet-lg` 720 px, `max-w-sheet` 560 px and
@@ -112,14 +109,13 @@ Presets in `shared/ui/src/lib/motion.ts`; new motion uses the names, never raw n
 | `standard` / `disclosure` | 200 ms ease-out | disclosures (the shared `Disclosure` uses tw-animate-css's matching `collapsible-down/up`), row entrances, fades |
 | `panelIn` / `panelOut` | 220 / 160 ms | sheets and side panels (`sheet.tsx`); reduced motion keeps the fade, drops the slide |
 | `morph` | Motion's default | shared-layout `layoutId` morphs |
-| `enter` (stagger) | 6 px rise, 30 ms apart, `standard` timing | the bento leads, tiles and sections of TokenOps, Optimization, Overview and Harnesses, once on first paint (`components/shared/reveal.tsx`); never again on a filter change |
+| `enter` (stagger) | 6 px rise, 30 ms apart, `standard` timing | the bento leads, tiles and sections of TokenOps, Optimization, Overview and Harnesses, once on first paint (`shared/ui/src/composites/reveal.tsx`); never again on a filter change |
 | `wordHold` | 2800 ms | the login showcase's headline word (the prototype's swap), each arriving on `--animate-word-in` (0.7 s blur-in); under reduced motion the first word stays |
-| `--animate-glow` | 10 s loop (blobs at 10 / 11 / 12 / 14 s, out of phase) | the login showcase's glow: moves and cycles the four `--showcase-glow-*` hues over `--showcase-glow-base` (CSS); every user sets `motion-reduce:animate-none` |
-| `--animate-beam` / `--animate-stage` | 4 s linear loop | the onboarding Welcome step's flow and the router's "How routing works": a beam crosses the stages and each icon lights as it passes (CSS); still under reduced motion, the first stage lit |
+| login field | every frame (WebGL) | the login showcase's backdrop (`shell/loginField.ts`): a gold-and-espresso field drifting behind 52 px glass flutes that bend near the pointer and swing on a spring when it sweeps across them; under reduced motion it is drawn still and only redrawn as the pointer moves |
+| `--animate-beam` / `--animate-stage` | 4 s linear loop | the router's "How routing works": a beam crosses the stages and each icon lights as it passes (CSS); still under reduced motion, the first stage lit |
 | `--animate-mark-draw` | 1.6 s ease-in-out, alternating | the page loader (`PageLoader`, our take on Aceternity's LoaderThree): each bar of the Nasiko mark draws its outline, then fills, 40 ms apart (CSS); reduced motion shows the filled mark, still |
-| `--animate-float` | 7 s ease-in-out loop | the login showcase's layer stack bobs 8 px (CSS); still under reduced motion |
 | `--animate-orbit` / `--animate-flag-wave` | 3 s linear / 1.4 s ease-in-out loops | the sidebar's waitlist badge (`WaitlistCta`, our take on Aceternity's Moving Border): a glint circles the pill's edge and the flag's cloth waves (CSS); under reduced motion the glint is hidden and the flag still |
-| `spotlight` / `wordStagger` | spring (stiffness 320, damping 34) / 60 ms per word | the product tour (`features/tour/TourOverlay.tsx`): the spotlight glides between targets on the spring, its edge is Aceternity's Glowing Effect (`components/aceternity/glowing-effect.tsx`: a 2 px band of the theme's `--chart-1`..`4` over a 12 px blurred copy, lighting the side that faces the card; it turns in 1 s when the card changes side and is still otherwise) while the rest of the page is dimmed and blurred, and each title's words arrive on `--animate-word-in` one `wordStagger` apart (Aceternity's Text Generate Effect, `components/aceternity/text-generate-effect.tsx`); under reduced motion the spotlight jumps, the band jumps to its side and the words stand still |
+| `spotlight` / `wordStagger` | spring (stiffness 320, damping 34) / 60 ms per word | the product tour (`shared/features/src/tour/TourOverlay.tsx`): the spotlight glides between targets on the spring, its edge is Aceternity's Glowing Effect (`shared/ui/src/composites/glowing-effect.tsx`: a 2 px band of the theme's `--chart-1`..`4` over a 12 px blurred copy, lighting the side that faces the card; it turns in 1 s when the card changes side and is still otherwise) while the rest of the page is dimmed and blurred, and each title's words arrive on `--animate-word-in` one `wordStagger` apart (Aceternity's Text Generate Effect, `shared/ui/src/composites/text-generate-effect.tsx`); under reduced motion the spotlight jumps, the band jumps to its side and the words stand still |
 
 `tw-animate-css` provides the `animate-in` / `slide-in-*` / `fade-*` utilities; a build test checks they are emitted.
 
@@ -149,8 +145,6 @@ Add a nav item in `shared/app-core/src/shell/nav.ts` (label, icon, route, group,
 | Rail row | about 44 px, a plain row like the sidebar's own items (`RAIL_ROW` in `turnStyles.ts`: no box, `rounded-md`, 2 px gap): hover `--muted`, the open chat `--accent` with `--accent-foreground` on both lines; a 20 px identity icon, two lines (title; kind · time) and a fixed 16 px indicator slot so marks line up. Waiting rows use the same row |
 | Identity icons | agent: monogram on `--muted`; Orchestrator: route icon on `--primary` at 10% with `--primary-text`; recorded: terminal icon on `--muted`; removed: crossed-out bot, muted |
 
-Reference mockups: `plans/feat-chat-v1c.md` §5.17. The images set the look; the plan's text binds.
-
 ## Router surfaces
 
 | Element | Spec |
@@ -159,7 +153,7 @@ Reference mockups: `plans/feat-chat-v1c.md` §5.17. The images set the look; the
 | Agent rows | a `role="table"` grid on `--card` (six columns from 768 px, stacked below with the header kept `sr-only`); the attached config's name links to its row; Change routing is a ghost text button in `--primary-text` |
 | KeySource chip | `--muted` fill, 1 px `--border`, `rounded-md`, 12 px text in `--muted-foreground`; key icon + "Your key · NAME" or building icon + "Platform key" (never colour alone) |
 | Badges | outline `Badge`: Attached / Your default / Owner’s default / No config, and Custom; secondary `Badge`: "Default" on a config |
-| Warnings | `Warn` (`components/bits.tsx`): 14 px `AlertTriangle` in `--warning` beside 12 px text; blocked clears add "Duplicate without this field" |
+| Warnings | `Warn` (`shared/features/src/router/components/bits.tsx`): 14 px `AlertTriangle` in `--warning` beside 12 px text; blocked clears add "Duplicate without this field" |
 | Sheets | right side, full width below 640 px: config editor and custom provider 720 px, agent routing 560 px; sticky footer with the timing note; focus returns to the opener |
 | Live region | one polite `role="status"` per page (`Announcer`): saves, deletes, moves, test and sync results. Section errors and outcome panels are plain text; only field errors inside a sheet use `role="alert"` |
 | Your agents folding | agents that only follow your default fold into one `--muted`/30 summary row (chevron, "14 agents on your default", config · key, 30-day spend, "Show all 14" in `--primary-text`); attached, overridden, failed and just-changed rows stay visible; the choice is remembered; filters and the search (from 20 agents) unfold |
@@ -170,7 +164,7 @@ Reference mockups: `plans/feat-chat-v1c.md` §5.17. The images set the look; the
 
 ## Deploy surfaces
 
-Stock shadcn only (plans/feat-deploy.md design review 14, 17): no custom components, only local composition.
+Stock shadcn only: no custom components, only local composition.
 
 | Element | Spec |
 |---|---|

@@ -7,6 +7,7 @@ interface ListedAgent {
   name: string
   tags?: string[]
   owner_id?: string
+  status?: string
 }
 
 export async function agentWhere(test: (a: ListedAgent) => boolean): Promise<ListedAgent> {

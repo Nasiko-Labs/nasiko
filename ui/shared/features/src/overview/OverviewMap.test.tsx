@@ -4,9 +4,9 @@
  * village's HUD, a picked part filling, lighting what it touches and explaining itself in the canvas's drawer with its
  * problems' actions (I'll take it writes through OV-2), a picked card (lit, the rest faded, its insights and pages in
  * the drawer; nothing on the board navigates), the bill (its peak days open in the drawer, hovering it turns the lines
- * it pays for green), the month's budget, the savings and the opportunities on the board (a router lights them), the
- * tools as marks with one turned off lately, Go to, a selection from the URL, the scope switch, and a server without
- * the estate.
+ * it pays for green), the month's budget and the savings on the board (a router lights them; their ways to save are in
+ * the drawer), the tools a row each with one turned off lately, the empty board's setup cards, a selection from the
+ * URL, the scope switch, and a server without the estate.
  */
 import { cleanup, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -47,12 +47,14 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
       boardCopy.providers,
       boardCopy.tools,
       boardCopy.totalSpend,
-      boardCopy.opps.title,
+      boardCopy.saved,
       boardCopy.budget,
     ])
       expect(within(b).getByRole('heading', { name: card })).toBeInTheDocument()
     // Nothing on the board goes to another page by itself: the drawer's buttons do.
     expect(within(b).queryAllByRole('link')).toHaveLength(0)
+    // Traffic ran: no first-call nudge.
+    expect(screen.queryByText(boardCopy.empty.banner.title)).toBeNull()
     // Every team is in the Org, against its own budget.
     expect(
       within(b).getByRole('button', { name: /^Platform, \$\d[\d,]* of \$/ }),
@@ -111,15 +113,18 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     expect(within(bill).getAllByRole('button', { name: /on the bill$/ }).length).toBeGreaterThan(0)
   })
 
-  it("a peak dot on the bill's line opens that day in the drawer; hovering the bill turns its lines green", async () => {
+  it("the bill's peak days open from its drawer; hovering the bill turns its lines green", async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=map')
     const b = await board()
     const bill = b.querySelector('[data-card="bill"]') as HTMLElement
-    const dot = within(bill).getAllByRole('button', {
-      name: /over the daily line\. Show the day$/,
-    })[0]!
-    await user.click(dot)
+    // No daily line on the card: its drawer lists the peak days.
+    expect(bill.querySelector('svg.fb-spark')).toBeNull()
+    await user.click(
+      within(bill).getByRole('button', { name: boardCopy.cardLabel(boardCopy.totalSpend) }),
+    )
+    const peaks = within(await details()).getByRole('heading', { name: boardCopy.panel.peaks })
+    await user.click(within(peaks.parentElement!).getAllByRole('button')[0]!)
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({
         sel: expect.stringMatching(/^day:\d+$/),
@@ -143,15 +148,13 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     const user = userEvent.setup()
     renderApp('/?view=map')
     const b = await board()
-    const router = b.querySelector<HTMLElement>('.fb-router')!
+    const router = b.querySelector<HTMLElement>('.fb-rrow')!
     await user.click(router)
     await waitFor(() => expect(router).toHaveClass('fb-sel'))
-    const saved = within(b).getByRole('button', { name: /^Saved \$[\d,.]+ from optimizations/ })
-    expect(saved).toHaveClass('fb-rel')
-    expect(b.querySelector('[data-card="opportunities"]')).toHaveClass('fb-rel')
+    expect(b.querySelector('[data-card="saved"]')).toHaveClass('fb-rel')
   })
 
-  it('shows tools as marks, most used first, and fades one turned off lately', async () => {
+  it('shows tools a row each, most used first, and fades one turned off lately', async () => {
     renderApp('/?view=map')
     const b = await board()
     const tools = b.querySelector('[data-card="tools"]') as HTMLElement
@@ -164,6 +167,31 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     expect(within(tools).getByRole('button', { name: /^github,/ })).toBeInTheDocument()
   })
 
+  it('an empty board says what fills each card and links its step; a first chat is the canvas’s one nudge', async () => {
+    configureMocks({ variant: 'overview-bare' })
+    renderApp('/?view=map')
+    const b = await board()
+    const card = (id: string) => b.querySelector<HTMLElement>(`[data-card="${id}"]`)!
+    const step = copy.needs.setup
+    for (const [id, name, href] of [
+      ['harness', step.harness.title, '/harnesses'],
+      ['workflows', step.workflows.title, '/workflows/new'],
+      ['routers', step.router.title, '/router'],
+      ['tools', step.mcp.title, '/mcp'],
+      ['providers', boardCopy.empty.providerKey, '/router?tab=providers'],
+    ] as const)
+      expect(within(card(id)).getByRole('link', { name })).toHaveAttribute('href', href)
+    // The bill fills from traffic alone: what lands there, no step of its own.
+    expect(within(card('bill')).getByText(boardCopy.empty.bill)).toBeInTheDocument()
+    expect(within(card('bill')).queryByRole('link')).toBeNull()
+    const canvas = screen.getByTestId('village-canvas')
+    expect(within(canvas).getByText(boardCopy.empty.banner.title)).toBeInTheDocument()
+    expect(within(canvas).getByRole('link', { name: step.chat.title })).toHaveAttribute(
+      'href',
+      expect.stringMatching(/^\/chat\/?$/),
+    )
+  })
+
   it("sits in the village's canvas: the same HUD, and switching view keeps the canvas", async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=map')
@@ -173,8 +201,10 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     expect(within(canvas).queryAllByRole('link')).toHaveLength(0)
     expect(within(canvas).queryByRole('button', { name: villageCopy.hud.buildLabel })).toBeNull()
     expect(within(canvas).getByRole('button', { name: villageCopy.hud.zoomIn })).toBeInTheDocument()
-    // The chat box is the village's; the Map finds parts through Go to.
+    // The chat box, Kiko and the System card are the village's.
     expect(within(canvas).queryByRole('form', { name: villageCopy.ask.label })).toBeNull()
+    expect(within(canvas).queryByRole('button', { name: /Kiko/ })).toBeNull()
+    expect(within(canvas).queryByRole('button', { name: boardCopy.system.openLabel })).toBeNull()
     // The meters are the village's: the board has the budget and the savings.
     expect(within(canvas).queryByRole('button', { name: /^Budget used:/ })).toBeNull()
     expect(screen.getByRole('radio', { name: copy.views.map })).toBeChecked()
@@ -201,47 +231,31 @@ describe('the map (the Org / Fleet Runtime / TokenOps board)', () => {
     // It fills; its router and its team stay lit; an agent it has nothing to do with dims.
     expect(within(b).getByRole('button', { name: /^Code Reviewer,/ })).toHaveClass('fb-sel')
     expect(within(b).getByRole('button', { name: /^Translator,/ })).toHaveClass('fb-dim')
-    expect(b.querySelector('.fb-router:not(.fb-dim)')).not.toBeNull()
+    expect(b.querySelector('.fb-rrow:not(.fb-dim)')).not.toBeNull()
     expect(within(b).getByRole('button', { name: /^Platform,/ })).toHaveClass('fb-rel')
     await user.click(within(b).getByRole('button', { name: /^Code Reviewer,/ }))
     await waitFor(() => expect(router.state.location.search).not.toHaveProperty('sel'))
     expect(within(b).getByRole('button', { name: /^Code Reviewer,/ })).not.toHaveClass('fb-sel')
   })
 
-  it('shows the month’s budget beside the spend, lights the teams for it, and highlights what was saved', async () => {
+  it('shows the month’s budget beside the spend, opens its card, and highlights what was saved', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/?view=map')
     const b = await board()
     expect(within(b).getByText(boardCopy.ungoverned)).toBeInTheDocument()
     await user.click(within(b).getByRole('button', { name: /^Monthly budget: \$[\d,]+ of \$/ }))
-    await waitFor(() => expect(router.state.location.search).toMatchObject({ sel: 'place:tank' }))
-    expect(within(b).getByRole('button', { name: /^Platform,/ })).toHaveClass('fb-rel')
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ sel: 'card:budget' }))
     expect(
-      within(b).getByRole('button', { name: /^Saved \$[\d,.]+ from optimizations/ }),
+      within(await details()).getByRole('heading', { name: boardCopy.budget }),
     ).toBeInTheDocument()
-    // The opportunities, largest first; one picked explains itself in the drawer.
-    const opps = within(b).getAllByRole('button', { name: /saves about \$[\d.,]+ a month$/ })
+    // What was saved opens its card; its ways to save, largest first, each explain themselves in the drawer.
+    await user.click(within(b).getByRole('button', { name: boardCopy.cardLabel(boardCopy.saved) }))
+    await waitFor(() => expect(router.state.location.search).toMatchObject({ sel: 'card:saved' }))
+    const opps = within(await details()).getAllByRole('button', { name: /\$[\d.,]+\/mo$/ })
     await user.click(opps[0]!)
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({ sel: expect.stringMatching(/^opp:/) }),
     )
-    expect(await details()).toBeInTheDocument()
-  })
-
-  it('Go to finds a part and picks it, as a click on the board does', async () => {
-    const user = userEvent.setup()
-    const { router } = renderApp('/?view=map')
-    await board()
-    const canvas = screen.getByTestId('village-canvas')
-    await user.click(within(canvas).getByRole('button', { name: villageCopy.query.goTo }))
-    await user.type(
-      within(canvas).getByRole('combobox', { name: villageCopy.query.label }),
-      'platform',
-    )
-    await user.click(await within(canvas).findByRole('option', { name: /^Platform Team$/ }))
-    expect(router.state.location.search).toMatchObject({
-      sel: 'node:5eed0002-0001-4000-8000-000000000004',
-    })
     expect(await details()).toBeInTheDocument()
   })
 

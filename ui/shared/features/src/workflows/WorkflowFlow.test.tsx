@@ -96,7 +96,33 @@ describe('Create workflow (plans/feat-workflows.md §3, §4)', () => {
       'Anything',
     )
     await userEvent.click(screen.getByRole('button', { name: copy.generate }))
-    expect(await screen.findByText(copy.plan['no-key'], {}, T)).toBeInTheDocument()
+    // The server's own reason, not a guess at which key is missing.
+    expect(
+      await screen.findByText(
+        copy.plan['no-key']('No OpenAI API key: add one in the setup guide or Settings → Secrets'),
+        {},
+        T,
+      ),
+    ).toBeInTheDocument()
+  })
+
+  it('says the key was rejected, never "try rephrasing", when the provider refused the planner key', async () => {
+    configureMocks({ variant: 'workflows-key-rejected' })
+    renderApp('/workflows/new')
+    await userEvent.type(
+      await screen.findByRole('textbox', { name: copy.descLabel }, T),
+      'Anything',
+    )
+    await userEvent.click(screen.getByRole('button', { name: copy.generate }))
+    // The server's message already opens with "AI drafting failed:" (maf.rs `planning_failed`): said once.
+    expect(
+      await screen.findByText(
+        'AI drafting failed: OpenAI rejected your saved API key. Update it in LLM router, then try again. You can still add steps manually below.',
+        {},
+        T,
+      ),
+    ).toBeInTheDocument()
+    expect(screen.queryByText(copy.plan.planner)).not.toBeInTheDocument()
   })
 
   it('moves a step with the arrow keys on its grip, and says where it landed', async () => {

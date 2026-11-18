@@ -405,7 +405,6 @@ describe('the CLI equivalent (DX #4)', () => {
       "nasiko llm-config attach support-bot 'my config'",
     )
     expect(attachHelp).toContain('nasiko llm-config attach [OPTIONS] <AGENT> <CONFIG>')
-    expect(attachHelp).toContain('--inbound-format')
   })
 })
 
@@ -461,9 +460,9 @@ describe('errors (plan §4.9)', () => {
   })
 
   it('shows anything unmapped verbatim with its status', () => {
-    expect(routerError(e(418, 'teapot')).problem).toBe('OpenRuntime said: teapot (HTTP 418)')
+    expect(routerError(e(418, 'teapot')).problem).toBe('Open Runtime said: teapot (HTTP 418)')
     expect(routerError(e(500, 'internal error')).problem).toBe(
-      'OpenRuntime said: internal error (HTTP 500)',
+      'Open Runtime said: internal error (HTTP 500)',
     )
   })
 

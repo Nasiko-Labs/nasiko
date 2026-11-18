@@ -7,6 +7,7 @@ import { expect, userEvent, within } from 'storybook/test'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { Button } from '@nasiko/ui/primitives/button'
 import { ApiError } from '@nasiko/data-access/client'
+import type { Preset } from '@nasiko/ui/lib/search'
 import { CopyButton } from './copy-button'
 import { DataTable, type DataTableColumn } from './data-table'
 import { Delta } from './delta'
@@ -172,12 +173,12 @@ export const Table: Story = {
 }
 
 function ControlsDemo() {
-  const [preset, setPreset] = useState<'24h' | '7d' | '30d' | 'mtd' | 'last-month' | 'custom'>(
-    '30d',
-  )
+  const [time, setTime] = useState<{ preset: Preset; from?: string; to?: string }>({
+    preset: '30d',
+  })
   return (
     <div className="flex flex-col gap-3">
-      <TimeControl preset={preset} today="2026-09-26" onChange={(n) => setPreset(n.preset)} />
+      <TimeControl {...time} today="2026-09-26" onChange={setTime} />
       <SearchInput aria-label="Filter agents" placeholder="Filter agents" />
       <span className="text-sm">
         Session id{' '}

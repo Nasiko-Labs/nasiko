@@ -1,20 +1,18 @@
-# OpenRuntime UI Lab
+# Open Runtime UI
 
-A React experiment for Nasiko's OpenRuntime frontend. It tests the stack from DOC-2026-031:
-React 19 + Vite (static SPA), TanStack Router/Query, Tailwind v4 + shadcn/ui, Recharts, Motion.
+The browser app for Nasiko's Open Runtime: React 19 + Vite (static SPA), TanStack Router/Query,
+Tailwind v4 + shadcn/ui, Recharts, Motion. The server embeds the built bundle and serves it same-origin.
 
 What's here:
-- **Home** (`/`): the scoped home (Yours, Fleet and, in EE, an org unit). Needs you (waiting requests, agents that
-  need action, failing sessions), a totals strip (spend, saved tokens, agents needing attention) and one row per agent
-  or coding harness with its health (Healthy / Watch / Needs action / Unknown, linking to `/agents?health=<rating>`),
-  spend, budget use and last change, each opening the agent's hub (`docs/home.md`). A source that can't be checked
-  says so with Retry, so Needs you only says nothing needs you when every source answered. The backend status page
-  is at `/status`.
+- **Home** (`/`): the scoped home (Yours and Fleet). Needs you (waiting requests, agents that need action, failing
+  sessions), a totals strip (spend, saved tokens, agents needing attention) and one row per agent or coding harness
+  with its health (Healthy / Watch / Needs action / Unknown, linking to `/agents?health=<rating>`), spend, budget use
+  and last change, each opening the agent's hub. A source that can't be checked says so with Retry, so Needs you only
+  says nothing needs you when every source answered. The backend status page is at `/status`.
 - **The observability demo**: follow the money from a spend spike to the span that caused it.
   - **TokenOps** (`/tokenops`): a plain-English summary first, details in disclosures.
   - **Sessions** (`/sessions`): the fleet pulse, or one day's sessions ranked by cost.
   - **Session trace** (`/sessions/:id`): a narrated waterfall with the failing span open.
-  - Demo walkthrough: `docs/designs/openruntime-demo-script.md`.
 - **TokenOps** detail (`/tokenops`): LLM cost organised around five operator questions:
   - Where am I this month?
   - Why did spend spike?
@@ -24,10 +22,8 @@ What's here:
 - **Optimization** (`/optimization`): what context optimization saved your chats, with a trend you can pick a day or
   week from, the agents with Token optimization off (one confirmed turn-on for all of them), a By agent table, the
   biggest senders, what's optimizing your tokens (each mechanism, where it is set, how many agents have it on) and your
-  own history settings under "Your settings". Superusers set tier sizes under Settings → Workspace → Optimization tiers;
-  the EE build adds Settings → Workspace → Organization policy.
-- **Harnesses** (`/harnesses`): coding-harness usage (Claude Code, Codex, OpenCode, Cursor) from Org down to
-  one developer. Needs a proposed endpoint; without it the page shows your own usage from existing ones.
+  own history settings under "Your settings". Superusers set tier sizes under Settings → Workspace → Optimization tiers.
+- **Harnesses** (`/harnesses`): your coding-harness usage (Claude Code, Codex, OpenCode, Cursor).
 - **Agents** (`/agents`): the catalog of every agent you can see, Your agents (`/agents/mine`) with the ones that
   need attention pinned first, and one agent's page (`/agents/:id`): health, activity, versions, access and settings.
   Restart, Start and roll back report what actually happened, not just that the call returned.
@@ -37,12 +33,11 @@ What's here:
   agent page has a Builds tab, and a build you leave keeps being followed (a sidebar count and one toast when it
   finishes). **Deploy an agent** buttons replace the CLI-only empty states; the CLI steps stay underneath.
 - **Chat** (`/chat`, `/chat/:id`): talk to one agent in the browser, with streamed replies, tool steps, answerable
-  requests and the trace one click away, or let OpenRuntime choose the agents (`/chat?auto=1`, routed chat).
-  **Try it** on a running agent's page opens a chat with it. Guide: `docs/chat.md`.
-- **Weave fixtures** (`/weave`, EE dev builds only): a React renderer for Weave's generated dashboards.
+  requests and the trace one click away, or let Open Runtime choose the agents (`/chat?auto=1`, routed chat).
+  **Try it** on a running agent's page opens a chat with it. Guide: [docs/chat.md](docs/chat.md).
 - **App shell**: a sidebar grouped by goal (collapses to an icon rail with ⌘B / Ctrl+B, a sheet on phones), a
-  theme menu (System / Light / Dark, and the Teal, Indigo, Plum or Mist/Carbon theme) and Sign out, synced across tabs. Design reference:
-  `DESIGN.md`.
+  theme menu (System / Light / Dark, and the Teal, Indigo, Plum or Mist/Carbon theme) and Sign out, synced across tabs.
+  Design reference: [DESIGN.md](DESIGN.md).
 
 ## Quickstart: mock data (about 2 minutes)
 
@@ -59,39 +54,34 @@ unpriced calls and a deleted agent. No server needed.
 The agent pages mutate that seed in memory, so Restart, Stop, roll back, secrets and access changes round-trip until
 you reload. One seed agent is crashed, one failed, one deploying and one stopped, so every status shows.
 
-For the demo, pin the date so the figures match the script:
-`http://localhost:3000/tokenops?anchor=2026-09-26&demo=1`. Degraded states for QA:
-`?mock=tempo-down|empty|trace-503|trace-500|scan-fail`; for the app shell, `?mock=server-down` (a stopped server) and
-`?mock=logout-unavailable` (a failed sign-out).
+For the demo, pin the date so the figures match: `http://localhost:3000/tokenops?anchor=2026-09-26&demo=1`.
+Degraded states for QA: `?mock=tempo-down|empty|trace-503|trace-500|scan-fail`; for the app shell,
+`?mock=server-down` (a stopped server) and `?mock=logout-unavailable` (a failed sign-out).
 
 **Deploy in mock mode.** Uploads, GitHub clones and registry imports all complete against the seed, and a new agent
 reads `deploying` until its build settles. States: `?mock=deploy-build-fails` (the upload is accepted, the build fails),
 `deploy-github-unconfigured|deploy-github-disconnected|deploy-github-no-repos`,
-`deploy-registry-disabled|deploy-registry-not-running`, `deploy-no-rights` (EE without deploy rights) and
-`builds-absent` (a server without `/api/builds`). Navigate in-app while a build runs: a full reload resets the mock.
+`deploy-registry-disabled|deploy-registry-not-running` and `builds-absent` (a server without `/api/builds`).
+Navigate in-app while a build runs: a full reload resets the mock.
 
-**Harnesses in mock mode.** A separate seed (60 developers, 11 units: 3 root units, 7 teams and one nested unit, 4 harnesses plus an unknown one)
-answers the page. The OSS build (`npm run dev`) shows the viewer's own usage; `?as=<seed username>` picks the viewer
-(default `admin`, the superuser; `?as=sam` is a non-superuser, whose viewer comes from the `/api/me` claims).
-The EE build (`npm run dev -- ee`) adds the org levels and a "View as" menu:
-- `/harnesses?as=admin` (default): Org level.
-- `?as=maya`: manager of one unit (lands on Engineering). `?as=omar`: two units (Your units). `?as=lena`: nested units.
-- `?as=tom` (manager who leads nothing) and `?as=sam` (member): their own Individual view. `?as=root`: superuser.
+**Harnesses in mock mode.** A separate seed (60 developers, 4 harnesses plus an unknown one) answers the page, showing
+the viewer's own usage. `?as=<seed username>` picks the viewer (default `admin`, the superuser; `?as=sam` is a
+non-superuser, whose viewer comes from the `/api/me` claims). States: `?mock=usage-404|prev-fail|usage-500|all-unpriced|no-activity`.
 
-States: `?mock=usage-404|prev-fail|usage-500|all-unpriced|no-activity`, plus `drill-404` in the EE build.
-
-## Quickstart: live OSS server
+## Quickstart: live server
 
 ```sh
 # from the repository root
 just run-stack
 
 # here
-npm run seed:live      # optional: load seed rows into the local Postgres (npm run seed:reset removes them)
-npm run dev:live       # log in as admin / changeme
+pnpm run seed:live     # optional: load seed rows into the local Postgres (pnpm run seed:reset removes them)
+pnpm run dev:live      # log in as admin / changeme
 ```
 
-**Chat.** `/chat` talks to one agent in the browser, and `/chat?auto=1` lets OpenRuntime choose. `docs/chat.md` has a mock quickstart (5 steps), a stack quickstart (8 steps), every mock scenario, the routed smoke and the error guide. Server gaps: `docs/designs/openruntime-chat-recommendations.md` (v1a) and `docs/designs/openruntime-chat-v1b-recommendations.md` (v1b).
+**Chat.** `/chat` talks to one agent in the browser, and `/chat?auto=1` lets Open Runtime choose.
+[docs/chat.md](docs/chat.md) has a mock quickstart (5 steps), a stack quickstart (8 steps), every mock scenario, the
+routed smoke and the error guide.
 
 **Live data for Sessions and Session trace.** These read chat sessions and Tempo traces, which
 `seed:live` doesn't create:
@@ -101,40 +91,29 @@ npm run dev:live       # log in as admin / changeme
 
 Without trace data the page still lists the sessions (each opens its own page) under a note that
 says why cost and tokens are missing and how to fix it. On windows of 7 days or more (7d, 30d,
-Last month, This month after the 7th) the server's Tempo search is longer than Tempo allows, so every row lacks trace data even
-with Tempo running; pick 24h or open a session. This is best-effort, not a ship gate.
+Last month, This month after the 7th) the server's Tempo search is longer than Tempo allows, so every row lacks trace
+data even with Tempo running; pick 24h or open a session. This is best-effort, not a ship gate.
 
 **Live data for Harnesses.** `seed:live` also inserts coding-agent rows, their `trace_usage` turns, chat sessions
 and messages (`5eed0002…` ids). These are real rows in the shared tables, so live TokenOps and Sessions numbers
-include the harness traffic too; a seed agent the CLI later adopts (`nasiko agents install`) is kept on reset. The org endpoint doesn't exist yet, so live mode shows the "not available on this server"
-line and your own usage. `VITE_NASIKO_MOCK=harnesses npm run dev:live` previews the page with mock data (in the EE
-build, `npm run dev:live:ee`, the org levels too). The proposed contract: `docs/designs/openruntime-harness-recommendations.md`.
+include the harness traffic too; a seed agent the CLI later adopts (`nasiko connect <agent>`) is kept on reset.
+`VITE_NASIKO_MOCK=harnesses pnpm run dev:live` previews the page with mock data.
 
-**Live contract.** `npm run record:live` records seed-only server responses into `shared/testing/src/__live__/` (it starts its own
-throwaway server and database, so the dev stack is untouched), and `npm test` checks the mocks, types and error handling
-against them. EE runs on its own `nasiko_ee` database: `npm run ee:server`, `npm run seed:ee`, `npm run record:live --
---edition ee`, and `npm run dev:live:ee` for the lab against it. Guide: `docs/live-contract.md`.
+**Live contract.** `pnpm run record:live` records seed-only server responses into `shared/testing/src/__live__/` (it
+starts its own throwaway server and database, so the dev stack is untouched), and `pnpm test` checks the mocks, types
+and error handling against them.
 
 Trace drill-down relies on a proposed `/finops/top-traces` endpoint that the server doesn't have yet. To preview
-it against live data, run `VITE_NASIKO_MOCK=top-traces npm run dev:live`. Deploy works against the live server as it
-is; `VITE_NASIKO_MOCK=deploy,agents npm run dev:live` previews the deploy pages on mock data (the two keys go together). All env vars are listed in `.env.example`.
+it against live data, run `VITE_NASIKO_MOCK=top-traces pnpm run dev:live`. Deploy works against the live server as it
+is; `VITE_NASIKO_MOCK=deploy,agents pnpm run dev:live` previews the deploy pages on mock data (the two keys go
+together). All env vars are listed in `.env.example`.
 
 ## Check
 
 ```sh
-npm test               # typecheck + ESLint (zero warnings) + vitest
-npm run lint           # ESLint + Prettier check (npm run format writes)
-npm run build          # production build; then npm run budgets checks its size
-npm run e2e            # the demo flows in Chromium, with axe on every page (mock mode, port 3917)
-npm run test:stories   # every Storybook story as a browser test with axe (npm run storybook for the UI)
-npm run knip           # unused files, dependencies and exports
+pnpm test              # typecheck + ESLint (zero warnings) + vitest
+pnpm run lint          # ESLint + Prettier check (pnpm run format writes)
+pnpm run build         # production build; then pnpm run budgets checks its size
+pnpm run e2e           # the demo flows in Chromium, with axe on every page (mock mode, port 3917)
+pnpm run knip          # unused files, dependencies and exports
 ```
-
-The improvement plan these checks come from (and what each phase changed) is `docs/lab-vs-react-migration-review.md`.
-
-Workflow: gstack `/autoplan` → build → `/review` → `/qa` → `/ship` → `/land-and-deploy`.
-Conventions for humans and agents are in `CLAUDE.md`; the current plan is in `plans/feat-observability-demo.md`
-(TokenOps: `plans/feat-tokenops-page.md`; Harnesses: `plans/feat-harness-org-view.md`; Agents: `plans/feat-agents.md`; Chat: `plans/feat-chat.md`, routed chat: `plans/feat-chat-v1b.md`; app shell: `plans/feat-app-shell.md`; Overview: `plans/feat-overview.md`; Deploy and Builds: `plans/feat-deploy.md`; Optimization: `plans/feat-context-optimization.md`, page: `plans/feat-optimization-page.md`). Which legacy pages are rebuilt and which are next: `docs/rebuild-status.md`. Server gaps found along the way: `docs/designs/openruntime-server-recommendations.md`
-(agent pages: `docs/designs/openruntime-agents-recommendations.md`; app shell: `docs/designs/openruntime-app-shell-recommendations.md`; Overview: `docs/designs/openruntime-overview-recommendations.md`; Deploy and Builds: `docs/designs/openruntime-deploy-recommendations.md`; Optimization: `docs/designs/openruntime-context-recommendations.md`).
-Design: `docs/designs/openruntime-observability-demo.md`; what the stack cost: `docs/designs/openruntime-stack-scorecard.md`.
-Release notes are in `CHANGELOG.md` and deferred work is in `TODOS.md`.

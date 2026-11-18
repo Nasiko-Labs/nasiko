@@ -191,8 +191,7 @@ pub(crate) async fn list_discovered_agents(
     }
     let agents = sqlx::query_as::<_, DiscoveredAgentEntry>(
         "SELECT a.metadata->>'card_name' AS card_name, a.metadata->>'instance' AS instance, a.id, a.name, a.status, a.updated_at, \
-                (SELECT max(t.created_at) FROM token_usage t \
-                 WHERE t.agent_id = a.id AND t.operation_type <> 'mcp_tool_call') \
+                (SELECT max(t.started_at) FROM trace_usage t WHERE t.agent_id = a.id) \
                     AS last_llm_call_at \
          FROM agents a \
          WHERE a.owner_id = $1 AND a.discovered_on = $2 AND a.deleted_at IS NULL \
@@ -428,15 +427,15 @@ fn pick_copy(copies: &[(Uuid, Option<String>)], instance: Option<&str>) -> Optio
     }
 }
 
-/// When the router last logged an LLM call for each of `ids` that made one. A tool call
-/// through the MCP gateway is logged in the same table and does not count.
+/// When the router last logged an LLM call for each of `ids` that made one. Tool calls through
+/// the MCP gateway are kept in `tool_calls`, so every `trace_usage` row is an LLM call.
 async fn last_llm_calls(
     db: &sqlx::PgPool,
     ids: &[Uuid],
 ) -> Result<Vec<(Uuid, DateTime<Utc>)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT agent_id, max(created_at) FROM token_usage \
-         WHERE agent_id = ANY($1) AND operation_type <> 'mcp_tool_call' \
+        "SELECT agent_id, max(started_at) FROM trace_usage \
+         WHERE agent_id = ANY($1) \
          GROUP BY agent_id",
     )
     .bind(ids)

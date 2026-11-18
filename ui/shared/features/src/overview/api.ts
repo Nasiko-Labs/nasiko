@@ -12,6 +12,10 @@ import { useWaiting } from '@nasiko/features/chat/waiting'
 import { useSessionPage } from '@nasiko/features/sessions/api'
 import type { Me } from '@nasiko/data-access/auth'
 import { useCallback, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useConnectors, useToolkits } from '@nasiko/features/mcp/api'
+import { useConfigs } from '@nasiko/features/router/api'
+import { WORKFLOW_LIST_LIMIT, workflowListQuery } from '@nasiko/features/workflows/api'
 import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import type { Agent } from '@nasiko/features/agents/types'
@@ -32,7 +36,7 @@ import {
 import { RANGE_DAYS, type Range } from './search'
 import { isEndpointAbsent } from '@nasiko/data-access/detect'
 import { copy } from './copy'
-import { mergeNeeds, type Needs, type NeedsInput, type SourceId } from './needs'
+import { mergeNeeds, type Needs, type NeedsInput, type SetupItem, type SourceId } from './needs'
 import { stackSpend, type Stack } from './stack'
 import { FAILED_SESSION_ROWS, RECENT_SESSION_ROWS, SAVINGS_ROWS, TOP_DRIVERS } from './tuning'
 import {
@@ -302,6 +306,8 @@ export interface Spend {
   /** Tokens over the range and their change, from the dashboard's KPIs (ACL-scoped, as the drivers are), with the
    *  input / output split from its token usage; null while it loads or when it failed. */
   tokens: { total: number; changePct: number | null; input: number; output: number } | null
+  /** Tool calls over the range and their change, from the same dashboard (agents' and harnesses' alike). */
+  toolCalls: { total: number; changePct: number | null } | null
   /** The range's UTC days, zero-filled (fleet-wide). */
   days: TimelinePoint[]
   /** Those days split by the top drivers plus Other; null while their series load, or when one failed (the chart
@@ -432,6 +438,12 @@ export function useSpend(now: Date, range: Range, enabled = true): Spend {
           changePct: cur.data.kpis.total_tokens.change_pct,
           input: cur.data.token_usage.prompt_tokens,
           output: cur.data.token_usage.completion_tokens,
+        }
+      : null,
+    toolCalls: cur.data
+      ? {
+          total: cur.data.kpis.total_tool_calls.current,
+          changePct: cur.data.kpis.total_tool_calls.change_pct,
         }
       : null,
     days,
@@ -629,9 +641,18 @@ export function useNeedsYou(now: Date, me: Me, fleet: FleetHealth, enabled = tru
   }
 }
 
-interface HarnessLine {
+export interface HarnessLine {
   id: string
   cost: number | null
+  /** Turns in the range: zero on every line means connected but idle. */
+  turns: number
+  /** Its models by turns: with counts from a server that sends `models`, names only (`turns: null`) from one that
+   *  sends just `top_models`, none in the own-usage fallback. */
+  models: { name: string; turns: number | null }[]
+  /** Subagent runs in the range; null when the server doesn't say. */
+  subagentRuns: number | null
+  /** Tool calls by name in the range; null when the server doesn't say. */
+  tools: { name: string; calls: number; failed: number }[] | null
   /** More than half the turns unpriced: the cost reads "unpriced" (the Harnesses page rule). */
   unpriced: boolean
 }
@@ -665,7 +686,15 @@ export function useHarnessSummary(now: Date, me: Me, range: Range): HarnessSumma
       connected: h.length,
       activeDevs: null,
       harnesses: h
-        .map((x) => ({ id: x.harness, cost: x.cost_usd, unpriced: false }))
+        .map((x) => ({
+          id: x.harness,
+          cost: x.cost_usd,
+          turns: x.turns,
+          models: [],
+          subagentRuns: null,
+          tools: null,
+          unpriced: false,
+        }))
         .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0)),
       retry: live.refetch,
     }
@@ -681,9 +710,83 @@ export function useHarnessSummary(now: Date, me: Me, range: Range): HarnessSumma
     connected: by.length,
     activeDevs: d?.totals.active_devs ?? null,
     harnesses: by
-      .map((x) => ({ id: x.harness, cost: x.cost_usd, unpriced: mostlyUnpriced(x) }))
+      .map((x) => ({
+        id: x.harness,
+        cost: x.cost_usd,
+        turns: x.turns,
+        models:
+          x.models?.map((m) => ({ name: m.model, turns: m.turns })) ??
+          x.top_models.map((name) => ({ name, turns: null })),
+        subagentRuns: x.subagent_runs ?? null,
+        tools: x.tools ?? null,
+        unpriced: mostlyUnpriced(x),
+      }))
       .sort((a, b) => (b.cost ?? 0) - (a.cost ?? 0)),
     retry: () => void usage.refetch(),
+  }
+}
+
+export interface HarnessDetails {
+  /** The most-used models across every harness (top 4), each with its share of the turns that named a model. */
+  models: { name: string; turns: number; share: number }[]
+  /** The rest of the models, summed; null when there are none. */
+  otherModels: { count: number; share: number } | null
+  /** A server that sends model names only: the busiest harness's first one, no share claimed. */
+  namesOnly: { name: string; harness: string } | null
+  /** Subagent runs in all, and by harness (busiest first, zeros left out); null when the server doesn't say. */
+  subagentRuns: number | null
+  subagentsBy: { harness: string; runs: number }[]
+  /** The most-called tools across harnesses (top 5), each with its share of every call. */
+  tools: { name: string; calls: number; share: number }[]
+  toolCalls: number
+  /** The share of tool calls that failed; null without calls. */
+  failedPct: number | null
+}
+
+/** Coding harness activity's numbers (2026-11-06): models, subagent runs, tools, merged across harnesses. Pure. */
+export function harnessDetails(lines: readonly HarnessLine[]): HarnessDetails {
+  const sum = (xs: readonly number[]) => xs.reduce((n, x) => n + x, 0)
+  const byTurns = <T>(m: Map<string, T>, n: (v: T) => number) =>
+    [...m].sort((a, b) => n(b[1]) - n(a[1]) || a[0].localeCompare(b[0]))
+  const turns = new Map<string, number>()
+  for (const m of lines.flatMap((h) => h.models))
+    if (m.turns !== null) turns.set(m.name, (turns.get(m.name) ?? 0) + m.turns)
+  const allTurns = sum([...turns.values()])
+  const rankedModels = allTurns > 0 ? byTurns(turns, (t) => t) : []
+  const rest = rankedModels.slice(4)
+  const busiest = lines
+    .filter((h) => h.models.length)
+    .reduce<HarnessLine | null>((best, h) => (!best || h.turns > best.turns ? h : best), null)
+  const first = busiest?.models[0]
+  const runs = lines.flatMap((h) => (h.subagentRuns === null ? [] : [h.subagentRuns]))
+  const calls = new Map<string, { calls: number; failed: number }>()
+  for (const t of lines.flatMap((h) => h.tools ?? [])) {
+    const c = calls.get(t.name) ?? { calls: 0, failed: 0 }
+    calls.set(t.name, { calls: c.calls + t.calls, failed: c.failed + t.failed })
+  }
+  const toolCalls = sum([...calls.values()].map((c) => c.calls))
+  return {
+    models: rankedModels
+      .slice(0, 4)
+      .map(([name, t]) => ({ name, turns: t, share: (t / allTurns) * 100 })),
+    otherModels: rest.length
+      ? { count: rest.length, share: (sum(rest.map(([, t]) => t)) / allTurns) * 100 }
+      : null,
+    namesOnly:
+      !rankedModels.length && busiest && first ? { name: first.name, harness: busiest.id } : null,
+    subagentRuns: runs.length ? sum(runs) : null,
+    subagentsBy: lines
+      .flatMap((h) => (h.subagentRuns ? [{ harness: h.id, runs: h.subagentRuns }] : []))
+      .sort((a, b) => b.runs - a.runs || a.harness.localeCompare(b.harness)),
+    tools:
+      toolCalls > 0
+        ? byTurns(calls, (c) => c.calls)
+            .slice(0, 5)
+            .map(([name, c]) => ({ name, calls: c.calls, share: (c.calls / toolCalls) * 100 }))
+        : [],
+    toolCalls,
+    failedPct:
+      toolCalls > 0 ? (sum([...calls.values()].map((c) => c.failed)) / toolCalls) * 100 : null,
   }
 }
 
@@ -737,3 +840,49 @@ export function useSavedByAgent(now: Date, range: Range, fleet: FleetHealth, ena
   }
 }
 export type SavedByAgent = ReturnType<typeof useSavedByAgent>
+
+/**
+ * Needs your attention's setup items: LLM router configs, deployed workflows, connected MCP servers, with how many of
+ * each exist (user 2026-11-05: always listed; one at zero is a step to take, the rest say they're set up). The pages'
+ * own queries, so opening Router, Workflows or MCP servers from an item is warm. A failed read leaves its item out: a
+ * suggestion never turns into "Couldn't check". Platform toolkits may be unconfigured, so they only count when they
+ * answer.
+ */
+export function useSetupSteps(enabled = true): {
+  items: SetupItem[]
+  /** Items not set up yet: the header's "N to set up" and the all-clear's "nothing urgent". */
+  left: number
+  isPending: boolean
+} {
+  // The first run has no Needs card; its own panel reads the configs and MCP lists, so only workflows wait.
+  const configs = useConfigs()
+  const workflows = useQuery({
+    ...workflowListQuery({ mode: 'deployed', sort: 'recent' }),
+    enabled,
+  })
+  const connectors = useConnectors()
+  const toolkits = useToolkits()
+  const items: SetupItem[] = []
+  if (configs.data) items.push({ id: 'router', count: configs.data.length })
+  if (workflows.data)
+    items.push({
+      id: 'workflows',
+      count: workflows.data.length,
+      more: workflows.data.length >= WORKFLOW_LIST_LIMIT,
+    })
+  const servers = connectors.data
+    ? [
+        ...connectors.data.created_by_you,
+        ...connectors.data.shared_with_you,
+        ...(toolkits.data?.toolkits ?? []),
+      ]
+    : null
+  if (servers && !toolkits.isPending)
+    items.push({ id: 'mcp', count: servers.filter((s) => s.is_connected).length })
+  return {
+    items,
+    left: items.filter((i) => !i.count).length,
+    isPending:
+      configs.isPending || workflows.isPending || connectors.isPending || toolkits.isPending,
+  }
+}

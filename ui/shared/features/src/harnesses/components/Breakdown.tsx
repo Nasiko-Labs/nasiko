@@ -44,7 +44,7 @@ import { HarnessLabel } from './bits'
 
 const METRIC_LABEL: Record<Metric, string> = {
   active: 'Active devs',
-  cost: 'Est. cost',
+  cost: 'API value',
   sessions: 'Sessions',
 }
 

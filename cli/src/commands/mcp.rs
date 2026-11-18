@@ -3,6 +3,8 @@
 //! OAuth, and per-agent tool permissions.
 
 use std::collections::HashMap;
+use std::io::IsTerminal;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use serde_json::Value;
@@ -101,6 +103,17 @@ fn parse_kv_env(raw: &[String]) -> Result<HashMap<String, String>> {
     Ok(out)
 }
 
+/// Whether registering a connector should ask for an OAuth client ID. Only a person at a
+/// terminal is asked; a script gets dynamic client registration, which is what leaving the
+/// prompt empty means.
+fn should_prompt_for_oauth_client(
+    auth_type: &str,
+    oauth_client_id: Option<&str>,
+    interactive: bool,
+) -> bool {
+    auth_type == "oauth2" && oauth_client_id.is_none() && interactive
+}
+
 fn confirm(prompt: &str, yes: bool) -> Result<bool> {
     if yes {
         return Ok(true);
@@ -190,22 +203,85 @@ pub fn connect(
     let resp = resp.get("data").cloned().unwrap_or(Value::Null);
 
     let name = s(&resp, "name");
+    let connector_id = s(&resp, "connector_id");
     match resp.get("status").and_then(|v| v.as_str()) {
-        Some("connected") => println!(
-            "Connected to '{name}' (connector {}).",
-            s(&resp, "connector_id")
-        ),
-        Some("initiated") => println!(
-            "Composio authorization started for '{name}'.\n\nOpen this URL to finish connecting:\n\n  {}\n",
-            s(&resp, "oauth_url")
-        ),
-        Some("oauth_required") => println!(
-            "Authorization required for '{name}'.\n\nOpen this URL to finish connecting:\n\n  {}\n",
-            s(&resp, "authorization_url")
-        ),
+        Some("connected") => println!("Connected to '{name}' (connector {connector_id})."),
+        Some("initiated") => {
+            println!("Composio authorization started for '{name}'.");
+            finish_in_browser(&client, name, connector_id, s(&resp, "oauth_url"))?;
+        }
+        Some("oauth_required") => {
+            println!("Authorization required for '{name}'.");
+            finish_in_browser(&client, name, connector_id, s(&resp, "authorization_url"))?;
+        }
         other => println!("{}", other.unwrap_or("done")),
     }
     Ok(())
+}
+
+/// How long `connect` waits for the browser sign-in. Composio drops an unfinished link after
+/// ten minutes, so waiting longer could only end in a timeout.
+const SIGN_IN_WAIT: Duration = Duration::from_secs(10 * 60);
+const SIGN_IN_POLL: Duration = Duration::from_secs(2);
+
+/// Prints the sign-in URL, then — on a terminal — opens it and waits until the server marks
+/// the connection active. Without a terminal it only prints the URL, so a script never blocks
+/// on a sign-in nobody is there to do.
+fn finish_in_browser(client: &Client, name: &str, connector_id: &str, url: &str) -> Result<()> {
+    println!("\nOpen this URL to finish connecting:\n\n  {url}\n");
+    if !std::io::stdin().is_terminal() {
+        return Ok(());
+    }
+    crate::util::open_browser(url);
+    eprintln!("Opened your browser. Waiting for you to finish signing in (Ctrl-C to stop)...");
+    wait_for_connection(client, connector_id, SIGN_IN_WAIT, SIGN_IN_POLL)?;
+    println!("Connected to '{name}' (connector {connector_id}).");
+    Ok(())
+}
+
+/// Polls the caller's connections until `connector_id` is `ACTIVE`. Listing them is also what
+/// makes the server re-check a pending Composio link, so the poll itself advances the status.
+fn wait_for_connection(
+    client: &Client,
+    connector_id: &str,
+    wait: Duration,
+    poll: Duration,
+) -> Result<()> {
+    let deadline = Instant::now() + wait;
+    loop {
+        match connection_status(client, connector_id)?.as_deref() {
+            Some("ACTIVE") => return Ok(()),
+            Some("EXPIRED") => bail!(
+                "the sign-in for connector {connector_id} failed or expired; run the command again"
+            ),
+            _ => {}
+        }
+        if Instant::now() >= deadline {
+            bail!(
+                "stopped waiting after {} minutes; once you've signed in, check with `{} mcp connections`",
+                wait.as_secs() / 60,
+                crate::commands::local_agents::cli_name()
+            );
+        }
+        std::thread::sleep(poll);
+    }
+}
+
+/// The caller's connection status for one connector, or `None` while it has none.
+fn connection_status(client: &Client, connector_id: &str) -> Result<Option<String>> {
+    let resp: Value = client.get_json("/mcp/connections")?;
+    let status = resp
+        .pointer("/data/connections")
+        .and_then(|v| v.as_array())
+        .and_then(|connections| {
+            connections
+                .iter()
+                .find(|c| c.get("connector_id").and_then(|v| v.as_str()) == Some(connector_id))
+        })
+        .and_then(|c| c.get("status"))
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    Ok(status)
 }
 
 pub fn connections(json: bool) -> Result<()> {
@@ -451,31 +527,34 @@ pub fn connector_register(
     let headers = parse_headers(headers)?;
 
     // Prompt for OAuth credentials when auth_type is oauth2 and none were supplied.
-    let (oauth_client_id, oauth_client_secret) =
-        if auth_type == "oauth2" && oauth_client_id.is_none() {
-            let cid: String = dialoguer::Input::new()
-                .with_prompt("OAuth client ID (leave empty for Dynamic Client Registration)")
-                .allow_empty(true)
-                .interact_text()?;
-            if cid.is_empty() {
-                (None, None)
-            } else {
-                let secret: String = dialoguer::Password::new()
-                    .with_prompt("OAuth client secret (leave empty for a public client)")
-                    .interact()?;
-                let secret = if secret.is_empty() {
-                    None
-                } else {
-                    Some(secret)
-                };
-                (Some(cid), secret)
-            }
+    let (oauth_client_id, oauth_client_secret) = if should_prompt_for_oauth_client(
+        auth_type,
+        oauth_client_id,
+        std::io::stdin().is_terminal(),
+    ) {
+        let cid: String = dialoguer::Input::new()
+            .with_prompt("OAuth client ID (leave empty for Dynamic Client Registration)")
+            .allow_empty(true)
+            .interact_text()?;
+        if cid.is_empty() {
+            (None, None)
         } else {
-            (
-                oauth_client_id.map(str::to_string),
-                oauth_client_secret.map(str::to_string),
-            )
-        };
+            let secret: String = dialoguer::Password::new()
+                .with_prompt("OAuth client secret (leave empty for a public client)")
+                .interact()?;
+            let secret = if secret.is_empty() {
+                None
+            } else {
+                Some(secret)
+            };
+            (Some(cid), secret)
+        }
+    } else {
+        (
+            oauth_client_id.map(str::to_string),
+            oauth_client_secret.map(str::to_string),
+        )
+    };
 
     let body = serde_json::json!({
         "name": name,
@@ -1350,7 +1429,7 @@ fn connector_upload_with(
         queued.connector_id, queued.build_id
     );
     println!("Waiting for the server to build and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
+    client.poll_mcp_build_status(&queued.build_id)?;
     println!("\nConnector '{name}' is live ({}).", queued.connector_id);
     println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
     Ok(())
@@ -1393,7 +1472,7 @@ fn connector_upload_github_with(
         queued.connector_id, queued.build_id
     );
     println!("Waiting for the server to clone, build, and deploy... (this can take a few minutes)");
-    client.poll_mcp_build_status(&queued.connector_id)?;
+    client.poll_mcp_build_status(&queued.build_id)?;
     println!("\nConnector '{name}' is live ({}).", queued.connector_id);
     println!("Run 'nasiko mcp agent-tools connectors <agent>' to grant an agent access to it.");
     Ok(())
@@ -1953,12 +2032,26 @@ mod tests {
             .with_status(401)
             .with_body(r#"{"error":"session expired"}"#)
             .create();
-        let client = Client::for_test(&server.url(), None);
+        let client = Client::for_test(&server.url(), Some("stale-token"));
         let err = connections_with(&client, false).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("401"), "got: {msg}");
         assert!(msg.contains("session expired"), "got: {msg}");
         assert!(msg.contains("nasiko auth login"), "got: {msg}");
+    }
+
+    #[test]
+    fn a_401_without_any_token_says_not_logged_in() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("GET", "/api/mcp/connections")
+            .with_status(401)
+            .with_body(r#"{"error":"missing token"}"#)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        let msg = connections_with(&client, false).unwrap_err().to_string();
+        assert!(msg.contains("not logged in to"), "got: {msg}");
+        assert!(msg.contains("auth login"), "got: {msg}");
     }
 
     #[test]
@@ -1999,6 +2092,44 @@ mod tests {
         path
     }
 
+    fn mock_connection_status(server: &mut mockito::Server, status: &str) -> mockito::Mock {
+        server
+            .mock("GET", "/api/mcp/connections")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(format!(
+                r#"{{"data":{{"connections":[{{"connector_id":"other","status":"ACTIVE"}},{{"connector_id":"c-1","status":"{status}"}}],"total":2}}}}"#
+            ))
+            .create()
+    }
+
+    #[test]
+    fn wait_for_connection_returns_once_active() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "ACTIVE");
+        let client = Client::for_test(&server.url(), None);
+        wait_for_connection(&client, "c-1", Duration::ZERO, Duration::ZERO).unwrap();
+    }
+
+    #[test]
+    fn wait_for_connection_fails_on_expired() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "EXPIRED");
+        let client = Client::for_test(&server.url(), None);
+        let err = wait_for_connection(&client, "c-1", Duration::from_secs(60), Duration::ZERO)
+            .unwrap_err();
+        assert!(err.to_string().contains("failed or expired"), "{err}");
+    }
+
+    #[test]
+    fn wait_for_connection_times_out_while_pending() {
+        let mut server = mockito::Server::new();
+        mock_connection_status(&mut server, "INITIATED");
+        let client = Client::for_test(&server.url(), None);
+        let err = wait_for_connection(&client, "c-1", Duration::ZERO, Duration::ZERO).unwrap_err();
+        assert!(err.to_string().contains("stopped waiting"), "{err}");
+    }
+
     #[test]
     fn connector_upload_with_queues_then_polls_to_running() {
         let zip_path = write_temp_zip("nasiko-cli-mcp-test-upload.zip");
@@ -2010,10 +2141,10 @@ mod tests {
             .with_body(r#"{"data":{"connector_id":"c-1","build_id":"b-1"},"status_code":202,"message":"MCP server build queued"}"#)
             .create();
         server
-            .mock("GET", "/api/mcp/connectors/c-1/build-status")
+            .mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":"c-1","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         connector_upload_with(&client, &zip_path, "my-server", "v1", &HashMap::new()).unwrap();
@@ -2036,10 +2167,10 @@ mod tests {
             .with_body(r#"{"data":{"connector_id":"c-2","build_id":"b-2"},"status_code":202,"message":"MCP server build queued"}"#)
             .create();
         server
-            .mock("GET", "/api/mcp/connectors/c-2/build-status")
+            .mock("GET", "/api/mcp/connectors/uploads/b-2")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-2","connector_id":"c-2","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&server.url(), None);
         connector_upload_github_with(
@@ -2323,5 +2454,17 @@ mod tests {
 
         let client = Client::for_test(&server.url(), None);
         connector_revoke_agent_with(&client, "conn-r", "worker-bot").unwrap();
+    }
+    #[test]
+    fn only_a_terminal_is_asked_for_an_oauth_client_id() {
+        assert!(should_prompt_for_oauth_client("oauth2", None, true));
+        // A script falls through to dynamic client registration.
+        assert!(!should_prompt_for_oauth_client("oauth2", None, false));
+    }
+
+    #[test]
+    fn a_supplied_client_id_or_another_auth_type_is_never_prompted_for() {
+        assert!(!should_prompt_for_oauth_client("oauth2", Some("id"), true));
+        assert!(!should_prompt_for_oauth_client("bearer", None, true));
     }
 }

@@ -375,6 +375,7 @@ pub(crate) struct CreateUserResponse {
     responses(
         (status = 201, description = "User created", body = CreateUserResponse),
         (status = 403, description = "Only a superuser can create a superuser"),
+        (status = 400, description = "The database rejected a value, such as an unknown or retired role"),
         (status = 409, description = "Username or email already exists"),
     ),
 )]
@@ -444,6 +445,8 @@ pub(crate) async fn create_user(
         Err(e) => {
             if e.to_string().contains("duplicate key") {
                 (StatusCode::CONFLICT, "username or email already exists").into_response()
+            } else if let Some(reason) = rejected_input(&e) {
+                (StatusCode::BAD_REQUEST, reason).into_response()
             } else {
                 tracing::error!(%e, %id, "create_user: insert user failed");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
@@ -640,6 +643,83 @@ pub async fn update_user(
     }
 }
 
+/// The database's own reason when it refused a value the caller sent (Q3-15): an invalid enum
+/// value such as an unknown role (`22P02`), or a trigger that raised one, such as a retired role
+/// (`P0001`). `None` for anything else, which stays a server error.
+fn rejected_input(e: &sqlx::Error) -> Option<String> {
+    let db = e.as_database_error()?;
+    matches!(db.code().as_deref(), Some("22P02" | "P0001")).then(|| db.message().to_string())
+}
+
+/// Clears what would stop the final `DELETE FROM users` while nothing has been erased yet (Q3-14).
+/// Soft-deleted agents still reference their owner (`agents.owner_id` has no cascade), so they pass
+/// to the admin making the call. The delete is then tried and rolled back: any other row that still
+/// references the user (an MCP connector, a custom provider, ...) refuses it here with 409, not
+/// after the user's data is gone. Both happen in one transaction, so a refusal reassigns nothing.
+async fn clear_delete_blockers(
+    state: &AppState,
+    id: Uuid,
+    caller_sub: &str,
+) -> Option<axum::response::Response> {
+    let internal = |e: &dyn std::fmt::Display, step: &str| {
+        tracing::error!(%e, %id, step, "delete_user: pre-flight failed, nothing erased");
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response()
+    };
+    let new_owner = match Uuid::parse_str(caller_sub) {
+        Ok(caller) => caller,
+        Err(e) => return Some(internal(&e, "caller id")),
+    };
+    let mut tx = match state.db.begin().await {
+        Ok(tx) => tx,
+        Err(e) => return Some(internal(&e, "begin")),
+    };
+    if let Err(e) = sqlx::query(
+        "UPDATE agents SET owner_id = $2 WHERE owner_id = $1 AND deleted_at IS NOT NULL",
+    )
+    .bind(id)
+    .bind(new_owner)
+    .execute(&mut *tx)
+    .await
+    {
+        return Some(internal(&e, "reassign deleted agents"));
+    }
+    let trial = {
+        let mut savepoint = match sqlx::Connection::begin(&mut *tx).await {
+            Ok(savepoint) => savepoint,
+            Err(e) => return Some(internal(&e, "savepoint")),
+        };
+        let trial = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(id)
+            .execute(&mut *savepoint)
+            .await;
+        if let Err(e) = savepoint.rollback().await {
+            return Some(internal(&e, "trial rollback"));
+        }
+        trial
+    };
+    match trial {
+        Ok(_) => match tx.commit().await {
+            Ok(()) => None,
+            Err(e) => Some(internal(&e, "commit")),
+        },
+        Err(sqlx::Error::Database(db)) if db.is_foreign_key_violation() => Some(
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "error": "other records still reference this user — reassign or delete them first",
+                    "table": db.table(),
+                })),
+            )
+                .into_response(),
+        ),
+        Err(e) => Some(internal(&e, "trial delete")),
+    }
+}
+
 /// Delete a user. Rejects self-deletion, deleting the last admin, or a user
 /// who still owns agents (reassign or delete those first).
 #[utoipa::path(
@@ -654,7 +734,7 @@ pub async fn update_user(
         (status = 403, description = "Cannot delete your own account, or the target is a superuser and the caller is not"),
         (status = 409, description = "Cannot delete the last admin"),
         (status = 404, description = "No such user"),
-        (status = 409, description = "User still owns agents"),
+        (status = 409, description = "User still owns agents, or other rows still reference the user"),
     ),
 )]
 pub(crate) async fn delete_user(
@@ -700,6 +780,53 @@ pub(crate) async fn delete_user(
             .into_response();
     }
 
+    if let Some(err) = clear_delete_blockers(&state, id, &claims.sub).await {
+        return err;
+    }
+
+    // The user's rows cascade away, which would strand their harness sandboxes and credentials
+    // where nothing can reach them: release and revoke first (best effort).
+    match crate::sessions::teardown::sessions_of_user_with_sandbox(&state, id).await {
+        Ok(sessions) => crate::sessions::teardown::release_and_revoke(&state, &sessions).await,
+        Err(e) => tracing::warn!(%e, %id, "delete_user: could not list the user's sandboxes"),
+    }
+    // GDPR: record the erasure and drop hot rows while `user_id` still matches
+    // (`trace_usage.user_id` is ON DELETE SET NULL). Cold rows go after.
+    let store: nasiko_event_store::EventStore = crate::state::event_store(&state.config, &state.db);
+    if let Err(e) = store.request_erasure(id).await {
+        tracing::error!(%e, %id, "delete_user: record erasure");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+    // Stop new writes first: deactivate and revoke live tokens so no request can
+    // add hot rows between `erase_hot` and the user delete.
+    if let Err(e) = sqlx::query("UPDATE users SET is_active = false WHERE id = $1")
+        .bind(id)
+        .execute(&state.db)
+        .await
+    {
+        tracing::error!(%e, %id, "delete_user: deactivate failed");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+    revoke_sessions(&state, id).await;
+    // Must succeed before the user row goes: once `user_id` is nulled, retries
+    // filtering by this id can no longer find the rows. The request stays recorded.
+    if let Err(e) = store.erase_hot(id).await {
+        tracing::error!(%e, %id, "delete_user: hot erase failed, user kept");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "internal error"})),
+        )
+            .into_response();
+    }
+
     match sqlx::query("DELETE FROM users WHERE id = $1")
         .bind(id)
         .execute(&state.db)
@@ -710,7 +837,10 @@ pub(crate) async fn delete_user(
             Json(serde_json::json!({"error": "user not found"})),
         )
             .into_response(),
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Ok(_) => {
+            spawn_cold_erasure(store, id);
+            StatusCode::NO_CONTENT.into_response()
+        }
         Err(e) => {
             tracing::error!(%e, %id, "delete_user: db error");
             (
@@ -720,6 +850,18 @@ pub(crate) async fn delete_user(
                 .into_response()
         }
     }
+}
+
+/// Finishes erasure (cold + rollups) off the request path. Failure or a busy
+/// tiering lock leaves the `erasure_requests` row for the tiering worker.
+pub fn spawn_cold_erasure(store: nasiko_event_store::EventStore, id: Uuid) {
+    tokio::spawn(async move {
+        match store.erase_user(id).await {
+            Ok(true) => tracing::info!(%id, "user erased hot + cold"),
+            Ok(false) => tracing::info!(%id, "erasure pending: tiering lock busy"),
+            Err(e) => tracing::warn!(%e, %id, "erasure pending: will retry"),
+        }
+    });
 }
 
 // ─── POST /users/{id}/deactivate ────────────────────────────────────────────
@@ -1194,23 +1336,24 @@ pub(crate) struct AccessibleAgentsResponse {
 }
 
 async fn accessible_agents_impl(db: &sqlx::PgPool, user_id: Uuid) -> axum::response::Response {
-    // OSS: owner, public, or a direct user grant.
-    // EE overrides this to also check team and department grants.
-    let rows = sqlx::query_as::<_, AccessibleAgent>(
+    // OSS: owner, public, or a direct user grant, which never reaches a harness agent
+    // (`nasiko_auth::sharing`). EE overrides this to also check team and department grants.
+    let rows = sqlx::query_as::<_, AccessibleAgent>(&format!(
         r#"SELECT DISTINCT a.id, a.name, a.description, a.status, a.owner_id, a.is_public
            FROM agents a
            WHERE a.deleted_at IS NULL
              AND (
                a.owner_id = $1
                OR a.is_public = true
-               OR EXISTS (
+               OR ({grants_reach} AND EXISTS (
                    SELECT 1 FROM agent_grants ag
                    WHERE ag.agent_id = a.id
                      AND ag.grant_type = 'user' AND ag.grantee_id = $1::text
-               )
+               ))
              )
            ORDER BY a.name"#,
-    )
+        grants_reach = nasiko_auth::sharing::grants_reach_sql("a"),
+    ))
     .bind(user_id)
     .fetch_all(db)
     .await;

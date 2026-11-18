@@ -7,7 +7,8 @@
  * Default trace: the failing one if known, else the one with the most tokens. Default span:
  * failing, then most tokens, then slowest. `?span=` is the HEX span id.
  */
-import { useQueryClient } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { sessionToolCallsQuery, toolCallsOfTrace } from '@nasiko/features/sessions/api'
 import { Link, useNavigate, useRouter } from '@tanstack/react-router'
 import { Link2, ListTree, Rows3, Table2, Workflow } from 'lucide-react'
 import { useDeferredValue, useMemo, useState, type ReactNode } from 'react'
@@ -62,7 +63,13 @@ import { isHarness } from '@nasiko/features/agents/status'
 import { requestSpanOf } from '@nasiko/features/optimization/logic'
 import { sessionKeys, useSessionDetail } from '@nasiko/features/sessions/api'
 import type { SessionsSearch, TraceSearch } from '@nasiko/features/sessions/search'
-import { fmtLatency, fmtMoney, fmtShortDay, fmtTokens, fmtUtcDayTime } from '@nasiko/ui/lib/format'
+import {
+  fmtLatency,
+  fmtMoneyFine,
+  fmtShortDay,
+  fmtTokens,
+  fmtUtcDayTime,
+} from '@nasiko/ui/lib/format'
 import { useSiblings } from '@nasiko/app-core/siblings'
 import { useMediaQuery } from '@nasiko/ui/lib/useMediaQuery'
 import { useAgentCallTargets, useKnownFailing, useTraceDetail, useWasteCosts } from './api'
@@ -139,7 +146,11 @@ export function SessionTracePage({
   const defaultFailing = useKnownFailing(defaultTraceId)
   const traceId =
     search.trace && traces.some((t) => t.trace_id === search.trace) ? search.trace : defaultTraceId
-  const entry = traces.find((t) => t.trace_id === traceId)
+  const traceIndex = traces.findIndex((t) => t.trace_id === traceId)
+  const entry = traceIndex >= 0 ? traces[traceIndex] : undefined
+  // One cost per trace across the page (NAS-1453): the session's own figure, which adds up to the session total. The
+  // trace read re-prices its spans live and can differ, so it stands in only where the session has no figure.
+  const ownCost = entry ? entryCost(entry) : null
   const lastStart = entry?.root_span.start_time
     ? Date.parse(entry.root_span.start_time) + entry.root_span.latency_ms
     : 0
@@ -166,12 +177,12 @@ export function SessionTracePage({
       return a ? a.display_name || a.name : undefined
     }
     return traceNarrative({
-      totalCost: trace.data.cost_summary.total.cost,
+      totalCost: ownCost ?? trace.data.cost_summary.total.cost,
       spans,
       wasteCosts,
       agentName,
     })
-  }, [trace.data, spans, wasteCosts, agents.byId, callTargets])
+  }, [trace.data, ownCost, spans, wasteCosts, agents.byId, callTargets])
 
   // Selection: ?span (hex) if it exists in this trace, else the default span.
   const wantSpan = search.span?.toLowerCase()
@@ -318,8 +329,6 @@ export function SessionTracePage({
   const agentIsHarness = !!agentRow && isHarness(agentRow)
   // The ledger reads the chat's messages, which only its owner can: chat's own probe (shared with Open chat) says so.
   const ownChat = useChatProbe(sessionId, agentIsHarness).state === 'yours'
-  const sessionCost = session.data?.cost_summary.total.cost
-  const numTraces = session.data?.num_traces ?? traces.length
   const firstStart = traces[0]?.root_span.start_time
   const failing = trace.data ? isTraceFailing(trace.data) : false
 
@@ -367,9 +376,7 @@ export function SessionTracePage({
               <>
                 Session ·{' '}
                 {agentRaw ? <AgentLink name={agentRaw}>{agentLabel}</AgentLink> : agentLabel}
-                {firstStart ? ` · ${fmtUtcDayTime(firstStart)}` : ''} ·{' '}
-                {sessionCost == null ? '—' : fmtMoney(sessionCost)} · {numTraces} trace
-                {numTraces === 1 ? '' : 's'}
+                {firstStart ? ` · ${fmtUtcDayTime(firstStart)}` : ''}
                 {failing ? (
                   <>
                     {' '}
@@ -382,22 +389,47 @@ export function SessionTracePage({
             )}
           </span>
         }
-        // One-line rollup of the selected trace (Extend's "4 tool calls, 11s thinking").
+        // The session total, then the selected trace's share of it and its rollup (Extend's "4 tool calls, 11s
+        // thinking"), each labelled (NAS-1453).
         description={
-          trace.data ? (
+          session.data ? (
             <>
-              This trace:{' '}
-              <span className="font-medium text-foreground tabular-nums">
-                {fmtMoney(trace.data.cost_summary.total.cost)}
-              </span>{' '}
-              · {copy.rollup({ spans: trace.data.num_spans, ...counts })}
-              {total ? ` · ${fmtLatency(total)}` : ''}
-              <SessionOptimisation sessionId={sessionId} />
+              <span className="block">
+                <span className="font-medium text-foreground">{copy.sessionTotal}</span>{' '}
+                <span className="tabular-nums">
+                  {figures(
+                    session.data.cost_summary.total.cost,
+                    session.data.cost_summary.prompt.tokens,
+                    session.data.cost_summary.completion.tokens,
+                  )}
+                </span>{' '}
+                · {copy.acrossTraces(traces.length)}
+              </span>
+              {session.data.metrics_complete ? null : (
+                <span className="block">{copy.totalsPartial}</span>
+              )}
+              {trace.data && entry ? (
+                <span className="block">
+                  <span className="font-medium text-foreground">
+                    {copy.traceTotal(traceIndex + 1)}
+                  </span>{' '}
+                  <span className="tabular-nums">
+                    {figures(
+                      ownCost ?? trace.data.cost_summary.total.cost,
+                      entry.root_span.input_tokens,
+                      entry.root_span.output_tokens,
+                    )}
+                  </span>{' '}
+                  · {copy.rollup({ spans: trace.data.num_spans, ...counts })}
+                  {total ? ` · ${fmtLatency(total)}` : ''}
+                </span>
+              ) : null}
+              {trace.data ? <SessionOptimisation sessionId={sessionId} /> : null}
             </>
           ) : undefined
         }
         actions={
-          <>
+          <div data-tour="session-actions" className="flex flex-wrap items-center gap-2">
             {agentIsHarness && ownChat ? (
               <Link
                 to="/sessions/$sessionId"
@@ -435,7 +467,7 @@ export function SessionTracePage({
             <span role="status" className="text-xs text-muted-foreground">
               {copied === 'copied' ? copy.linkCopied : copied === 'failed' ? copy.copyFailed : ''}
             </span>
-          </>
+          </div>
         }
       />
 
@@ -461,11 +493,15 @@ export function SessionTracePage({
           ) : null}
 
           {trace.isError ? (
-            <ErrorState
-              error={trace.error}
-              onRetry={() => void trace.refetch()}
-              notFound={copy.traceNotFound}
-            />
+            trace.error instanceof ApiError && trace.error.status === 404 && traceId ? (
+              <StoredToolCalls sessionId={sessionId} traceId={traceId} />
+            ) : (
+              <ErrorState
+                error={trace.error}
+                onRetry={() => void trace.refetch()}
+                notFound={copy.traceNotFound}
+              />
+            )
           ) : !trace.data ? (
             <PageLoader label="Loading trace" />
           ) : (
@@ -584,6 +620,14 @@ export function SessionTracePage({
       )}
     </div>
   )
+}
+
+/**
+ * Cost and input / output tokens, said the same way for the session total and each trace (NAS-1453), so the traces
+ * visibly add up: `fmtMoneyFine` keeps small amounts comparable where `fmtMoney` would round each to `<$0.01`.
+ */
+function figures(cost: number | null, input: number, output: number) {
+  return `${fmtMoneyFine(cost)} · ${fmtTokens(input)} in · ${fmtTokens(output)} out tokens`
 }
 
 /** Sessions (the list as it was, its window and filters) › the day, when the list was one › this session. */
@@ -709,8 +753,9 @@ function TraceSwitcher({
 }) {
   const reason = (t: TraceEntry) =>
     t.trace_id === defaultTraceId ? ` · ${reasonFailing ? 'failing' : 'largest'}` : ''
-  const label = (t: TraceEntry, i: number) =>
-    `Trace ${i + 1} · ${fmtMoney(entryCost(t))} · ${fmtTokens(t.root_span.cumulative_token_count_total)} tokens${reason(t)}`
+  const tFigures = (t: TraceEntry) =>
+    figures(entryCost(t), t.root_span.input_tokens, t.root_span.output_tokens)
+  const label = (t: TraceEntry, i: number) => `Trace ${i + 1} · ${tFigures(t)}${reason(t)}`
   if (traces.length > 6) {
     return (
       <Select value={traceId} onValueChange={onPick}>
@@ -745,11 +790,46 @@ function TraceSwitcher({
             Trace {i + 1}
             <span className="font-normal text-muted-foreground">{reason(t)}</span>
           </span>
-          <span className="text-muted-foreground tabular-nums">
-            {fmtMoney(entryCost(t))} · {fmtTokens(t.root_span.cumulative_token_count_total)} tokens
-          </span>
+          <span className="text-muted-foreground tabular-nums">{tFigures(t)}</span>
         </Toggle>
       ))}
     </div>
+  )
+}
+
+/** Tempo no longer has this trace: list its tool calls from the stored `tool_calls` (hot + cold). */
+function StoredToolCalls({ sessionId, traceId }: { sessionId: string; traceId: string }) {
+  const q = useQuery(sessionToolCallsQuery(sessionId))
+  if (q.isPending) return <PageLoader label="Loading tool calls" />
+  // A failed read is not evidence the trace stored nothing: offer a retry instead.
+  if (q.isError) return <ErrorState error={q.error} onRetry={() => void q.refetch()} />
+  const calls = toolCallsOfTrace(q.data, traceId)
+  if (calls.length === 0)
+    return (
+      <EmptyState icon={ListTree} title={copy.traceNotFound}>
+        {copy.traceExpiredNoTools}
+      </EmptyState>
+    )
+  return (
+    <section
+      aria-label="Stored tool calls"
+      className="flex flex-col gap-2 rounded-lg border border-border p-3"
+    >
+      <p role="status" className="text-sm text-muted-foreground">
+        {copy.traceExpiredTools}
+      </p>
+      <ul className="flex flex-col gap-1 text-sm">
+        {calls.map((c) => (
+          <li key={c.call_id} className="flex flex-wrap gap-x-3">
+            <span className="font-medium">{c.tool_name}</span>
+            <span className={c.status === 'failed' ? 'text-destructive' : ''}>{c.status}</span>
+            <span className="text-muted-foreground tabular-nums">
+              {c.duration_ms != null ? `${c.duration_ms} ms` : ''}
+            </span>
+            <span className="text-muted-foreground">{new Date(c.started_at).toLocaleString()}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
   )
 }

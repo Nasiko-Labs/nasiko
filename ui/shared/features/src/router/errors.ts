@@ -126,7 +126,7 @@ const RULES: Rule[] = [
     match: /secret/,
     view: () => ({
       problem: 'Couldn’t save the key.',
-      cause: 'OpenRuntime couldn’t store it.',
+      cause: 'Open Runtime couldn’t store it.',
       action: 'Try again.',
       field: 'secret',
     }),

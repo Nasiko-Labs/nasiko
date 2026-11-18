@@ -124,7 +124,7 @@ export function TiersPage() {
   const tiers = useQuery(tiersQuery)
   const [generation, setGeneration] = useState(0)
   return (
-    <div className="flex flex-col gap-6">
+    <div data-tour="settings-tiers" className="flex flex-col gap-6">
       <PageHeader title={c.title} description={c.sub} />
       {tiers.isPending ? (
         <PageLoader label={c.loading} />
@@ -360,6 +360,7 @@ function TiersForm({
                   inputMode="numeric"
                   min={1}
                   step={1}
+                  placeholder={String(read(SERVER_DEFAULT_TIERS, r.field))}
                   aria-invalid={!!problems[r.field]}
                   aria-describedby={`${fid}-hint`}
                   {...form.register(keyOf(r.field), {

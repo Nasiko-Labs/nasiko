@@ -29,13 +29,14 @@ describe('tourFor', () => {
 
   it.each(['/weave', '/login'])('has none on %s', (path) => expect(tourFor(path)).toBeNull())
 
-  it("falls back to a layer's tours, after the core's", () => {
+  it("tries a layer's tours first, so a layer's page under a core prefix gets its own", () => {
     const layers = [
       { id: 'access', match: /^\/access(\/users)?$/ },
-      { id: 'never', match: /^\/agents$/ },
+      { id: 'memory', match: /^\/settings\/memory$/ },
     ]
     expect(tourFor('/access/users', layers)).toBe('access')
-    expect(tourFor('/agents', layers)).toBe('agents')
+    expect(tourFor('/settings/memory', layers)).toBe('memory')
+    expect(tourFor('/settings/secrets', layers)).toBe('settings')
   })
 })
 

@@ -113,6 +113,26 @@ describe('Settings: secrets (plans/feat-settings.md §1.2)', () => {
     )
   })
 
+  // NAS-1489: who uses these, how to change one, when a change applies.
+  it('explains how secrets work, open by default, and links to the agents that get them', async () => {
+    // jsdom applies no CSS, so the summary shown only while collapsed is part of the name here.
+    const howName = new RegExp(`^${copy.howTitle}`)
+    renderApp('/settings/secrets')
+    const trigger = await screen.findByRole('button', { name: howName }, T)
+    expect(trigger).toHaveAttribute('aria-expanded', 'true')
+    const how = screen.getByRole('region', { name: howName })
+    for (const { title, detail } of Object.values(copy.how)) {
+      expect(within(how).getByText(title)).toBeInTheDocument()
+      expect(within(how).getByText(detail, { exact: false })).toBeInTheDocument()
+    }
+    expect(within(how).getByRole('link', { name: copy.agentsLink })).toHaveAttribute(
+      'href',
+      '/agents/mine',
+    )
+    await userEvent.click(trigger)
+    await waitFor(() => expect(trigger).toHaveAttribute('aria-expanded', 'false'))
+  })
+
   it('a member manages their own secrets too', async () => {
     configureMocks({ superuser: false })
     renderApp('/settings/secrets')

@@ -16,6 +16,28 @@ describe('ApiError.serverMessage', () => {
     )
     expect(new ApiError(500, { message: 42 }, '/p', 'm').serverMessage).toBeNull()
     expect(new ApiError(500, null, '/p', 'm').serverMessage).toBeNull()
+    expect(new ApiError(502, '<!doctype html><p>bad gateway', '/p', 'm').serverMessage).toBeNull()
+  })
+})
+
+describe('ApiError.code', () => {
+  it('reads {code}, then a JSON-RPC data.code, then its code; numbers as strings', () => {
+    expect(new ApiError(400, { error: 'x', code: 'agent_not_shareable' }, '/p', 'm').code).toBe(
+      'agent_not_shareable',
+    )
+    expect(
+      new ApiError(
+        400,
+        { error: { code: -32602, message: 'm', data: { code: 'bad_part' } } },
+        '/p',
+        'm',
+      ).code,
+    ).toBe('bad_part')
+    expect(new ApiError(503, { error: { code: -32609, message: 'm' } }, '/p', 'm').code).toBe(
+      '-32609',
+    )
+    expect(new ApiError(500, 'plain', '/p', 'm').code).toBeNull()
+    expect(new ApiError(500, null, '/p', 'm').code).toBeNull()
   })
 })
 
@@ -35,7 +57,44 @@ describe('apiFetch / apiData', () => {
     vi.restoreAllMocks()
     expect(net).toBeInstanceOf(ApiError)
     expect((net as ApiError).isServerUnreachable).toBe(true)
-    expect((net as ApiError).message).toBe('POST /api/x → network error')
+    expect((net as ApiError).message).toBe("Couldn't reach Open Runtime (POST /api/x)")
+  })
+
+  it("says the server's own reason as the error message, else the status and the request", async () => {
+    server.use(
+      http.get('/api/rpc', () =>
+        HttpResponse.json(
+          { jsonrpc: '2.0', id: null, error: { code: -32603, message: 'OPENAI_API_KEY not set' } },
+          { status: 500 },
+        ),
+      ),
+      http.get('/api/env', () =>
+        HttpResponse.json(
+          {
+            data: null,
+            status_code: 502,
+            message: 'OpenAI rejected your saved API key',
+            code: 'llm_key_rejected',
+          },
+          { status: 502 },
+        ),
+      ),
+      http.get('/api/html', () => new HttpResponse('<html>Bad gateway</html>', { status: 502 })),
+      http.get('/api/long', () => new HttpResponse('x'.repeat(600), { status: 500 })),
+    )
+    const rpc = (await apiFetch('/api/rpc').catch((e: unknown) => e)) as ApiError
+    expect(rpc.message).toBe('OPENAI_API_KEY not set')
+    expect(rpc.code).toBe('-32603')
+    const env = (await apiFetch('/api/env').catch((e: unknown) => e)) as ApiError
+    expect(env.message).toBe('OpenAI rejected your saved API key')
+    expect(env.code).toBe('llm_key_rejected')
+    const html = (await apiFetch('/api/html').catch((e: unknown) => e)) as ApiError
+    expect(html.message).toBe('HTTP 502 from GET /api/html')
+    expect(html.serverMessage).toBeNull()
+    // A dump is no sentence: the message falls back, the body stays readable through serverMessage.
+    const long = (await apiFetch('/api/long').catch((e: unknown) => e)) as ApiError
+    expect(long.message).toBe('HTTP 500 from GET /api/long')
+    expect(long.serverMessage).toHaveLength(600)
   })
 
   it.each([
@@ -103,19 +162,19 @@ describe('the API base', () => {
       return Promise.resolve(new Response('{}'))
     })
     await apiFetch('/api/me')
-    setApiBase('https://acme.nasiko.dev')
+    setApiBase('https://acme.app.nasiko.com')
     await apiFetch('/api/me')
     await fetchApi('/api/agents/a/logs/stream')
     // An absolute URL is the edition's own call to the page origin, whatever the base.
     await apiFetch(new URL('/api/me/workspaces', location.origin).href)
     expect(sent).toEqual([
       [`${location.origin}/api/me`, 'same-origin'],
-      ['https://acme.nasiko.dev/api/me', 'include'],
-      ['https://acme.nasiko.dev/api/agents/a/logs/stream', 'include'],
+      ['https://acme.app.nasiko.com/api/me', 'include'],
+      ['https://acme.app.nasiko.com/api/agents/a/logs/stream', 'include'],
       [`${location.origin}/api/me/workspaces`, 'same-origin'],
     ])
     expect(apiUrl('/api/chat/files/f/download').href).toBe(
-      'https://acme.nasiko.dev/api/chat/files/f/download',
+      'https://acme.app.nasiko.com/api/chat/files/f/download',
     )
   })
 })

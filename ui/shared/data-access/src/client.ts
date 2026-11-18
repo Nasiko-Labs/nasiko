@@ -46,20 +46,15 @@ export class ApiError extends Error {
 
   /** The server's human-readable reason, when it sent one (finops 4xx/5xx are often plain text). */
   get serverMessage(): string | null {
-    if (typeof this.body === 'string' && this.body.trim()) return this.body.trim()
-    if (this.body && typeof this.body === 'object') {
-      const b = this.body as { message?: unknown; error?: unknown }
-      if (typeof b.message === 'string') return b.message
-      if (typeof b.error === 'string') return b.error
-      // JSON-RPC errors (POST /api/orchestrator/a2a): `{error: {code, message}}`.
-      if (
-        b.error &&
-        typeof b.error === 'object' &&
-        typeof (b.error as { message?: unknown }).message === 'string'
-      )
-        return (b.error as { message: string }).message
-    }
-    return null
+    return serverMessageOf(this.body)
+  }
+
+  /**
+   * The server's machine-readable error code, when it sent one: `{code}` beside the message, or a JSON-RPC
+   * error's `code` (or its `data.code`, which is more specific when both are there). Numbers come back as strings.
+   */
+  get code(): string | null {
+    return serverCodeOf(this.body)
   }
 
   /**
@@ -69,6 +64,57 @@ export class ApiError extends Error {
   get isServerUnreachable(): boolean {
     return this.status === 502 || this.status === 504
   }
+}
+
+/** Longest server reason used as an error's message: past it the server sent a dump, not a sentence. */
+const SERVER_MESSAGE_MAX = 500
+
+/**
+ * A response body's human-readable reason: plain text, `{message}`, `{error}` or a JSON-RPC `{error: {message}}`.
+ * Null for an empty body or an HTML page (a proxy's error page or the SPA fallback).
+ */
+export function serverMessageOf(body: unknown): string | null {
+  const keep = (s: string) => {
+    const t = s.trim()
+    return t && !t.startsWith('<') ? t : null
+  }
+  if (typeof body === 'string') return keep(body)
+  if (body && typeof body === 'object') {
+    const b = body as { message?: unknown; error?: unknown }
+    if (typeof b.message === 'string') return keep(b.message)
+    if (typeof b.error === 'string') return keep(b.error)
+    // JSON-RPC errors (POST /api/orchestrator/a2a): `{error: {code, message}}`.
+    if (
+      b.error &&
+      typeof b.error === 'object' &&
+      typeof (b.error as { message?: unknown }).message === 'string'
+    )
+      return keep((b.error as { message: string }).message)
+  }
+  return null
+}
+
+/** A response body's machine-readable code: `{code}`, else a JSON-RPC error's `data.code`, else its `code`. */
+export function serverCodeOf(body: unknown): string | null {
+  if (!body || typeof body !== 'object') return null
+  const asCode = (v: unknown) =>
+    typeof v === 'string' && v ? v : typeof v === 'number' ? String(v) : null
+  const b = body as { code?: unknown; error?: unknown }
+  const own = asCode(b.code)
+  if (own) return own
+  if (b.error && typeof b.error === 'object') {
+    const e = b.error as { code?: unknown; data?: unknown }
+    const data =
+      e.data && typeof e.data === 'object' ? asCode((e.data as { code?: unknown }).code) : null
+    return data ?? asCode(e.code)
+  }
+  return null
+}
+
+/** What a failed request says to a reader: the server's own reason when it sent one, else the status. */
+export function failureMessage(status: number, body: unknown, method: string, path: string) {
+  const said = serverMessageOf(body)
+  return said && said.length <= SERVER_MESSAGE_MAX ? said : `HTTP ${status} from ${method} ${path}`
 }
 
 /** By name, not `instanceof DOMException`: an error from another realm (jsdom, workers) fails instanceof. */
@@ -91,7 +137,17 @@ let apiBase = ''
  */
 export function setApiBase(url: string) {
   apiBase = url
+  apiBaseUnresolved = false
 }
+
+/** An edition that has to look its API base up marks a failed lookup, so a guide doesn't guess where the API is. */
+let apiBaseUnresolved = false
+
+export const markApiBaseUnresolved = () => {
+  apiBaseUnresolved = true
+}
+
+export const isApiBaseUnresolved = () => apiBaseUnresolved
 
 /** `path` against the API base. An absolute URL is used as is (an edition's call to its own page origin). */
 export function apiUrl(path: string): URL {
@@ -161,7 +217,12 @@ export async function apiFetch<T>(path: string, init: ApiInit & Checked<T> = {})
   } catch (err) {
     // Aborts and timeouts are rethrown, so the caller can say "cancelled" or "slow", not "down".
     if (isAbortError(err) || isTimeoutError(err)) throw err
-    throw new ApiError(502, null, path, `${rest.method ?? 'GET'} ${path} → network error`)
+    throw new ApiError(
+      502,
+      null,
+      path,
+      `Couldn't reach Open Runtime (${rest.method ?? 'GET'} ${path})`,
+    )
   }
   const text = await res.text()
   const body: unknown = text ? safeJson(text) : null
@@ -170,7 +231,7 @@ export async function apiFetch<T>(path: string, init: ApiInit & Checked<T> = {})
       res.status,
       body,
       path,
-      `${rest.method ?? 'GET'} ${path} → ${res.status}`,
+      failureMessage(res.status, body, rest.method ?? 'GET', path),
       retryAfter(res.headers.get('retry-after')),
     )
   if (schema) check(schema, body, path, rest.method)

@@ -1586,3 +1586,83 @@ async fn nasiko_call_tool_ask_rule_records_the_inner_tool_not_the_executor() {
 
     server.cleanup().await;
 }
+
+/// A session token's claims name the first turn's flow A. On a later turn the session's newest
+/// flow B (same user, this agent a participant) is the verified flow, so the ask decision's
+/// approval event lands on B, with no `traceparent` on the wire.
+#[tokio::test]
+#[serial]
+async fn session_token_ask_publishes_the_approval_on_the_sessions_later_turn_flow() {
+    const SECRET: &str = "mcp-session-flow-secret";
+    let server = TestServer::start_with(|cfg| cfg.agent_jwt_secret = SECRET.to_string()).await;
+
+    let owner = seed_user(&server, "ws-session-ask-owner").await;
+    let agent_id = seed_agent(&server, owner, "ws-session-ask-agent").await;
+    let (backend_url, backend_calls, _) = start_stub_system_backend().await;
+    seed_system_connector(
+        &server,
+        &backend_url,
+        "ws-session-ask-connector",
+        agent_id,
+        json!([{"pattern": SAVE_FILE, "stance": "ask"}]),
+    )
+    .await;
+
+    let session_id = "ses-mcp-later-turn";
+    let (first_flow, _) = common::open_flow(&server.db, owner, agent_id).await;
+    let (later_flow, _) = common::open_flow(&server.db, owner, agent_id).await;
+    sqlx::query("UPDATE flows SET session_id = $1 WHERE flow_id = ANY($2)")
+        .bind(session_id)
+        .bind(vec![first_flow.clone(), later_flow.clone()])
+        .execute(&server.db)
+        .await
+        .expect("tag flows with the session");
+    let token = nasiko_session_token::mint_session_token(
+        &nasiko_session_token::SessionTokenInput {
+            agent_id: agent_id.to_string(),
+            user_id: owner.to_string(),
+            session_id: session_id.into(),
+            flow_id: first_flow.clone(),
+        },
+        SECRET,
+        3600,
+        nasiko_session_token::parse_algorithm(&server.state.config.agent_jwt_algorithm),
+    )
+    .expect("mint session token")
+    .token;
+    let mut first_events = server.flow_events.subscribe(&first_flow).await;
+    let mut later_events = server.flow_events.subscribe(&later_flow).await;
+
+    let res = server
+        .client
+        .post(server.url("/api/mcp"))
+        .bearer_auth(&token)
+        .json(&via_call_tool(1, SAVE_FILE, json!({ "path": "notes.md" })))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["error"]["code"],
+        json!(nasiko_mcp_gateway::types::codes::TOOL_ASK),
+        "{body:?}"
+    );
+
+    match later_events.try_recv() {
+        Ok(nasiko_flow::FlowEvent::ToolApprovalRequired { tool, .. }) => {
+            assert_eq!(tool, SAVE_FILE)
+        }
+        other => panic!("expected ToolApprovalRequired on the later turn's flow, got {other:?}"),
+    }
+    assert!(
+        matches!(
+            first_events.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ),
+        "nothing may be published on the first turn's flow"
+    );
+    assert!(backend_calls.lock().unwrap().is_empty());
+
+    server.cleanup().await;
+}

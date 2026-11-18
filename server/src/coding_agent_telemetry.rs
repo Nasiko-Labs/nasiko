@@ -22,7 +22,7 @@ use crate::coding_agent_subagents::{link_parent, same_turn_but_parent};
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
-const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
+pub(crate) const CODING_SESSION_PLACEHOLDER: &str = "Coding session";
 
 /// Largest request body the batch route reads. A full batch of content turns
 /// fits; a client that hits it splits the batch.
@@ -153,7 +153,18 @@ enum ProcessError {
 }
 
 impl From<sqlx::Error> for ProcessError {
+    /// A value the database refuses to store (SQLSTATE class 22, "data exception": a number out of
+    /// range, say) fails the same way however often the turn is sent, so that turn alone is
+    /// rejected and the rest of its batch is stored. Any other error fails the batch, to be retried.
     fn from(error: sqlx::Error) -> Self {
+        let data_exception = error
+            .as_database_error()
+            .and_then(|db| db.code())
+            .is_some_and(|code| code.starts_with("22"));
+        if data_exception {
+            tracing::warn!(%error, "coding-agent event refused by the database");
+            return Self::Rejected(format!("the server could not store this turn: {error}"));
+        }
         Self::Internal(error.into())
     }
 }
@@ -167,6 +178,9 @@ impl From<sqlx::Error> for ProcessError {
 /// attached to the proxy's existing `session_id` (the A2A contextId). No chat
 /// session or message is written here, avoiding duplicates. Idempotent on
 /// `(user_id, event_id)`; failures are the caller's to log, never fatal to a turn.
+///
+/// Spend is not written here: the container's LLM calls go through the router,
+/// which upserts `trace_usage` with `source='acp'` per call.
 pub async fn persist_coding_turn_telemetry(
     db: &sqlx::PgPool,
     user_id: Uuid,
@@ -203,6 +217,16 @@ async fn process_event(
     event: &CodingAgentEventV1,
     tempo_cutoff: Option<DateTime<Utc>>,
 ) -> Result<CodingAgentEventStatus, ProcessError> {
+    // Chat history (prompt, response, session title, tool bodies) is kept only by a server that
+    // accepts it — a local open-source control plane. A hosted one keeps what prices the turn,
+    // whatever the client sends.
+    let stripped;
+    let event = if state.config.coding_agent_ingest.accept_chat_history {
+        event
+    } else {
+        stripped = event.clone().without_content();
+        &stripped
+    };
     event.validate().map_err(ProcessError::Rejected)?;
     let expected_session_id =
         coding_agent_session_id(&event.source.agent_id, &event.session.source_id);
@@ -326,7 +350,7 @@ async fn process_event(
         .bind(&event.event_id)
         .fetch_one(&mut *tx)
         .await?;
-        if stored != payload && !same_turn_but_parent(&stored, &payload) {
+        if !is_replay(&stored, &payload) {
             return Err(ProcessError::Rejected(
                 "event_id already exists with a different payload".into(),
             ));
@@ -369,7 +393,7 @@ async fn process_event(
             PersistExternalTurnError::Incomplete | PersistExternalTurnError::Conflict => {
                 ProcessError::Rejected(error.to_string())
             }
-            PersistExternalTurnError::Database(error) => ProcessError::Internal(error.into()),
+            PersistExternalTurnError::Database(error) => ProcessError::from(error),
         })?;
     }
     sqlx::query(
@@ -383,14 +407,36 @@ async fn process_event(
         crate::observability::trace_materializer::write_usage_row(
             &mut tx,
             usage,
+            crate::observability::trace_materializer::UsageSource::Coding,
             Some(&server_session_id),
             Some(agent_id),
             Some(user_id),
         )
         .await?;
     }
+    crate::coding_agent_otlp::write_tool_calls(
+        &mut tx,
+        event,
+        &server_session_id,
+        agent_id,
+        user_id,
+        event.capture_policy == CapturePolicy::Content,
+    )
+    .await?;
     tx.commit().await?;
     Ok(CodingAgentEventStatus::Accepted)
+}
+
+/// Whether `incoming` is a replay of the receipt already `stored` for its event id: the same
+/// turn, perhaps now carrying its subagent parent, or — once chat history stopped being kept — a
+/// turn stored earlier with its chat history, received again without it.
+fn is_replay(stored: &serde_json::Value, incoming: &serde_json::Value) -> bool {
+    let without_content = serde_json::from_value::<CodingAgentEventV1>(stored.clone())
+        .ok()
+        .and_then(|event| serde_json::to_value(event.without_content()).ok());
+    std::iter::once(stored)
+        .chain(without_content.as_ref())
+        .any(|stored| stored == incoming || same_turn_but_parent(stored, incoming))
 }
 
 /// The caller's live registration of the turn's coding agent, or the rejection
@@ -649,6 +695,21 @@ mod tests {
             },
             capture_policy: CapturePolicy::Content,
         }
+    }
+
+    #[test]
+    fn a_turn_stored_with_chat_history_is_replayed_without_it() {
+        // One event: the fixture stamps the current time, so two calls would differ.
+        let captured = event();
+        let stored = serde_json::to_value(&captured).unwrap();
+        let replay = serde_json::to_value(captured.clone().without_content()).unwrap();
+        assert!(is_replay(&stored, &replay));
+        assert!(is_replay(&replay, &replay));
+
+        let mut other = captured.without_content();
+        other.turn.llm_calls[0].input_tokens += 1;
+        let other = serde_json::to_value(other).unwrap();
+        assert!(!is_replay(&stored, &other));
     }
 
     #[tokio::test]

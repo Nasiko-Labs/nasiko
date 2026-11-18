@@ -5,7 +5,7 @@
  * which overview panel its problems come from, and the pages to go on to.
  *
  * The board's own selections beside the estate's grammar (map/selection.ts): `card:<id>` for a card and `day:<index>`
- * for one of the bill's days. They are raw `sel` values, like the village's `place:…`.
+ * for one of the bill's days. They are raw `sel` values.
  */
 import type { OptimisationView } from '@nasiko/features/tokenops/optimisation'
 import { fmtMoney } from '@nasiko/ui/lib/format'
@@ -46,13 +46,21 @@ export interface CardInsight {
   actions: Action[]
 }
 
-export type BoardSel = { type: 'card'; id: CardId } | { type: 'day'; index: number }
+export type BoardSel =
+  | { type: 'card'; id: CardId }
+  | { type: 'day'; index: number }
+  /** A coding-harness kind's whole row (`kind:<harness>`): picked like a part, its installs' lines lit. */
+  | { type: 'kind'; key: string }
 
 /** The board's own selection in a raw `sel`, or null for anything else. */
 export function boardSel(sel: string | undefined): BoardSel | null {
   if (sel?.startsWith('card:')) {
     const id = sel.slice('card:'.length)
     return isCardId(id) ? { type: 'card', id } : null
+  }
+  if (sel?.startsWith('kind:')) {
+    const key = sel.slice('kind:'.length)
+    return key ? { type: 'kind', key } : null
   }
   if (sel?.startsWith('day:')) {
     const n = Number(sel.slice('day:'.length))
@@ -61,9 +69,9 @@ export function boardSel(sel: string | undefined): BoardSel | null {
   return null
 }
 
-/** The card a board selection lights: the card itself, or the bill for one of its days. */
+/** The card a board selection lights: the card itself, or the bill for one of its days; a harness kind is a part. */
 export const cardOf = (s: BoardSel | null): CardId | null =>
-  !s ? null : s.type === 'card' ? s.id : 'bill'
+  !s || s.type === 'kind' ? null : s.type === 'card' ? s.id : 'bill'
 
 const A = copy.actions
 const BUDGETS: Action = { label: A.setBudgets, to: '/router', hash: 'router-budgets' }
@@ -93,7 +101,10 @@ export function cardParts(id: CardId, board: Board, v: EstateView): Set<string> 
     case 'tools':
       return new Set(board.tools.map((t) => t.id))
     case 'routers':
-      return new Set(board.routers.map((r) => r.id))
+      return new Set([
+        ...board.routers.map((r) => r.id),
+        ...(board.direct ? [board.direct.id] : []),
+      ])
     case 'providers':
       return new Set(board.providers.flatMap((p) => [p.id, ...p.models.map((m) => m.id)]))
     case 'harness':
@@ -102,10 +113,8 @@ export function cardParts(id: CardId, board: Board, v: EstateView): Set<string> 
       return new Set([BILL])
     case 'budget':
       return new Set([BUDGET])
-    case 'opportunities':
-      return new Set(visibleOpps(v).flatMap((o) => o.entities))
     case 'saved':
-      return new Set()
+      return new Set(visibleOpps(v).flatMap((o) => o.entities))
   }
 }
 
@@ -242,20 +251,13 @@ export function cardInsight(
         ],
       }
     }
-    case 'saved':
-      return {
-        title: copy.saved,
-        line: d.saved(o?.costSavedPct ?? null, o?.callsOptimised ?? 0, o?.callsInWindow ?? 0),
-        key: d.savedKey,
-        panel: null,
-        actions: [{ label: A.optimize, to: '/optimization' }],
-      }
-    case 'opportunities': {
+    case 'saved': {
+      // The ways to save more ride with what was saved: the Opportunities card folded into Saved (2026-11-04).
       const opps = visibleOpps(v)
       return {
-        title: copy.opps.title,
-        line: d.opps(opps.length, sum(opps.map((x) => x.saving_usd))),
-        key: d.oppsKey,
+        title: copy.saved,
+        line: `${d.saved(o?.costSavedPct ?? null, o?.callsOptimised ?? 0, o?.callsInWindow ?? 0)} ${d.opps(opps.length, sum(opps.map((x) => x.saving_usd)))}`,
+        key: d.savedKey,
         panel: null,
         actions: [{ label: A.optimize, to: '/optimization' }],
       }

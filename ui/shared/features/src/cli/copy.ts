@@ -12,8 +12,8 @@ export const copy = {
     line: 'One command, no account and no administrator rights. Run it again to update.',
     unix: 'macOS and Linux',
     windows: 'Windows (PowerShell)',
-    unixCommand: 'curl -fsSL https://registry.nasiko.dev/r/nasiko/install | bash',
-    windowsCommand: 'irm https://registry.nasiko.dev/r/nasiko/install-ps1 | iex',
+    unixCommand: 'curl -fsSL https://registry.nasiko.com/r/nasiko/install | bash',
+    windowsCommand: 'irm https://registry.nasiko.com/r/nasiko/install-ps1 | iex',
   },
   tasks: {
     title: 'What do you want to do?',
@@ -21,9 +21,7 @@ export const copy = {
   start: {
     title: 'Get started',
     install: 'Install the CLI',
-    connect: 'Connect to this cluster',
-    signIn: 'Sign in with your Nasiko account',
-    deploy: 'Deploy an agent from its folder',
+    connect: 'Connect to this cluster and sign in',
   },
   copyCommand: (what: string) => `Copy: ${what}`,
 }

@@ -16,7 +16,7 @@ use uuid::Uuid;
 
 use super::executor;
 use super::llm::LlmClient;
-use super::types::{MafDefinition, StepOutcome, StepResult};
+use super::types::{MafDefinition, RunError, StepOutcome, StepResult};
 use crate::outbound::OutboundPrefix;
 
 /// Everything a run needs that does not come from the job itself.
@@ -25,8 +25,12 @@ pub struct MafRunContext<'a> {
     pub client: &'a reqwest::Client,
     /// Counts each step's agent call as in flight to its agent.
     pub agent_calls: &'a Arc<dyn AgentCallMeter>,
+    /// Where each step's agent call is sent; wakes a parked agent when the server wires it.
+    pub targets: &'a dyn crate::target::AgentTargetResolver,
     /// The organization policy prefix for each step's message and the final answer.
     pub outbound: &'a dyn OutboundPrefix,
+    /// Whether each step's message carries the current date and time.
+    pub clock: nasiko_types::agent_clock::AgentClock,
     pub db: &'a PgPool,
     /// The guard every other inter-agent call is bounded by.
     pub flow_guard: &'a Arc<FlowGuard>,
@@ -62,14 +66,14 @@ pub trait MafExecutor: Send + Sync {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         content: Option<&str>,
-    ) -> Result<StepOutcome, String>;
+    ) -> Result<StepOutcome, RunError>;
 
     async fn resume(
         &self,
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         resume: MafResume,
-    ) -> Result<StepOutcome, String>;
+    ) -> Result<StepOutcome, RunError>;
 }
 
 /// The open-source executor: every step, in array order.
@@ -82,18 +86,20 @@ impl MafExecutor for LinearMafExecutor {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         content: Option<&str>,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, RunError> {
         executor::run_maf(
             ctx.client,
             ctx.db,
             ctx.flow_guard,
             ctx.agent_calls,
+            ctx.targets,
             ctx.execution_id,
             ctx.user_id,
             maf_def,
             ctx.llm,
             content,
             ctx.outbound,
+            ctx.clock,
         )
         .await
     }
@@ -103,12 +109,13 @@ impl MafExecutor for LinearMafExecutor {
         ctx: &MafRunContext<'_>,
         maf_def: &MafDefinition,
         resume: MafResume,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, RunError> {
         executor::run_maf_from(
             ctx.client,
             ctx.db,
             ctx.flow_guard,
             ctx.agent_calls,
+            ctx.targets,
             ctx.execution_id,
             ctx.user_id,
             maf_def,
@@ -122,6 +129,7 @@ impl MafExecutor for LinearMafExecutor {
             resume.context_id,
             resume.answer,
             ctx.outbound,
+            ctx.clock,
         )
         .await
     }

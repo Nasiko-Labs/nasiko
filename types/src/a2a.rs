@@ -9,6 +9,40 @@ pub use a2a::{
     new_context_id, new_message_id, new_task_id,
 };
 
+/// The synthetic AgentCard the platform serves for a coding agent that has no HTTP server to
+/// serve one. `task_methods` is whether it answers the task methods (`tasks/get`, `tasks/cancel`,
+/// `tasks/resubscribe`), as a harness session does; capabilities say so honestly: streaming on,
+/// push notifications and state-transition history off. (A2A cards have no field listing the
+/// supported methods, so none is invented.)
+pub fn synthetic_coding_card(name: &str, url: &str, task_methods: bool) -> serde_json::Value {
+    let description = if task_methods {
+        "Harness session - driven over a per-session sandbox; accepts message/send, message/stream, tasks/get, tasks/cancel and tasks/resubscribe."
+    } else {
+        "ACP coding agent - driven over a stdio turn; accepts message/send and message/stream only."
+    };
+    let capabilities = if task_methods {
+        serde_json::json!({
+            "streaming": true,
+            "pushNotifications": false,
+            "stateTransitionHistory": false,
+        })
+    } else {
+        serde_json::json!({ "streaming": true })
+    };
+    serde_json::json!({
+        "protocolVersion": "0.3.0",
+        "name": name,
+        "description": description,
+        "url": url,
+        "preferredTransport": "JSONRPC",
+        "version": "1.0.0",
+        "capabilities": capabilities,
+        "defaultInputModes": ["text/plain"],
+        "defaultOutputModes": ["text/plain"],
+        "skills": [],
+    })
+}
+
 /// The `A2A-Version` header value every outbound A2A call in this codebase sends — ten call sites
 /// across six crates hardcoded the literal `"1.0"` independently (found in review); this is the
 /// shared source of truth. Consistent with the existing convention, so its absence wasn't a
@@ -100,6 +134,19 @@ pub fn completed(task_id: &str, context_id: &str) -> TaskStatusUpdateEvent {
         context_id: context_id.into(),
         status: TaskStatus {
             state: TaskState::Completed,
+            message: None,
+            timestamp: Some(chrono::Utc::now()),
+        },
+        metadata: None,
+    }
+}
+
+pub fn canceled(task_id: &str, context_id: &str) -> TaskStatusUpdateEvent {
+    TaskStatusUpdateEvent {
+        task_id: task_id.into(),
+        context_id: context_id.into(),
+        status: TaskStatus {
+            state: TaskState::Canceled,
             message: None,
             timestamp: Some(chrono::Utc::now()),
         },
@@ -624,6 +671,30 @@ pub fn extract_text_from_response(response: &JsonRpcResponse) -> Option<String> 
     extract_text(response.result.as_ref()?)
 }
 
+/// The task an A2A reply or streamed event reports, as `(task id, normalised state)`.
+///
+/// Reads every dialect the platform meets: the 0.3 flat task (`result.id`), the 1.0 task
+/// wrapper (`result.task`), a 1.0 stream event (`result.statusUpdate.taskId`) and the 0.3
+/// `status-update` event (`result.taskId`). The state is lower-cased with hyphens and without the
+/// 1.0 `TASK_STATE_` prefix, so `TASK_STATE_INPUT_REQUIRED` and `input_required` both read
+/// `input-required`. `None` for a reply that names no task state, such as a plain message or an
+/// artifact chunk.
+pub fn task_status_of(rpc: &serde_json::Value) -> Option<(String, String)> {
+    let result = rpc.get("result").unwrap_or(rpc);
+    let holder = result
+        .get("statusUpdate")
+        .or_else(|| result.get("task"))
+        .unwrap_or(result);
+    let task_id = holder
+        .get("taskId")
+        .or_else(|| holder.get("id"))
+        .and_then(|v| v.as_str())?;
+    let state = holder.pointer("/status/state").and_then(|v| v.as_str())?;
+    let state = state.to_ascii_lowercase().replace('_', "-");
+    let state = state.strip_prefix("task-state-").unwrap_or(&state);
+    Some((task_id.to_owned(), state.to_owned()))
+}
+
 // ─── Stream disposition (HITL) ──────────────────────────────────────────────
 
 /// What an SSE relay loop should do with one decoded event, per the HITL plan (§8). Distinct from
@@ -988,6 +1059,22 @@ mod pause_parsing_tests {
     const REAL_PAUSE_PAYLOAD: &str = r#"{"result": {"statusUpdate": {"taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "status": {"state": "TASK_STATE_INPUT_REQUIRED", "message": {"messageId": "6d3e7f9d-dea0-499b-af76-a3d12eff55bf", "contextId": "9e110c60-185f-4c3d-b14e-a473db66ed4c", "taskId": "51914422-4548-47af-90b8-773a5ee4bed7", "role": "ROLE_AGENT", "parts": [{"text": "Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]}, "timestamp": "2026-08-29T13:09:49.292552Z"}}}, "id": "100260a7-0f6a-4606-a411-3a72c0cfa21e", "jsonrpc": "2.0"}"#;
 
     #[test]
+    fn the_harness_card_advertises_streaming_and_no_push_or_history() {
+        let card = synthetic_coding_card("h", "/api/agents/x", true);
+        assert_eq!(card["capabilities"]["streaming"], true);
+        assert_eq!(card["capabilities"]["pushNotifications"], false);
+        assert_eq!(card["capabilities"]["stateTransitionHistory"], false);
+        assert!(
+            card["description"]
+                .as_str()
+                .unwrap()
+                .contains("tasks/cancel")
+        );
+        let plain = synthetic_coding_card("c", "/api/agents/x", false);
+        assert!(plain["capabilities"].get("pushNotifications").is_none());
+    }
+
+    #[test]
     fn paused_task_id_extracts_the_agents_real_task_not_the_callers_synthetic_one() {
         let extracted = paused_task_id(REAL_PAUSE_PAYLOAD, "nasiko-synthetic-task-id");
         assert_eq!(extracted, "51914422-4548-47af-90b8-773a5ee4bed7");
@@ -1241,6 +1328,27 @@ mod pause_parsing_tests {
     // `SendStreamingMessage`) against `github-hitl-agent` — a full `Task` snapshot with no
     // `statusUpdate` wrapper at all, `status.state` sitting under `result.task` instead.
     const REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD: &str = r#"{"result":{"task":{"id":"3f43589f-fbaf-4936-8cac-e074b5843302","contextId":"nonstream-proxy-test","status":{"state":"TASK_STATE_INPUT_REQUIRED","message":{"messageId":"6c334d6d-e72b-4e3d-8e25-ac1a223085b9","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_AGENT","parts":[{"text":"Which repository should I create the issue in? (reply with owner/repo, on the same task)"}]},"timestamp":"2026-09-01T03:42:34.957766Z"},"history":[{"messageId":"293C90CE-26DB-4364-895D-A4A059DDC75E","contextId":"nonstream-proxy-test","taskId":"3f43589f-fbaf-4936-8cac-e074b5843302","role":"ROLE_USER","parts":[{"text":"hitl input test"}]}]}},"id":"1","jsonrpc":"2.0"}"#;
+
+    #[test]
+    fn task_status_of_reads_the_real_1_0_payloads() {
+        let stream: serde_json::Value = serde_json::from_str(REAL_PAUSE_PAYLOAD).unwrap();
+        assert_eq!(
+            task_status_of(&stream),
+            Some((
+                "51914422-4548-47af-90b8-773a5ee4bed7".into(),
+                "input-required".into()
+            ))
+        );
+        let snapshot: serde_json::Value =
+            serde_json::from_str(REAL_NON_STREAMING_TASK_SNAPSHOT_PAYLOAD).unwrap();
+        assert_eq!(
+            task_status_of(&snapshot),
+            Some((
+                "3f43589f-fbaf-4936-8cac-e074b5843302".into(),
+                "input-required".into()
+            ))
+        );
+    }
 
     #[test]
     fn pause_reason_reads_input_required_from_a_task_wrapped_non_streaming_payload() {
@@ -1735,6 +1843,40 @@ mod request_builder_tests {
         assert_eq!(
             with.params.as_ref().unwrap()["message"]["parts"],
             plain.params.as_ref().unwrap()["message"]["parts"]
+        );
+    }
+}
+
+#[cfg(test)]
+mod task_status_tests {
+    use super::task_status_of;
+    use serde_json::json;
+
+    fn status(v: serde_json::Value) -> Option<(String, String)> {
+        task_status_of(&v)
+    }
+
+    #[test]
+    fn reads_a_1_0_terminal_status_update() {
+        let v = json!({"result":{"statusUpdate":{"taskId":"t","status":{"state":"TASK_STATE_COMPLETED"},"final":true}}});
+        assert_eq!(status(v), Some(("t".into(), "completed".into())));
+    }
+
+    #[test]
+    fn reads_the_0_3_flat_shapes_and_ignores_messages() {
+        assert_eq!(
+            status(json!({"result":{"id":"t","status":{"state":"working"}}})),
+            Some(("t".into(), "working".into()))
+        );
+        assert_eq!(
+            status(
+                json!({"result":{"kind":"status-update","taskId":"t","status":{"state":"input_required"}}})
+            ),
+            Some(("t".into(), "input-required".into()))
+        );
+        assert_eq!(
+            status(json!({"result":{"kind":"message","parts":[]}})),
+            None
         );
     }
 }

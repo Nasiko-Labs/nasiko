@@ -13,12 +13,16 @@ export const catalogSearchSchema = z.object({
   yours: opt(flag),
   /** The home's rating badges link here (plans/feat-agent-centric.md PR2a); computed by `useFleetHealth` (eng R1). */
   health: opt(z.enum(['healthy', 'watch', 'action', 'unknown'])),
+  /** Cards or the table; absent: the viewer's last pick, else the cards (as the home's `view`). */
+  view: opt(z.enum(['grid', 'list'])),
 })
 export type CatalogSearch = z.infer<typeof catalogSearchSchema>
+export type CatalogView = NonNullable<CatalogSearch['view']>
 
 export const MINE_TABS = [
   'all',
   'running',
+  'parked',
   'deploying',
   'attention',
   'stopped',

@@ -10,8 +10,9 @@
  * budget. A problem whose node is missing (a variant, a test seed) is left out.
  *
  * State: OV-2 writes (owner, snooze, handled) and OV-3 pins, reset with the other mocks. Variants:
- * `overview-absent` (bare 404s, the page builds its fallback map), `overview-quiet` (no problems: the healthy state) and
- * `village-unlimited` (a paid plan: every village plot open).
+ * `overview-absent` (bare 404s, the page builds its fallback map), `overview-quiet` (no problems: the healthy state),
+ * `overview-bare` (agents deployed, nothing run or connected yet: the canvases' empty state) and `village-unlimited` (a
+ * paid plan: every village plot open).
  */
 import { http, HttpResponse, type HttpHandler } from 'msw'
 import type { MockAgent } from './agents'
@@ -24,6 +25,8 @@ export interface OverviewMockCtx {
   now(): number
   absent(): boolean
   quiet(): boolean
+  /** Agents deployed and nothing else: no traffic, teams, tools, routers, harnesses or workflows (`overview-bare`). */
+  bare(): boolean
   /** The workspace is on a paid plan (`village-unlimited`). */
   unlimited(): boolean
   agents(): readonly MockAgent[]
@@ -102,11 +105,22 @@ const SHORT: Record<string, string> = {
   'gpt-4o-mini': '4o mini',
   'claude-sonnet-4': 'Sonnet 4',
   'claude-opus-4': 'Opus 4',
+  'claude-haiku-4-5': 'Haiku 4.5',
+  'claude-3-7-sonnet': 'Sonnet 3.7',
   'gemini-2.0-flash': 'Flash',
   'custom-local': 'Llama',
   'gpt-5-codex': 'Codex',
   'cursor-small': 'Cursor',
   'swe-1': 'SWE-1',
+}
+/**
+ * Anthropic models Claude Code installs run beside the seed's Sonnet 4 that no seeded turn names (from nasiko-ui-lab),
+ * each as its spend against Sonnet 4's, so the Map's Anthropic card lists them under Sonnet 4.
+ */
+const CLAUDE_CODE_MODELS: Record<string, number> = {
+  'claude-opus-4': 0.3,
+  'claude-haiku-4-5': 0.14,
+  'claude-3-7-sonnet': 0.06,
 }
 export const modelId = (model: string) => `model:${model}`
 const hash = (s: string) => [...s].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7)
@@ -237,6 +251,10 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
   const sessionsBy = new Map<string, typeof hs.sessions>()
   for (const x of hs.sessions)
     if (x.ts <= now) sessionsBy.set(x.agent_id, [...(sessionsBy.get(x.agent_id) ?? []), x])
+  // Which harness kinds go through an LLM router (the proposed `router_id`): a placeholder set; the biggest two stay
+  // direct, so the Map's No router lane carries them.
+  const routedVia = routers.find((r) => !r.direct)?.id ?? null
+  const ROUTED_KINDS = new Set(['opencode', 'windsurf'])
   const harnesses = hs.agents
     .filter((h) => !h.deleted && !h.spoofed)
     .map((h) => {
@@ -250,7 +268,13 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
         name: `${HARNESS_META[h.harness]?.name ?? h.harness} (${first(h.owner_id)})`,
         harness: h.harness,
         owner_id: h.owner_id,
-        model_ids: (HARNESS_META[h.harness]?.models ?? []).map(modelId),
+        router_id: ROUTED_KINDS.has(h.harness) ? routedVia : null,
+        model_ids: [
+          ...new Set([
+            ...(HARNESS_META[h.harness]?.models ?? []),
+            ...(h.harness === 'claude' ? Object.keys(CLAUDE_CODE_MODELS) : []),
+          ]),
+        ].map(modelId),
         tool_ids: [T('github'), h.harness === 'claude' ? T('linear') : T('slack')].filter(
           (x): x is string => !!x,
         ),
@@ -286,12 +310,15 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
   const modelNames = [
     ...new Set([...agents.flatMap((a) => a.model_ids), ...harnesses.flatMap((h) => h.model_ids)]),
   ].map((id) => id.slice('model:'.length))
+  const sonnetSpend = modelSpend.get('claude-sonnet-4')?.spend ?? 0
   const models = modelNames.map((m) => ({
     id: modelId(m),
     name: m,
     short: SHORT[m] ?? m,
     provider_id: `provider:${providerOf(m)}`,
-    spend_usd: Math.round((modelSpend.get(m)?.spend ?? 0) * 100) / 100,
+    spend_usd:
+      Math.round((modelSpend.get(m)?.spend || (CLAUDE_CODE_MODELS[m] ?? 0) * sonnetSpend) * 100) /
+      100,
     calls: modelSpend.get(m)?.calls ?? 0,
     p95_ms: p95(modelSpend.get(m)?.lat ?? []),
   }))
@@ -1153,7 +1180,7 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
     } else row.unbudgeted_usd += x.cost_usd
   }
   const cents = (v: number) => Math.round(v * 100) / 100
-  return {
+  const estate = {
     as_of: new Date(now).toISOString(),
     // Proposed (V-9): the workspace's plan, which sets the village's open plots.
     plan: ctx.unlimited() ? 'team' : 'free',
@@ -1192,6 +1219,44 @@ export function buildEstate(ctx: OverviewMockCtx, range: string) {
         Math.round(Math.min(15, mySpend * (monthDay / Math.max(1, rangeDays))) * 100) / 100 || 7.55,
       projected_usd: 17.9,
     },
+  }
+  if (!ctx.bare()) return estate
+  // Agents deployed, nothing run: every agent idle at $0, nothing connected, no problems to raise.
+  return {
+    ...estate,
+    groups: [],
+    people: [],
+    workflows: [],
+    projects: [],
+    routers: [],
+    providers: [],
+    models: [],
+    agents: estate.agents.map((a) => ({
+      ...a,
+      router_id: null,
+      model_ids: [],
+      tool_ids: [],
+      spend_usd: 0,
+      runs: 0,
+      success_pct: null,
+      p95_ms: null,
+      idle: true,
+      team_ids: [],
+      failed_spend_usd: null,
+    })),
+    tools: [],
+    harnesses: [],
+    flows: [],
+    problems: [],
+    chains: [],
+    opportunities: [],
+    daily: estate.daily.map(() => ({
+      budgeted_usd: 0,
+      unbudgeted_usd: 0,
+      uncapped_usd: 0,
+      saved_usd: 0,
+    })),
+    allowance: null,
   }
 }
 

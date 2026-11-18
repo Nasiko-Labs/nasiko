@@ -15,14 +15,15 @@ import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { isUuid } from '@nasiko/features/agents/normalize'
 import { ApiError } from '@nasiko/data-access/client'
 import { useSiblings } from '@nasiko/app-core/siblings'
-import { dropFromLists, workflowQuery } from './api'
+import { dropFromLists, executionsQuery, workflowQuery } from './api'
 import { copy, reason } from './copy'
-import { descriptionOf, isDeployed } from './logic'
+import { descriptionOf, isDeployed, isExecActive } from './logic'
 import { useStartRun } from './run'
 import type { Workflow } from './types'
 import { DeleteWorkflowDialog } from './components/DeleteWorkflowDialog'
 import { EditFace } from './components/EditFace'
 import { RunView } from './components/RunView'
+import { StopRunButton } from './components/StopRunButton'
 
 const COLUMN = 'mx-auto flex w-full max-w-3xl flex-col gap-6 [&>*]:min-w-0'
 
@@ -178,6 +179,11 @@ function OutputGuidelines({ wf }: { wf: Workflow }) {
 function ReadOnlyFace({ wf, onEdit }: { wf: Workflow; onEdit: () => void }) {
   const steps = wf.maf_json?.steps ?? []
   const startRun = useStartRun()
+  // The runs list holds the newest runs and polls while any moves; its unfinished ones of this workflow offer a stop.
+  const runs = useQuery(executionsQuery)
+  const unfinished = (runs.data ?? []).filter(
+    (r) => r.maf_id === wf.id && isExecActive(r.status),
+  ).length
   return (
     <>
       <div className="flex flex-col gap-2">
@@ -210,6 +216,9 @@ function ReadOnlyFace({ wf, onEdit }: { wf: Workflow; onEdit: () => void }) {
       </section>
       <OutputGuidelines wf={wf} />
       <div data-tour="wf-run" className="flex flex-wrap justify-end gap-2">
+        {unfinished ? (
+          <StopRunButton target={{ workflow: wf.id, name: wf.name, unfinished }} />
+        ) : null}
         <Button variant="ghost" onClick={onEdit}>
           <Pencil aria-hidden /> {copy.edit}
         </Button>

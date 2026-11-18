@@ -3,8 +3,9 @@
  *
  * - **Desktop app**: consent is local. The card asks, and Yes / Not now / Retry are the desktop's own POSTs; progress
  *   is the desktop's local run.
- * - **Browser**: no consent. Running `nasiko agents setup` is the consent, so the card shows the command, then the
- *   progress the CLI (or a desktop elsewhere) reports to the server:
+ * - **Browser**: no consent. Running the setup guide's `nasiko connect` (or `nasiko agents setup`) is the consent, so
+ *   the card shows the guide's install and connect commands, then the progress the CLI (or a desktop elsewhere)
+ *   reports to the server:
  *
  *     GET  /api/me/coding-agents/sync                       {runs: [Run]}  (updated in the last 24 h, newest first)
  *     POST /api/me/coding-agents/sync/{device_id}/retry     the Run, `retry_requested_at` set (404: no such device)

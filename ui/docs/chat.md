@@ -1,6 +1,6 @@
 # Chat (v1a direct chat, v1b routed chat, v1c layout)
 
-Chat talks to your agents in the browser. **Direct chat** (v1a) talks to one agent you pick. **Routed chat** (v1b) lets **the Orchestrator** choose: it calls agents as tools and writes the reply. Specs: `plans/feat-chat.md` (v1a, state/action matrix §7.7), `plans/feat-chat-v1b.md` (v1b; end states §5.5, errors §5.6) and `plans/feat-chat-v1c.md` (v1c; §1-§9 bind). Supported server: the one in this repository. Recorded harness chats are read-only.
+Chat talks to your agents in the browser. **Direct chat** (v1a) talks to one agent you pick. **Routed chat** (v1b) lets **the Orchestrator** choose: it calls agents as tools and writes the reply. Supported server: the one in this repository. Recorded harness chats are read-only.
 
 Routes:
 - `/chat`: a new chat. Choose where to send with the chip in the composer or the **Choose where to send** list: the Orchestrator or an agent (see [New chat](#new-chat-v1c));
@@ -76,7 +76,7 @@ Dev aids (dev and mock builds only; production strips them):
 
 ## Partial live
 
-`VITE_NASIKO_MOCK=chat,agents,observability npm run dev:live` mocks chat with the seed agents and sessions against a live server. `chat` only works together with `agents` and `observability`; on its own the three are ignored with a warning, so seed chats never point at live agents.
+`VITE_NASIKO_MOCK=chat,agents,observability pnpm run dev:live` mocks chat with the seed agents and sessions against a live server. `chat` only works together with `agents` and `observability`; on its own the three are ignored with a warning, so seed chats never point at live agents.
 
 ## Chat v1c: layout and naming
 
@@ -149,7 +149,7 @@ Only this tab's turns count (another tab's replies show up once you reload). The
 
 **Waiting** above the rail (always shown next to **Chats** and **Recorded**, with its count when something waits) lists the chats where an agent is waiting for you: one row per chat, the oldest request first, with the request's text and age ("2 requests" when there are several). Opening a row goes to that chat and focuses the request's card; if it was already answered or has expired, a note says so. In **Chats** such a row carries an amber count in its slot (before the spinner or dot), and on a phone the Chats button shows the count ("Chats, 2 waiting"). The list polls `GET /api/hitl/pending` every 30 s while the tab is visible (60 s, then 120 s after failures), and on focus, after you answer or dismiss a request, and when a reply pauses.
 
-Known limits (server gaps R-1 and R-2 in `docs/designs/openruntime-chat-v1c-recommendations.md`):
+Known limits (server gaps):
 - A superuser gets every user's pending requests with no owner, so only requests provably theirs show: ones this tab has seen in its own chats, or ones pointing at a chat loaded in the rail. The rest are left out, with "Requests from other people's chats aren't shown here." A request on one of your chats past the rail's loaded pages shows once that page loads.
 - For a normal user, a tool (`mcp_tool`) request is only placed once its chat's history has loaded in this tab; until then it counts in "N requests couldn't be linked to a chat."
 - The count covers loaded chats; it reads "n+" while more rail pages exist.
@@ -180,6 +180,16 @@ The one-running-agent preselect can't be set up from the URL; `ChatPage.v1c.test
 | `waiting` | the opt-in pending requests: c006-c008, a `maf` step and (for a superuser) someone else's request; c060 too under `many-chats` |
 | `pending-fail` | every pending poll fails with a 500 |
 | `pending-flaky` | the first poll works, the next 3 fail, then it works again |
+| `transcribe-unconfigured` | dictation's `POST /api/transcribe` answers 503, as a server without an OpenAI key does |
+
+### Dictation
+
+Where the browser has `MediaRecorder`, the composer has a mic beside the paperclip (`components/DictateButton.tsx`). Click it, or press F8 or Alt+R (⌥R on a Mac), to
+record; again to stop. The audio goes to `POST /api/transcribe` (OpenAI Whisper on the user's saved OpenAI key, else the
+server's `OPENAI_API_KEY`) and the text lands at the cursor. It never sends. Esc discards a recording, and recording
+stops by itself at 5 minutes (`DICTATION_MAX_MS`, under the route's 2 MiB body limit at 32 kbps). Failures show under
+the composer and leave the draft alone. The mock answers "Hello from the mock microphone."; the microphone needs
+HTTPS or localhost, so the dev server on `localhost:3000` works.
 
 ### Reset recipe (browser)
 
@@ -202,7 +212,7 @@ it('no target: Enter opens the Send to list and keeps the text', async () => {
 })
 ```
 
-Run one file with `npx vitest run src/features/chat/ChatPage.v1c.test.tsx`.
+Run one file with `npx vitest run shared/features/src/chat/ChatPage.v1c.test.tsx`.
 
 ### Known limits
 
@@ -213,20 +223,20 @@ Run one file with `npx vitest run src/features/chat/ChatPage.v1c.test.tsx`.
 
 The server side is used read-only.
 
-1. Preflight. From the repository root, `just infra && just run-oss`, then `curl -fsS http://localhost:8080/health` prints `ok`. The server needs an LLM key (`OPENAI_API_KEY` in `oss/server/.env`) for titles and the orchestrator.
-2. `nasiko upload oss/agents/currency-agent` (server-side build and deploy; it converts currencies at fixed rates, with no LLM and no network calls, so its answer is predictable).
+1. Preflight. From the repository root, `just run-stack`, then `curl -fsS http://localhost:8080/health` prints `ok`. The server needs an LLM key (`OPENAI_API_KEY` in `server/.env`) for titles and the orchestrator.
+2. `nasiko upload agents/currency-agent` (server-side build and deploy; it converts currencies at fixed rates, with no LLM and no network calls, so its answer is predictable).
 3. `nasiko ps` lists `currency-agent` as running.
-4. Here, `npm run dev:live`.
+4. Here, `pnpm run dev:live`.
 5. Log in as `admin` / `changeme`.
 6. Open `/chat?auto=1`.
 7. Send "Use the currency agent to convert 100 USD to EUR."
-8. You see "Working on your request…" → "Asking currency-agent…" → a reply with 92 EUR → "Answered by the Orchestrator, using currency-agent". Clean up with `nasiko rm --name currency-agent`.
+8. You see "Working on your request…" → "Asking currency-agent…" → a reply with 92 EUR → "Answered by the Orchestrator, using currency-agent". Clean up with `nasiko rm currency-agent`.
 
-If the upload's build fails on your stack (it returned `not_found` on 2026-09-27; see the recommendations doc), use an agent that's already running and name it in the prompt, for example `simulated-agent`: "Ask the simulated-agent agent to say hello, then tell me what it replied."
+If the upload's build fails on your stack, use an agent that's already running and name it in the prompt, for example `simulated-agent`: "Ask the simulated-agent agent to say hello, then tell me what it replied."
 
 ### Direct chat on a stack (v1a runbook)
 
-`nasiko upload oss/agents/simulated-agent`, then its page's **Try it** or `/chat?agent=<its uuid>`. You see "Starting chat…" for about 2 s (the LLM title), "Waiting for Simulated Agent…", lorem ipsum streaming in, then a duration chip and **View trace**. Clean up with `nasiko rm --name simulated-agent` and `npm run seed:reset`.
+`nasiko upload agents/simulated-agent`, then its page's **Try it** or `/chat?agent=<its uuid>`. You see "Starting chat…" for about 2 s (the LLM title), "Waiting for Simulated Agent…", lorem ipsum streaming in, then a duration chip and **View trace**. Clean up with `nasiko rm simulated-agent` and `pnpm run seed:reset`.
 
 The live streams are shaped differently from A2A 1.0 in ways the mocks didn't cover at first: one artifact per chunk, agent frames still in their JSON-RPC envelope, and a second, server-owned task that closes after the agent's. The recorded streams are replay fixtures in `shared/features/src/chat/__fixtures__/`.
 
@@ -260,7 +270,7 @@ This shows which agents OpenRuntime observably called, not why it chose them or 
 
 ## Why routed is opt-in
 
-Routed chat stays behind `/chat?auto=1` until the server can save a routed reply without the browser (recommendation 2 in `docs/designs/openruntime-chat-v1b-recommendations.md`). Making it the default also needs the router evaluation set in TODOS.md. The pieces that only exist because of that gap are marked `// scaffolding: remove when the server routed reply tap ships (rec 1)`: the drain of oversized routed streams, the composer hint, the turn-end records and the 10-minute lost-reply timing.
+Routed chat stays behind `/chat?auto=1` until the server can save a routed reply without the browser. Making it the default also needs a router evaluation set. The pieces that only exist because of that gap are marked `// scaffolding: remove when the server routed reply tap ships (rec 1)`: the drain of oversized routed streams, the composer hint, the turn-end records and the 10-minute lost-reply timing.
 
 ## What OpenRuntime enforces on a routed turn
 
@@ -283,7 +293,7 @@ The chat couldn't be created (or the user row saved). Nothing reached OpenRuntim
 "The Orchestrator couldn't read this request." The server rejected the dispatch before running it (JSON-RPC -32602). **Edit and send.**
 
 ### errors-403
-"The Orchestrator refused this request." Not expected on a first send at `cb3aaf0c`. Ask an admin for access.
+"The Orchestrator refused this request." Not expected on a first send. Ask an admin for access.
 
 ### errors-403-reconnect
 "This reply was started by another sign-in and can't be resumed here." The paused reply belongs to another user or sign-in (-32605). Copy the details and start a new chat.
@@ -340,7 +350,7 @@ The smoke names the stage it failed at, with the chat and trace ids:
 - `/chat` is unchanged; `?auto=1` opts into routed chat. Old `?agent=` links still go direct.
 - Existing routed chats (no agent, `agent_url` null or `/api/orchestrator/a2a`) are now writable.
 - A blank, oversized or non-text `?agent=` shows the banner (v1a showed the chooser).
-- Supported server: `cb3aaf0c`. Rollback: revert the PR; there's no data migration.
+- Rollback: revert the PR; there's no data migration.
 
 ## Troubleshooting
 

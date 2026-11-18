@@ -129,6 +129,25 @@ describe('MCP catalog (plans/feat-mcp.md §2)', () => {
     expect(screen.getAllByRole('button', { name: copy.upload })).toHaveLength(1)
   })
 
+  it('walks an admin to Settings → MCP toolkits while there are no toolkits', async () => {
+    configureMocks({ variant: 'mcp-empty' })
+    renderApp('/mcp?view=toolkits')
+    expect(await screen.findByText(copy.toolkitSetup.title, {}, T)).toBeInTheDocument()
+    // The steps are the Toolkits view's empty card, not a second one.
+    expect(screen.queryByText(copy.empty.toolkits.title)).toBeNull()
+    expect(screen.getByRole('link', { name: copy.toolkitSetup.open })).toHaveAttribute(
+      'href',
+      '/settings?section=mcp',
+    )
+  })
+
+  it('tells anyone else to ask an admin, with no Settings link', async () => {
+    configureMocks({ variant: 'mcp-empty', superuser: false })
+    renderApp('/mcp')
+    expect(await screen.findByText(copy.toolkitSetup.askAdmin, {}, T)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: copy.toolkitSetup.open })).toBeNull()
+  })
+
   it('still lists custom servers when the toolkit list fails, and says so', async () => {
     configureMocks({ variant: 'mcp-toolkits-fail' })
     renderApp('/mcp')
@@ -209,5 +228,23 @@ describe('MCP catalog (plans/feat-mcp.md §2)', () => {
     const c = await card('repo-tools')
     expect(within(c).getByText(copy.building)).toBeInTheDocument()
     expect(mcpMockState().connectors.some((x) => x.name === 'repo-tools')).toBe(true)
+  })
+
+  it("the upload toast's Open goes to the Builds page, not the connector page — a first-time failure would 404 there", async () => {
+    renderApp('/mcp')
+    await userEvent.click(await screen.findByRole('button', { name: copy.upload }, T))
+    await userEvent.click(await screen.findByRole('button', { name: new RegExp(copy.zipTitle) }))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.type(within(dialog).getByLabelText(copy.uploadName.label), 'edge-case-server')
+    const file = new File(['dummy zip bytes'], 'edge-case-server.zip', { type: 'application/zip' })
+    await userEvent.upload(within(dialog).getByLabelText(copy.file), file)
+    await userEvent.click(within(dialog).getByRole('button', { name: copy.uploadSubmit }))
+    const toastAction = await screen.findByRole('button', { name: copy.open }, T)
+    await userEvent.click(toastAction)
+    // Lands on the Builds page (its description, not a 404) with the name already searched.
+    expect(await screen.findByText(copy.builds.description, {}, T)).toBeInTheDocument()
+    expect(screen.getByRole('searchbox', { name: copy.builds.searchLabel })).toHaveValue(
+      'edge-case-server',
+    )
   })
 })

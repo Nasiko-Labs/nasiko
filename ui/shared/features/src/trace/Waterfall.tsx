@@ -39,6 +39,21 @@ const CLASS_COLOR: Record<SpanClass, string> = {
   other: 'bg-chart-other border border-chart-other-edge',
 }
 
+/**
+ * Accessible name for a grouped member row, mirroring the visual label: a genuine retry reads
+ * "attempt N of M"; any other repeat is named by what it did (its operation/route), falling back
+ * to "#N of M" when the span carries no operation.
+ */
+function memberName(
+  name: string,
+  attempt: { index: number; of: number; retry: boolean; route?: string },
+): string {
+  if (attempt.retry)
+    return `${name} attempt ${attempt.index} of ${attempt.of}${attempt.route ? `, ${attempt.route}` : ''}`
+  if (attempt.route) return `${name}, ${attempt.route} #${attempt.index} of ${attempt.of}`
+  return `${name} #${attempt.index} of ${attempt.of}`
+}
+
 function Axis({ total }: { total: number }) {
   const ticks = [0, 0.25, 0.5, 0.75, 1]
   return (
@@ -201,7 +216,7 @@ export function Waterfall({
           const baseLabel =
             r.kind === 'group'
               ? `${r.name} ×${r.members.length}, ${r.failures} failed, ${fmtLatency(r.durationMs)} total`
-              : `${r.attempt ? `${r.span.node.name} attempt ${r.attempt.index} of ${r.attempt.of}` : r.span.node.name}, ${CLASS_LABEL[r.span.cls]}, ${describe(r.span)}`
+              : `${r.attempt ? memberName(r.span.node.name, r.attempt) : r.span.node.name}, ${CLASS_LABEL[r.span.cls]}, ${describe(r.span)}`
           // Dimming is never the only signal: the accessible name says so too.
           const label = dim ? `${baseLabel}, ${copy.filteredOut}` : baseLabel
           return (
@@ -265,9 +280,26 @@ export function Waterfall({
                       </span>
                     </>
                   ) : r.attempt ? (
-                    <>
-                      attempt {r.attempt.index} of {r.attempt.of}
-                    </>
+                    r.attempt.retry ? (
+                      // A genuine retry loop: keep "attempt N of M" (a failure preceded the last).
+                      <>
+                        attempt {r.attempt.index} of {r.attempt.of}
+                        {r.attempt.route ? (
+                          <span className="text-muted-foreground"> · {r.attempt.route}</span>
+                        ) : null}
+                      </>
+                    ) : r.attempt.route ? (
+                      // Not a retry: lead with what this occurrence actually did (its operation),
+                      // the index kept as a muted suffix so repeats stay distinguishable.
+                      <>
+                        {r.attempt.route}
+                        <span className="text-muted-foreground"> · #{r.attempt.index}</span>
+                      </>
+                    ) : (
+                      <>
+                        #{r.attempt.index} of {r.attempt.of}
+                      </>
+                    )
                   ) : (
                     r.span.node.name
                   )}

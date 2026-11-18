@@ -1,10 +1,10 @@
 /**
  * Registry references (plans/feat-deploy.md §4.3). `catalog/import.rs` `import_registry` expects
  * `registry.host/owner/name[:tag]` (HTTPS only, no registry login) and 422s a host outside its allowed list
- * (`registry.nasiko.dev`, `REGISTRY_IMPORT_ALLOWED_HOSTS`, the server's own registry). Pure.
+ * (`registry.nasiko.com`, `REGISTRY_IMPORT_ALLOWED_HOSTS`, the server's own registry). Pure.
  */
 
-export const DEFAULT_REGISTRY = 'registry.nasiko.dev'
+export const DEFAULT_REGISTRY = 'registry.nasiko.com'
 
 export interface ParsedReference {
   host: string

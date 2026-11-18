@@ -5,7 +5,14 @@
  */
 
 export type DisplayStatus =
-  'running' | 'deploying' | 'attention' | 'stopped' | 'not-deployed' | 'harness' | 'unknown'
+  | 'running'
+  | 'parked'
+  | 'deploying'
+  | 'attention'
+  | 'stopped'
+  | 'not-deployed'
+  | 'harness'
+  | 'unknown'
 export type LifecycleAction = 'restart' | 'stop' | 'start'
 type BadgeTone = 'success' | 'info' | 'warning' | 'muted' | 'outline'
 
@@ -22,6 +29,13 @@ export const STATUS: Record<DisplayStatus, StatusInfo> = {
     tone: 'success',
     actions: ['restart', 'stop'],
     hint: 'The runtime reports the container as running.',
+  },
+  parked: {
+    label: 'Parked',
+    tone: 'muted',
+    // Start wakes it now (the wake a message would do); Stop keeps the next message from waking it.
+    actions: ['start', 'stop'],
+    hint: 'Idle for a while, so its container was released to save resources. The next message, or Start, brings it back.',
   },
   deploying: {
     label: 'Deploying',
@@ -62,12 +76,24 @@ export const STATUS: Record<DisplayStatus, StatusInfo> = {
 }
 
 /** Order of the Your agents tabs after "All". */
-export const TAB_STATUSES = ['running', 'deploying', 'attention', 'stopped'] as const
+export const TAB_STATUSES = ['running', 'parked', 'deploying', 'attention', 'stopped'] as const
 
 interface HarnessMarkers {
   tags?: string[] | null
   metadata?: unknown
   is_coding_agent?: boolean | null
+}
+
+/**
+ * The coding harness behind an agent (`claude`, `codex`, `opencode`, `cursor`): the detail's own field, else the
+ * registration's metadata (the list has only that); null for an ordinary agent.
+ */
+export function harnessIntegration(
+  a: HarnessMarkers & { coding_agent_integration_id?: string | null },
+): string | null {
+  if (a.coding_agent_integration_id) return a.coding_agent_integration_id
+  const meta = a.metadata as { integration_id?: unknown } | null | undefined
+  return isHarness(a) && typeof meta?.integration_id === 'string' ? meta.integration_id : null
 }
 
 /** A coding harness row: the list has only tags/metadata; the detail says so outright. */
@@ -92,6 +118,8 @@ export function displayStatus(raw: string | null | undefined, harness: boolean):
   switch (raw) {
     case 'running':
       return 'running'
+    case 'parked':
+      return 'parked'
     case 'deploying':
     case 'pending':
       return 'deploying'

@@ -107,17 +107,17 @@ function watchRequestedBy() {
 }
 
 describe('who asked (ISSUE-001, ship review D1)', () => {
-  it('a routed request names the agent that asked, not OpenRuntime', async () => {
+  it('a routed request names the agent that asked, not Open Runtime', async () => {
     configureChatMock({ scenario: 'routed-hitl' })
     renderApp('/chat?auto=1')
     await userEvent.type(await screen.findByLabelText('Ask the Orchestrator'), 'deploy it{Enter}')
     const card = await screen.findByTestId('request-card', {}, { timeout: 8000 })
-    expect(card).not.toHaveTextContent(/Requested by (OpenRuntime|the Orchestrator)/)
+    expect(card).not.toHaveTextContent(/Requested by (Open Runtime|the Orchestrator)/)
     const requestedBy = within(card).getByText(/^Requested by/).parentElement!
     // The link goes to the asking agent's page, and its label names that agent.
     const link = within(requestedBy).getByRole('link')
     expect(link.getAttribute('href')).toMatch(/^\/agents\/5eed/)
-    expect(link.textContent).not.toMatch(/^(OpenRuntime|Orchestrator|the Orchestrator)$/)
+    expect(link.textContent).not.toMatch(/^(Open Runtime|Orchestrator|the Orchestrator)$/)
   })
 
   it('a chained pause: the second request names the sub-agent, the announcement too; answering it saves exactly one server reply', async () => {
@@ -131,11 +131,17 @@ describe('who asked (ISSUE-001, ship review D1)', () => {
         .getByRole('button', { name: 'now' })
         .closest('[data-testid="request-card"]') as HTMLElement
       expect(card).toHaveTextContent('Deploy to us-east-1 now or at the next window?')
-      expect(card).not.toHaveTextContent(/Requested by (OpenRuntime|the Orchestrator)/)
+      // The server saves the answer as a user row: it shows on its receipt, not as a turn of its own,
+      // so the new question has one card, after the answered one (NAS-1540).
+      const receipt = await screen.findByTestId('request-receipt', {}, { timeout: 8000 })
+      expect(screen.getAllByTestId('turn')).toHaveLength(1)
+      expect(screen.getAllByTestId('request-card')).toHaveLength(1)
+      expect(receipt.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(card).not.toHaveTextContent(/Requested by (Open Runtime|the Orchestrator)/)
       const link = within(within(card).getByText(/^Requested by/).parentElement!).getByRole('link')
       expect(link.getAttribute('href')).toMatch(/^\/agents\/5eed/)
       expect(link.textContent).not.toBe(copy.orchestratorName)
-      // The chained pause's announcement names the agent of the resumed request, not OpenRuntime.
+      // The chained pause's announcement names the agent of the resumed request, not Open Runtime.
       await waitFor(() =>
         expect(
           screen
@@ -149,7 +155,7 @@ describe('who asked (ISSUE-001, ship review D1)', () => {
           .getAllByRole('status')
           .map((s) => s.textContent ?? '')
           .join('|'),
-      ).not.toMatch(/Approval requested by (OpenRuntime|the Orchestrator)/)
+      ).not.toMatch(/Approval requested by (Open Runtime|the Orchestrator)/)
       // Nothing saved yet: the chained continuation has no orchestrator turn.
       const sid = sessionIdOf(router)
       expect(chatMockMessages(sid).filter((m) => m.role === 'assistant')).toHaveLength(0)
@@ -173,12 +179,12 @@ describe('who asked (ISSUE-001, ship review D1)', () => {
       watch.scan()
       expect([...watch.seen].length).toBeGreaterThan(0)
       expect([...watch.seen]).not.toContain(`Requested by ${copy.orchestratorName}`)
-      // Both pauses were announced, and neither named OpenRuntime as the asker.
+      // Both pauses were announced, and neither named Open Runtime as the asker.
       expect(
         [...watch.spoken].filter((t) => /Approval requested by/.test(t)).length,
       ).toBeGreaterThan(0)
       expect([...watch.spoken].join('|')).not.toMatch(
-        /Approval requested by (OpenRuntime|the Orchestrator)/,
+        /Approval requested by (Open Runtime|the Orchestrator)/,
       )
     } finally {
       watch.stop()

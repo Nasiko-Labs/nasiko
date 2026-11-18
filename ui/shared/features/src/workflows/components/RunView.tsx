@@ -12,10 +12,11 @@ import { ApiError } from '@nasiko/data-access/client'
 import { fmtDuration, fmtTokens } from '@nasiko/ui/lib/format'
 import { executionQuery } from '../api'
 import { copy, reason } from '../copy'
-import { execStatus, showsRunError } from '../logic'
+import { execStatus, isExecActive, showsRunError } from '../logic'
 import type { Workflow } from '../types'
 import { Chip, ToneBadge } from './bits'
 import { RunSteps } from './RunSteps'
+import { StopRunButton } from './StopRunButton'
 
 export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBack: () => void }) {
   const queryClient = useQueryClient()
@@ -62,6 +63,11 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="text-base font-medium">{copy.executionN(e.execution_number)}</h2>
             <ToneBadge tone={status.tone}>{status.label}</ToneBadge>
+            {isExecActive(e.status) ? (
+              <div className="ml-auto">
+                <StopRunButton target={{ run: e.id, title: copy.executionN(e.execution_number) }} />
+              </div>
+            ) : null}
           </div>
           <ul aria-label={copy.runDetails} className="flex flex-wrap gap-1.5">
             {chips.map((t) => (
@@ -71,17 +77,23 @@ export function RunView({ wf, exec, onBack }: { wf: Workflow; exec: string; onBa
             ))}
           </ul>
         </div>
-        <RunSteps
-          steps={steps}
-          labels={labels}
-          totalTokens={e.tokens_used ?? 0}
-          hitl={e.hitl}
-          onHitlChange={() =>
-            void queryClient.invalidateQueries({ queryKey: executionQuery(exec).queryKey })
-          }
-        />
+        <div data-tour="wf-run-steps">
+          <RunSteps
+            steps={steps}
+            labels={labels}
+            totalTokens={e.tokens_used ?? 0}
+            hitl={e.hitl}
+            onHitlChange={() =>
+              void queryClient.invalidateQueries({ queryKey: executionQuery(exec).queryKey })
+            }
+          />
+        </div>
         {e.output ? (
-          <section aria-labelledby="run-output" className="flex flex-col gap-2">
+          <section
+            data-tour="wf-run-output"
+            aria-labelledby="run-output"
+            className="flex flex-col gap-2"
+          >
             <h2 id="run-output" className="text-base font-medium">
               {copy.output}
             </h2>

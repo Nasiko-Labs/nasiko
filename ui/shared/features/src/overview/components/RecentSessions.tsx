@@ -3,9 +3,8 @@
  * from the same checks Needs you uses (the newest 25, eng review R7). Tempo errors say the trace store is needed.
  */
 import { Link } from '@tanstack/react-router'
-import { CircleAlert, CircleCheck, CircleDashed } from 'lucide-react'
+import { CircleAlert, CircleCheck, CircleDashed, ListTree, Timer } from 'lucide-react'
 import { useRef } from 'react'
-import { EmptyState } from '@nasiko/ui/composites/state-card'
 import { asButton } from '@nasiko/ui/primitives/button'
 import {
   Table,
@@ -22,12 +21,13 @@ import { ApiError } from '@nasiko/data-access/client'
 import type { NeedsYou } from '../api'
 import { copy } from '../copy'
 import { LAST_WEEK, RECENT_SESSION_ROWS } from '../tuning'
-import { Card, CardError, CardSkeleton, TOUCH } from './Card'
+import { Card, CardError, CardQuiet, CardSkeleton, TOUCH } from './Card'
 
 const MARK: Partial<Record<Status, { Icon: typeof CircleCheck; tone: string; label: string }>> = {
   failed: { Icon: CircleAlert, tone: 'text-destructive', label: copy.sessions.failed },
   ok: { Icon: CircleCheck, tone: 'text-success', label: copy.sessions.ok },
   running: { Icon: CircleDashed, tone: 'text-muted-foreground', label: copy.sessions.running },
+  timed_out: { Icon: Timer, tone: 'text-warning', label: copy.sessions.timed_out },
 }
 const TRACE_STORE = new Set([500, 502, 503])
 
@@ -36,11 +36,14 @@ export function RecentSessions({
   displayName,
   now,
   className,
+  hideEmpty = false,
 }: {
   sessions: NeedsYou['sessions']
   displayName: (raw: string) => string
   now: number
   className?: string
+  /** The Overview's rule (user 2026-11-06): with nothing to show, render nothing instead of the quiet state. */
+  hideEmpty?: boolean
 }) {
   const titleRef = useRef<HTMLHeadingElement>(null)
   const list = sessions.recent
@@ -53,6 +56,7 @@ export function RecentSessions({
     list.error instanceof ApiError && list.error.status === 502 && !list.error.serverMessage
   const traceStore =
     list.error instanceof ApiError && TRACE_STORE.has(list.error.status) && !serverDown
+  if (hideEmpty && !list.isPending && !list.isError && !rows.length) return null
   return (
     <Card
       id="overview-sessions"
@@ -76,7 +80,21 @@ export function RecentSessions({
           titleRef={titleRef}
         />
       ) : !rows.length ? (
-        <EmptyState title={copy.sessions.none} action={<OpenSessions />} className="py-6 md:py-6" />
+        <CardQuiet
+          Icon={ListTree}
+          title={copy.sessions.none}
+          detail={copy.cardQuiet.sessionsDetail}
+          action={
+            <Link
+              to="/chat"
+              search={{ auto: 1 } as never}
+              {...asButton({ variant: 'outline', size: 'sm', className: TOUCH })}
+            >
+              {copy.cardQuiet.sessionsAction}
+            </Link>
+          }
+          testId="sessions-quiet"
+        />
       ) : (
         <Table className="table-fixed text-xs">
           <TableHeader>

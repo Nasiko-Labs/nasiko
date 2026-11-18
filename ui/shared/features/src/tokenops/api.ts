@@ -4,11 +4,13 @@
  */
 import { keepPreviousData, queryOptions, useQuery } from '@tanstack/react-query'
 import { apiData, apiFetch, withQuery } from '@nasiko/data-access/client'
+import { isEndpointAbsent } from '@nasiko/data-access/detect'
 import type {
   FinopsDashboardData,
   FinopsDayDrilldown,
   FinopsSpendCalendar,
   FinopsSpendTimeseries,
+  ModelRoutingData,
   ProviderCatalogEntry,
   SavingsData,
   TopTracesData,
@@ -46,6 +48,7 @@ const tokenopsKeys = {
   day: (date: string, f: Filters) => ['tokenops', 'day', date, f] as const,
   topTraces: (w: string, f: Filters) => ['tokenops', 'top-traces', w, f] as const,
   savings: (w: string, f: Filters, scope: string) => ['tokenops', 'savings', w, f, scope] as const,
+  modelRouting: (w: string, f: Filters) => ['tokenops', 'model-routing', w, f] as const,
   /** Outside the 'tokenops' root: the router shares the catalog, and TokenOps' return refresh leaves it. */
   providers: ['providers'] as const,
 }
@@ -254,5 +257,29 @@ export function useSessionSavings(sessionId: string, enabled = true) {
         { signal },
       ),
     enabled: enabled && !!sessionId,
+  })
+}
+
+/**
+ * How the router chose the model over the window (NAS-1263).
+ *
+ * `null` when the server has no such route: the record ships with the endpoint, so an older server
+ * has neither, and the card hides itself rather than claiming nothing was routed.
+ */
+export function useModelRouting(win: ResolvedWindow, f: Filters, enabled: boolean) {
+  const path = withQuery(`${FINOPS}/model-routing`, { ...win.params, ...filterParams(f) })
+  return useQuery({
+    queryKey: tokenopsKeys.modelRouting(win.key, f),
+    queryFn: async ({ signal }): Promise<ModelRoutingData | null> => {
+      try {
+        return await apiData<ModelRoutingData>(path, { signal })
+      } catch (err) {
+        if (isEndpointAbsent(err)) return null
+        throw err
+      }
+    },
+    placeholderData: keepPreviousData,
+    enabled,
+    meta: { path },
   })
 }

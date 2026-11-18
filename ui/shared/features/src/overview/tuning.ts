@@ -40,6 +40,9 @@ export const FAILED_SESSION_ROWS = 25
 export const NEEDS_VISIBLE_ROWS = 5
 /** Fleet health lists at most this many rated agents, Watch first. */
 export const HEALTH_LIST_ROWS = 5
+/** Fleet health draws a square per agent up to this many agents (4 rows in the card); past it, one bar sized by the
+ * rating counts, so the card stays the same height at any fleet size (NAS-1519). */
+export const HEALTH_SQUARES_MAX = 100
 /** Recent sessions shows this many rows — and asks the server for exactly that. */
 export const RECENT_SESSION_ROWS = 5
 /** Saved tokens by agent: named bars before Other; 7 fill the card beside 5 Recent sessions rows. */
@@ -48,7 +51,22 @@ export const SAVED_BARS = 7
 export const SAVINGS_ROWS = 200
 /** How often Needs you's "Checked …" label re-ages on an open tab. */
 export const CHECKED_TICK_MS = 30_000
+/**
+ * How often an open map refetches the estate. Each read is the platform's heaviest query set, and every open Home tab
+ * polls, so a minute put the Free plane's database at its limit near 11K open tabs; five minutes leaves room for 50K.
+ */
+export const ESTATE_REFRESH_MS = 5 * 60_000
 /** Returning to the page after this long refetches the inbox (design review 8A, the TokenOps rule). */
 export const RETURN_REFRESH_MS = 60_000
 /** Links to Sessions open on the Overview's own 7-day window: a 30-day window runs past Tempo's 7-day search limit (QA ISSUE-003). */
 export const LAST_WEEK = { preset: '7d' } as const
+/** "Did you know?" turns to the next tip after this long (paused on hover or focus, never under reduced motion). */
+export const TIP_ROTATE_MS = 6_000
+/** The coding harness preview's steps (Today, Day 1, Week 1, Month 1) each play this long: 12 s in all (canvas D). */
+export const PREVIEW_STEP_MS = 3_000
+/** Once the preview ends, Home comes back after this long unless the viewer stays (user 2026-11-06: 5 s). */
+export const PREVIEW_HOLD_MS = 5_000
+/** The preview's clock moves on in steps this long (20 frames a second). */
+export const PREVIEW_TICK_MS = 50
+/** The try-a-run card (components/TryAgentRun.tsx): "Agent completed" stays on the button this long before it resets. */
+export const TRY_RUN_COMPLETED_MS = 2_000

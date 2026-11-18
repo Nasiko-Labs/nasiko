@@ -11,7 +11,11 @@ import type { components } from '@nasiko/data-access/schema.gen'
 const BUILD_STATUSES = ['queued', 'building', 'success', 'failed'] as const
 export type BuildStatus = (typeof BUILD_STATUSES)[number]
 
-/** `build/routes.rs` `BuildRecord`: `logs_url` is never written by the OSS server (D-3). */
+/**
+ * `build/routes.rs` `BuildRecord`. `logs_url` is no longer sent to clients — the server now stores
+ * logs in object storage and keeps an internal `blob:` pointer there, served as text by the logs
+ * endpoint. Kept optional so an older server that still sent it (or none) both parse.
+ */
 export const buildRecordSchema = z.object({
   id: z.string(),
   agent_id: z.string(),
@@ -20,7 +24,7 @@ export const buildRecordSchema = z.object({
   version_tag: z.string(),
   image_reference: z.string(),
   status: z.enum(BUILD_STATUSES),
-  logs_url: z.string().nullable(),
+  logs_url: z.string().nullish(),
   created_at: z.string(),
   updated_at: z.string(),
 })

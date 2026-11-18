@@ -239,7 +239,7 @@ function Timeline({
   const today = now.toISOString().slice(0, 10)
 
   return (
-    <section aria-labelledby="hub-title" className="space-y-3">
+    <section data-tour="agent-overview" aria-labelledby="hub-title" className="space-y-3">
       <h2 id="hub-title" className="sr-only">
         {copy.section}
       </h2>

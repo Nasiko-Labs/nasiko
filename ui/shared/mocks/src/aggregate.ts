@@ -22,7 +22,12 @@ import type {
 } from '@nasiko/features/tokenops/types'
 import { round6 as r6, type Seed, type SeedTrace } from './seed'
 import { adminHarnessAgents, harnessTurns, type HarnessSeed } from './seed-harness'
-import type { Savings, SavingsData } from '@nasiko/features/tokenops/types'
+import type {
+  ModelRoutingData,
+  RoutingBucket,
+  Savings,
+  SavingsData,
+} from '@nasiko/features/tokenops/types'
 
 /**
  * The finops endpoints' view of the data: the seed plus the seed admin's coding-harness agents and one trace row per
@@ -797,7 +802,100 @@ export function savings(): SavingsData {
         agent_name: 'Sales Assistant',
         spend_usd: 1492,
       },
-      calibrated_pct: 100,
     },
+  }
+}
+
+/**
+ * Model-routing payload for `GET /finops/model-routing` (`model_routing.rs` `ModelRoutingData`).
+ *
+ * Shaped like the real one rather than minimally: one level that served nothing (so the card's
+ * filtering is exercised), one whose cost covers only part of its calls (the trace it shared with
+ * the classifier), and traces with no record at all — the three cases the card renders differently
+ * and would otherwise regress unseen.
+ */
+export function modelRouting(): ModelRoutingData {
+  const bucket = (key: string, over: Partial<RoutingBucket> = {}): RoutingBucket => ({
+    key,
+    calls: 0,
+    call_share_pct: 0,
+    traces: 0,
+    attributed_calls: 0,
+    tokens: 0,
+    cost_usd: 0,
+    ...over,
+  })
+  return {
+    window: { start: '2026-03-01T00:00:00Z', end: '2026-03-31T00:00:00Z' },
+    traces: 180,
+    calls: 420,
+    model_overridden: 196,
+    tokens: 4_920_000,
+    cost_usd: 740,
+    unrecorded_traces: 36,
+    by_level: [
+      bucket('pinned'),
+      // The cache serves the rest of each classified turn, so most of its calls share a trace with
+      // the classifier and only part of its cost is attributable.
+      bucket('cache_hit', {
+        calls: 212,
+        call_share_pct: 50.48,
+        traces: 96,
+        attributed_calls: 41,
+        tokens: 980_000,
+        cost_usd: 96.4,
+      }),
+      bucket('small_talk', {
+        calls: 54,
+        call_share_pct: 12.86,
+        traces: 54,
+        attributed_calls: 54,
+        tokens: 61_000,
+        cost_usd: 1.2,
+      }),
+      bucket('classified', {
+        calls: 96,
+        call_share_pct: 22.86,
+        traces: 96,
+        attributed_calls: 0,
+        tokens: 0,
+        cost_usd: 0,
+      }),
+      bucket('config', {
+        calls: 58,
+        call_share_pct: 13.81,
+        traces: 30,
+        attributed_calls: 58,
+        tokens: 3_879_000,
+        cost_usd: 642.4,
+      }),
+      bucket('default'),
+    ],
+    by_tier: [
+      bucket('tier1', {
+        calls: 64,
+        call_share_pct: 15.24,
+        traces: 28,
+        attributed_calls: 64,
+        tokens: 2_100_000,
+        cost_usd: 480,
+      }),
+      bucket('tier2', {
+        calls: 190,
+        call_share_pct: 45.24,
+        traces: 74,
+        attributed_calls: 120,
+        tokens: 1_500_000,
+        cost_usd: 190,
+      }),
+      bucket('tier3', {
+        calls: 54,
+        call_share_pct: 12.86,
+        traces: 54,
+        attributed_calls: 54,
+        tokens: 61_000,
+        cost_usd: 1.2,
+      }),
+    ],
   }
 }

@@ -518,7 +518,7 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
     let mut billed_to = None;
     for _ in 0..50 {
         billed_to = sqlx::query_scalar::<_, Uuid>(
-            "SELECT user_id FROM token_usage WHERE agent_id = $1::uuid LIMIT 1",
+            "SELECT user_id FROM trace_usage WHERE agent_id = $1::uuid LIMIT 1",
         )
         .bind(&agent_id)
         .fetch_optional(&server.db)
@@ -537,10 +537,8 @@ async fn a_discovered_agent_routes_llm_calls_with_its_key_and_shows_as_called() 
     let listing = listed(&server, user, "disc-routing", "laptop").await;
     assert!(!listing["agents"][0]["last_llm_call_at"].is_null());
 
-    // FinOps reads `trace_usage`; a direct call reaches it through the direct-usage sync.
-    nasiko_server::observability::trace_materializer::sync_direct_token_usage(&server.db)
-        .await
-        .expect("direct-usage sync");
+    // FinOps reads `trace_usage`, which the router writes as it prices the call: a call with no
+    // flow is its own `direct:` row.
     let in_finops: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM trace_usage \
          WHERE agent_name = 'crew-researcher' AND trace_id LIKE 'direct:%'",

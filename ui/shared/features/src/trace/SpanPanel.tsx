@@ -100,10 +100,12 @@ export function SpanPanel({
   const atEnd = !position || position.index >= position.of
 
   return (
+    // wrap-anywhere is inherited: a long unbroken token (an env-var name, an id in a status message) wraps instead
+    // of widening the 22rem column, whose overflow-y wrapper would then scroll sideways and cut the panel off (NAS-1609).
     <section
       data-tour="session-span-panel"
       aria-labelledby="span-panel-title"
-      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-card p-4"
+      className="flex min-w-0 flex-col gap-3 rounded-lg border border-border bg-card p-4 wrap-anywhere"
     >
       <header className="flex flex-col gap-1">
         <div className="flex items-center justify-between gap-2">

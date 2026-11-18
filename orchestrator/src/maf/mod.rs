@@ -4,6 +4,7 @@ pub mod executor;
 pub mod llm;
 pub mod planner;
 pub mod runner;
+pub mod stop;
 pub mod types;
 mod worker;
 
@@ -35,6 +36,11 @@ pub struct LlmConfig {
 /// execution refreshes its stream message (`Config::maf_heartbeat_secs`).
 pub struct WorkerConfig {
     pub llm: LlmConfig,
+    /// Where the LLM's metered calls are recorded besides `trace_usage`.
+    pub ledger: Arc<dyn nasiko_pricing::UsageLedger>,
+    /// In-process LLM router. When set, platform-key calls go through it (any provider) and
+    /// the router writes `trace_usage`; `None` calls OpenAI directly with `llm.api_key`.
+    pub backend: Option<crate::llm_backend::SharedLlmBackend>,
     pub concurrency: usize,
     pub heartbeat: std::time::Duration,
 }
@@ -52,6 +58,11 @@ pub struct AgentCalls {
     pub meter: Arc<dyn AgentCallMeter>,
     /// Prefixes each step's outbound message to the agent.
     pub outbound: Arc<dyn crate::outbound::OutboundPrefix>,
+    /// Whether each step's message to its agent carries the current date and time.
+    pub clock: nasiko_types::agent_clock::AgentClock,
+    /// Where each step's agent call is sent. The server wires the resolver that wakes parked
+    /// agents; [`crate::target::DirectAddress`] reads the catalog's stored address only.
+    pub targets: Arc<dyn crate::target::AgentTargetResolver>,
 }
 
 /// Spawn the MAF background worker as a detached tokio task.
@@ -74,12 +85,16 @@ pub fn start_worker(
     // What each job runs through — received from the composition root, like the guard.
     maf_executor: Arc<dyn MafExecutor>,
 ) {
-    let llm = LlmClient::new(
+    let mut llm: LlmClient = LlmClient::new(
         http_client,
         config.llm.api_key,
         config.llm.base_url,
         config.llm.model,
-    );
+    )
+    .with_ledger(config.ledger);
+    if let Some(backend) = config.backend {
+        llm = llm.with_backend(backend);
+    }
     let deps = worker::JobDeps {
         db,
         agent_calls,

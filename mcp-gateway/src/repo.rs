@@ -5,7 +5,7 @@
 //! strings (already encrypted by the caller). Row structs deliberately do NOT
 //! derive `Serialize`, so a route can never accidentally serialize a secret.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -79,8 +79,8 @@ pub struct McpConnector {
     /// A `provider_type = 'system'` connector with this true is enabled for every
     /// agent by default — unioned into each agent's enabled set at the gateway's
     /// sole [`crate::permissions::PermissionContext`] builder
-    /// (`load_permission_context`), independent of any `mcp_agent_connector_access`
-    /// row. Non-system rows carry it as `false` and it has no effect on them.
+    /// (`load_permission_context`), unless the agent has an `mcp_agent_connector_access`
+    /// row switching it off. Non-system rows carry it as `false` and it has no effect on them.
     pub auto_enable: bool,
     // uploaded_build-only
     pub build_status: Option<String>,
@@ -300,6 +300,52 @@ pub async fn list_composio_connectors(db: &PgPool) -> Result<Vec<McpConnector>> 
     Ok(rows)
 }
 
+/// Show or hide a platform Composio toolkit. The row stays, so connected accounts and
+/// permission rules survive a hide; a hidden toolkit just stops being offered or served.
+pub async fn set_composio_active(db: &PgPool, id: Uuid, active: bool) -> Result<()> {
+    sqlx::query(
+        "UPDATE mcp_connectors SET is_active = $2 WHERE id = $1 AND provider_type = 'composio'",
+    )
+    .bind(id)
+    .bind(active)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
+/// The toolkit slugs (lowercase) of the platform Composio toolkits switched off in
+/// Settings. A user's account on a hidden toolkit stays connected on Composio's side, so
+/// every Composio call path has to refuse these explicitly.
+pub async fn list_hidden_composio_toolkits(db: &PgPool) -> Result<HashSet<String>> {
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT lower(name) FROM mcp_connectors \
+         WHERE provider_type = 'composio' AND is_active = false",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().collect())
+}
+
+/// Point a platform Composio toolkit at a new auth config (one in the project a newly
+/// saved key belongs to) and expire its users' connections, whose accounts live in the
+/// old project, so each user reconnects against the new one.
+pub async fn rebind_composio_connector(db: &PgPool, id: Uuid, auth_config_id: &str) -> Result<()> {
+    let mut tx = db.begin().await?;
+    sqlx::query(
+        "UPDATE mcp_connectors SET auth_config_id = $2 WHERE id = $1 AND provider_type = 'composio'",
+    )
+    .bind(id)
+    .bind(auth_config_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query("UPDATE mcp_user_connections SET status = 'EXPIRED' WHERE connector_id = $1")
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 /// A user-owned connector by name (used for collision checks / auto-register).
 pub async fn get_owned_connector_by_name(
     db: &PgPool,
@@ -341,7 +387,7 @@ pub async fn get_owned_connector_by_url(
 pub async fn list_accessible_connectors(db: &PgPool, user_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
         r#"SELECT * FROM mcp_connectors c
-           WHERE c.provider_type = 'composio'
+           WHERE (c.provider_type = 'composio' AND COALESCE(c.is_active, true))
               OR c.owner_id = $1
               OR EXISTS (
                    SELECT 1 FROM mcp_connector_grants g
@@ -431,6 +477,26 @@ pub async fn list_auto_enabled_system_connector_ids(
     Ok(ids)
 }
 
+pub async fn list_coding_agent_owner_toolkit_ids(db: &PgPool, agent_id: Uuid) -> Result<Vec<Uuid>> {
+    let ids = sqlx::query_scalar::<_, Uuid>(
+        r#"SELECT uc.connector_id
+           FROM agents a
+           JOIN mcp_user_connections uc ON uc.user_id = a.owner_id
+           JOIN mcp_connectors c ON c.id = uc.connector_id
+           WHERE a.id = $1
+             AND a.deleted_at IS NULL
+             AND a.coding_agent_integration_id IS NOT NULL
+             AND c.provider_type = 'composio'
+             AND COALESCE(c.is_active, true)
+             AND uc.status = 'ACTIVE'
+             AND uc.connected_account_id IS NOT NULL"#,
+    )
+    .bind(agent_id)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
 /// Connectors owned by the user (custom servers they registered).
 pub async fn list_owned_connectors(db: &PgPool, owner_id: Uuid) -> Result<Vec<McpConnector>> {
     let rows = sqlx::query_as::<_, McpConnector>(
@@ -448,7 +514,8 @@ pub async fn can_access_connector(db: &PgPool, user_id: Uuid, connector_id: Uuid
         r#"SELECT EXISTS (
              SELECT 1 FROM mcp_connectors c
              WHERE c.id = $2 AND (
-                 c.provider_type = 'composio' OR c.owner_id = $1
+                 (c.provider_type = 'composio' AND COALESCE(c.is_active, true))
+                 OR c.owner_id = $1
                  OR EXISTS (
                       SELECT 1 FROM mcp_connector_grants g
                       WHERE g.connector_id = c.id
@@ -818,6 +885,7 @@ pub async fn list_active_composio_connections(
            FROM mcp_user_connections uc
            JOIN mcp_connectors c ON c.id = uc.connector_id
            WHERE uc.user_id = $1 AND c.provider_type = 'composio'
+             AND COALESCE(c.is_active, true)
              AND uc.status = 'ACTIVE' AND uc.connected_account_id IS NOT NULL"#,
     )
     .bind(user_id)
@@ -841,8 +909,8 @@ pub struct AgentConsumer {
 }
 
 /// Agents with an explicit `mcp_agent_connector_access` row for this connector.
-/// This table is the single source of truth: rows are seeded on connect
-/// (auto-grant) and removed on explicit revoke. Querying only this table
+/// This table is the single source of truth: a row is written when someone enables the
+/// connector for the agent and removed on explicit revoke. Querying only this table
 /// ensures that an explicitly removed agent stays removed even if its owner
 /// still has an active connection.
 pub async fn list_configured_agent_consumers(
@@ -1204,6 +1272,25 @@ pub async fn get_agent_connector_access_row(
     .fetch_optional(db)
     .await?;
     Ok(row)
+}
+
+pub async fn insert_agent_connector_access_if_absent(
+    db: &PgPool,
+    agent_id: Uuid,
+    connector_id: Uuid,
+    enabled: bool,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled, tool_rules)
+           VALUES ($1, $2, $3, '[]'::jsonb)
+           ON CONFLICT (agent_id, connector_id) DO NOTHING"#,
+    )
+    .bind(agent_id)
+    .bind(connector_id)
+    .bind(enabled)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 pub async fn upsert_agent_connector_access(

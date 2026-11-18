@@ -47,7 +47,7 @@ describe('harness narrative cost clause', () => {
       res: { totals: T({ active_devs: 1, turns: 5 }), by_harness },
       individual: { self: true, name: 'You' },
     })
-    expect(out.join(' ')).toMatch(/estimated cost \$12\.50 \(API list price\)/i)
+    expect(out.join(' ')).toMatch(/usage worth \$12\.50 at API prices/i)
   })
 
   it('an org with no activity at all says nothing about cost', () => {
@@ -74,7 +74,7 @@ describe('harness narrative cost clause, mixed priced and mostly-unpriced (ship 
       individual: { self: true, name: 'You' },
     })
     expect(out.join(' ')).toMatch(
-      /estimated cost at least \$50\.00 \(API list price; some turns unpriced\)/i,
+      /usage worth at least \$50\.00 at API prices \(some turns unpriced\)/i,
     )
   })
 
@@ -89,8 +89,6 @@ describe('harness narrative cost clause, mixed priced and mostly-unpriced (ship 
         by_harness,
       },
     })
-    expect(out[1]).toBe(
-      '1 registered seat had no activity; estimated cost $20.00 (API list price).',
-    )
+    expect(out[1]).toBe('1 registered seat had no activity; usage worth $20.00 at API prices.')
   })
 })

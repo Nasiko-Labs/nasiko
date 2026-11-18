@@ -186,6 +186,27 @@ export async function uploadChatFiles(
   }))
 }
 
+/**
+ * Dictation: `POST /api/transcribe` (`oss/server/src/transcribe.rs`, not in the OpenAPI spec), one multipart `file`,
+ * answered `{text}` by OpenAI Whisper on the user's saved OpenAI key or the server's.
+ */
+export async function transcribe(audio: Blob, name: string): Promise<string> {
+  const form = new FormData()
+  form.append('file', audio, name)
+  // No client deadline: the server's own 60 s HTTP client bounds the provider call.
+  const body = await apiFetch<{ text?: unknown }>('/api/transcribe', {
+    method: 'POST',
+    body: form,
+    timeout: 0,
+  })
+  return typeof body?.text === 'string' ? body.text.trim() : ''
+}
+
+export const useTranscribe = () =>
+  useMutation({
+    mutationFn: ({ audio, name }: { audio: Blob; name: string }) => transcribe(audio, name),
+  })
+
 /** `ChatMessageFile` (chat/models.rs), as the upload route returns it. */
 interface ChatMessageFileRow {
   id: string

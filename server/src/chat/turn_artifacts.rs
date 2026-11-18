@@ -14,6 +14,7 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use bytes::Bytes;
 use futures::stream::BoxStream;
+use nasiko_llm_router::attachments::AttachmentRef;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -33,6 +34,7 @@ pub trait TurnArtifactSource: Send + Sync {
         db: &PgPool,
         session_id: &str,
         message_id: Uuid,
+        trace_id: Option<&str>,
     ) -> Vec<serde_json::Value>;
 
     /// Serve a `chat_message_files` row whose `storage_uri` scheme this source
@@ -43,6 +45,22 @@ pub trait TurnArtifactSource: Send + Sync {
         requester: Uuid,
         file: &ChatMessageFile,
     ) -> Option<DownloadTarget>;
+
+    async fn attachment(&self, _db: &PgPool, _requester: Uuid, _storage_uri: &str) -> Attachable {
+        Attachable::Refused
+    }
+}
+
+pub enum Attachable {
+    File(AttachableFile),
+    Refused,
+    Unavailable,
+}
+
+pub struct AttachableFile {
+    pub reference: AttachmentRef,
+    pub media_type: String,
+    pub size_bytes: u64,
 }
 
 /// How a download whose storage scheme the chat crate does not own should be
@@ -79,6 +97,7 @@ impl TurnArtifactSource for NoTurnArtifacts {
         _db: &PgPool,
         _session_id: &str,
         _message_id: Uuid,
+        _trace_id: Option<&str>,
     ) -> Vec<serde_json::Value> {
         Vec::new()
     }
@@ -136,6 +155,7 @@ mod tests {
             _db: &PgPool,
             _session_id: &str,
             _message_id: Uuid,
+            _trace_id: Option<&str>,
         ) -> Vec<serde_json::Value> {
             vec![serde_json::json!({"id": "x", "name": "x.txt"})]
         }
@@ -164,7 +184,7 @@ mod tests {
         let got = tokio_test_block_on(async {
             pre_install_clone
                 .get()
-                .capture(&never_pool(), "s", Uuid::nil())
+                .capture(&never_pool(), "s", Uuid::nil(), None)
                 .await
         });
         assert_eq!(got.len(), 1, "a clone taken before install() sees the swap");

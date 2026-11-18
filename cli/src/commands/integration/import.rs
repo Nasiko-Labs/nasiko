@@ -21,7 +21,7 @@ use super::agents::{Agent, PastSession, SessionSource};
 use super::backlog::{self, Backlog};
 use super::courier::{Courier, Outcome};
 use super::ledger::Ledger;
-use super::queue;
+use super::queue::{self, QueueDestination};
 use super::report::{self, CaptureMode, Captured, REPORT_BUDGET};
 use super::state::{self, IntegrationState};
 use super::sync::{self, Backoff};
@@ -204,6 +204,13 @@ type Capture = fn(Agent, SessionSource) -> Result<Captured>;
 fn importer<O: FnMut(&ImportRun)>(observe: O, backoff: Backoff) -> Importer<Capture, O> {
     Importer {
         root: state::integrations_dir(),
+        reports_to: super::control_plane::installation_binding()
+            .ok()
+            .map(|binding| QueueDestination {
+                cluster_name: binding.cluster_name,
+                cluster_url: binding.cluster_url,
+                principal_id: binding.principal_id,
+            }),
         ledger: Ledger::load(),
         courier: paced_courier(backoff, sync::deliver_paced),
         capture: capture_past,
@@ -242,6 +249,9 @@ fn capture_past(agent: Agent, source: SessionSource) -> Result<Captured> {
 /// One import: where its queue is, how it captures, delivers and reports.
 struct Importer<C, O> {
     root: PathBuf,
+    /// The server and account its progress is reported to: the backlog counts only their turns.
+    /// `None` (nobody signed in) counts every destination's.
+    reports_to: Option<QueueDestination>,
     ledger: Ledger,
     courier: Courier,
     capture: C,
@@ -389,7 +399,7 @@ where
                     .map(|(agent, key, at)| (agent.spec().id, key.as_str(), *at)),
             )?;
         }
-        self.run.backlog = backlog::backlog_at(&self.root)?;
+        self.run.backlog = backlog::backlog_at(&self.root, self.reports_to.as_ref())?;
         Ok(())
     }
 
@@ -572,6 +582,7 @@ mod tests {
     {
         Importer {
             root: root.to_path_buf(),
+            reports_to: None,
             ledger: Ledger::load_at(root),
             courier: courier(root, up),
             capture: capture_into(root, reads),
@@ -815,6 +826,7 @@ mod tests {
         let queue_root = root.to_path_buf();
         Importer {
             root: root.to_path_buf(),
+            reports_to: None,
             ledger: Ledger::load_at(root),
             courier: paced_courier(backoff, move |pace, backoff| {
                 sync::deliver_at(&queue_root, || Ok(config.clone()), pace, backoff)

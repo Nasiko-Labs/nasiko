@@ -171,6 +171,11 @@ describe('run helpers', () => {
   })
   it('knows the planner refusals', () => {
     expect(planFailure(err(503))).toBe('no-key')
+    expect(
+      planFailure(new ApiError(502, { message: 'rejected', code: 'llm_key_rejected' }, '/x', 'x')),
+    ).toBe('key-rejected')
+    // A 502 without the code is not a key problem.
+    expect(planFailure(err(502))).toBe('other')
     expect(planFailure(err(400))).toBe('no-agents')
     expect(planFailure(err(422))).toBe('planner')
     expect(planFailure(err(429))).toBe('other')

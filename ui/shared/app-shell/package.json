@@ -11,6 +11,8 @@
     "@nasiko/features": "workspace:*",
     "@nasiko/mocks": "workspace:*",
     "@nasiko/ui": "workspace:*",
+    "@sentry/react": "^11.8.0",
+    "@sentry/replay": "^11.8.0",
     "@tanstack/react-query": "^5.103.3",
     "@tanstack/react-router": "^1.170.39",
     "lucide-react": "^1.48.0",

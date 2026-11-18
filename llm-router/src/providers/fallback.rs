@@ -2,7 +2,7 @@
 //!
 //! Try the primary resolved config, then each `fallback_models` entry in order; the
 //! first success wins, and only after all are exhausted — or the chain's shared
-//! `provider_timeout_secs` deadline passes — do we surface a 502. Each
+//! `provider_timeout_secs` deadline passes (a 504) — do we surface an error. Each
 //! call returns the **effective** provider/model actually used, so usage logging
 //! records the fallback when one fires.
 //!
@@ -14,13 +14,15 @@
 //! could end up with vectors from two different models in one corpus. They now take a
 //! single attempt in [`crate::providers::execute_embeddings_once`].
 
+use std::borrow::Cow;
 use std::time::Duration;
 
 use futures::stream::BoxStream;
 use serde_json::Value;
 use tokio::time::Instant;
 
-use super::{ProviderClient, ProviderError, provider_for};
+use super::attempts::AttemptLog;
+use super::{KeyOwner, ProviderClient, ProviderError, provider_for};
 use crate::config::GatewayConfig;
 use crate::error::GatewayError;
 use crate::ir::{ChatChunk, ChatRequest, ChatResponse};
@@ -41,26 +43,44 @@ type ParamFix = (String, Value);
 
 /// Run a non-streaming chat with ordered fallbacks. Returns the response and the
 /// effective `(provider, model)`. The whole chain shares one deadline
-/// ([`within_provider_deadline`]).
+/// ([`within_provider_deadline`]), and each attempt gets a fair share of what is left of it
+/// ([`attempt_budget`]).
 pub async fn execute_chat(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
 ) -> Result<(ChatResponse, Effective), GatewayError> {
-    execute_chat_by(http, cfg, primary, req, provider_deadline(cfg)).await
+    let mut attempts = AttemptLog::default();
+    execute_chat_by(
+        http,
+        cfg,
+        primary,
+        req,
+        provider_deadline(cfg),
+        &mut attempts,
+    )
+    .await
 }
 
 /// [`execute_chat`] against a deadline the caller already holds, so a request that runs
 /// more than one chain (the compact-tools re-send) spends one budget, not one per chain.
+/// Each attempt that failed, the one the deadline cut off included, is left in `attempts`
+/// for the caller to bill.
 pub async fn execute_chat_by(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
     deadline: Instant,
+    attempts: &mut AttemptLog,
 ) -> Result<(ChatResponse, Effective), GatewayError> {
-    within_provider_deadline(cfg, deadline, chat_attempts(http, cfg, primary, req)).await
+    within_provider_deadline(
+        cfg,
+        deadline,
+        chat_attempts(http, cfg, primary, req, deadline, attempts),
+    )
+    .await
 }
 
 /// When a provider call starting now must have answered: `provider_timeout_secs` away.
@@ -71,12 +91,14 @@ pub fn provider_deadline(cfg: &GatewayConfig) -> Instant {
 /// Run a streaming chat with ordered fallbacks (fallback applies to the *initial*
 /// connect failure; once bytes flow, mid-stream errors end the stream). Returns the
 /// chunk stream and the effective `(provider, model)`. The deadline covers establishing
-/// the stream, never the chunks that follow.
+/// the stream, never the chunks that follow. Failed attempts are left in `attempts`, as for
+/// [`execute_chat_by`].
 pub async fn execute_chat_stream(
     http: &reqwest::Client,
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
+    attempts: &mut AttemptLog,
 ) -> Result<
     (
         BoxStream<'static, Result<ChatChunk, ProviderError>>,
@@ -85,26 +107,71 @@ pub async fn execute_chat_stream(
     GatewayError,
 > {
     let deadline = provider_deadline(cfg);
-    within_provider_deadline(cfg, deadline, chat_stream_attempts(http, cfg, primary, req)).await
+    within_provider_deadline(
+        cfg,
+        deadline,
+        chat_stream_attempts(http, cfg, primary, req, deadline, attempts),
+    )
+    .await
 }
 
 /// Bound a whole attempt chain — every fallback and parameter-fix retry — by `deadline`.
-/// The client's read timeout bounds one attempt; without this a stalled provider costs it
-/// once per attempt, so a chain with two fallbacks would outlast the calling agent's own
-/// timeout and the agent would retry while the router still waits.
+/// Each attempt is already held to its share ([`attempt_budget`]); this is the backstop, so a
+/// chain can never outlast the calling agent's own timeout and have the agent retry while the
+/// router still waits.
 async fn within_provider_deadline<T>(
     cfg: &GatewayConfig,
     deadline: Instant,
     attempts: impl Future<Output = Result<T, GatewayError>>,
 ) -> Result<T, GatewayError> {
+    let timed_out = || {
+        GatewayError::UpstreamTimeout(format!(
+            "the fallback chain ran out of time: no provider answered within {}s across all \
+             attempts (LLM_PROVIDER_TIMEOUT_SECS)",
+            cfg.provider_timeout_secs
+        ))
+    };
+    // A spent budget sends nothing: polled once, the chain would start an attempt only for
+    // the deadline to drop it, and that attempt would be billed as a timed-out call.
+    if Instant::now() >= deadline {
+        return Err(timed_out());
+    }
     tokio::time::timeout_at(deadline, attempts)
         .await
-        .unwrap_or_else(|_| {
-            Err(GatewayError::Upstream(format!(
-                "no provider answered within {}s across all attempts",
-                cfg.provider_timeout_secs
-            )))
-        })
+        .unwrap_or_else(|_| Err(timed_out()))
+}
+
+/// A fair share of what is left before `deadline` for the attempt about to run, with
+/// `attempts_left` attempts (this one included) still to go. Recomputed per attempt, so a
+/// model that fails fast leaves its unused time to the next, and a stalled one is cut off
+/// before it can starve the fallbacks.
+fn attempt_budget(deadline: Instant, attempts_left: usize) -> Duration {
+    let left = u32::try_from(attempts_left.max(1)).unwrap_or(u32::MAX);
+    deadline.saturating_duration_since(Instant::now()) / left
+}
+
+/// Run one provider call, giving up on it once `budget` has passed.
+///
+/// The last attempt's budget can equal the client's read timeout, and the two timers then
+/// race: a read timeout surfaces as a bare transport error. A transport error that arrives
+/// only once the budget is spent is that same stall, so it is reported as the timeout.
+async fn within_attempt_budget<T>(
+    model: &str,
+    budget: Duration,
+    call: impl Future<Output = Result<T, ProviderError>>,
+) -> Result<T, ProviderError> {
+    let timed_out = || {
+        ProviderError::TimedOut(format!(
+            "model {model} did not answer within {:.1}s",
+            budget.as_secs_f64()
+        ))
+    };
+    let started = Instant::now();
+    match tokio::time::timeout(budget, call).await {
+        Ok(Err(ProviderError::Transport(_))) if started.elapsed() >= budget => Err(timed_out()),
+        Ok(result) => result,
+        Err(_) => Err(timed_out()),
+    }
 }
 
 async fn chat_attempts(
@@ -112,9 +179,11 @@ async fn chat_attempts(
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
+    deadline: Instant,
+    log: &mut AttemptLog,
 ) -> Result<(ChatResponse, Effective), GatewayError> {
     let attempts = build_attempts(primary, cfg);
-    let mut last: Option<GatewayError> = None;
+    let mut failures = Failures::default();
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat", attempt, i, total);
@@ -126,33 +195,123 @@ async fn chat_attempts(
         ) {
             Ok(p) => p,
             Err(e) => {
-                last = Some(e);
+                failures.note_gateway(e);
                 continue;
             }
         };
         // Working copies so a parameter-fix retry can mutate the request + config.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
-            match provider.chat(&work_req, &work_cfg).await {
+            log.start(&attempt.provider, &attempt.model, attempt.platform_paid);
+            let budget = attempt_budget(deadline, total - i);
+            match within_attempt_budget(&attempt.model, budget, provider.chat(&work_req, &work_cfg))
+                .await
+            {
                 Ok(resp) => {
+                    log.settle();
                     log_response("chat", attempt, &resp);
                     return Ok((resp, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
+                        log.settle();
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
-                    warn_attempt(attempt, &e, i, total);
-                    last = Some(e.into());
+                    log.fail(&e);
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
+                    if let Some(stop) = failures.note(attempt, e) {
+                        return Err(stop);
+                    }
                     break;
                 }
             }
         }
     }
-    Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
+    Err(failures.into_error())
+}
+
+/// The error a chain reports when no attempt answered: an input refused by name, else the
+/// first attempt's, because the primary's is usually the one the caller can act on. One
+/// exception: when that first error is a bare 502 and the last attempt ran out of time, the
+/// timeout (504) describes the chain better.
+#[derive(Default)]
+struct Failures {
+    first: Option<GatewayError>,
+    rejected: Option<GatewayError>,
+    last_timeout: Option<String>,
+}
+
+impl Failures {
+    fn note_gateway(&mut self, err: GatewayError) {
+        self.last_timeout = None;
+        self.first.get_or_insert(err);
+    }
+
+    fn note(&mut self, attempt: &ResolvedConfig, err: ProviderError) -> Option<GatewayError> {
+        let ends_chain = ends_the_chain(&err);
+        let rejected = matches!(err, ProviderError::Rejected(_));
+        let key_owner = KeyOwner::of(attempt.platform_paid, attempt.custom_endpoint.is_some());
+        let err = super::rejected_key_error(&err, &attempt.provider, key_owner)
+            .unwrap_or_else(|| GatewayError::from(err));
+        self.last_timeout = match &err {
+            GatewayError::UpstreamTimeout(message) => Some(message.clone()),
+            _ => None,
+        };
+        if ends_chain {
+            tracing::warn!(
+                target: "nasiko::llm_router::fallback",
+                provider = %attempt.provider, model = %attempt.model, status = %err.status(),
+                "llm attempt failed on the request itself; not re-sending it to a fallback"
+            );
+            return Some(err);
+        }
+        if rejected {
+            self.rejected.get_or_insert(err);
+        } else {
+            self.first.get_or_insert(err);
+        }
+        None
+    }
+
+    fn into_error(self) -> GatewayError {
+        match (self.rejected.or(self.first), self.last_timeout) {
+            (Some(GatewayError::Upstream(_)), Some(timeout)) => {
+                GatewayError::UpstreamTimeout(timeout)
+            }
+            (Some(first), _) => first,
+            (None, _) => GatewayError::Upstream("no provider attempts".to_string()),
+        }
+    }
+}
+
+/// Whether the request itself is bad, so no fallback could answer it either: 400, 413, 415
+/// or 422, unless it blames the model (Bedrock's unknown model id) or is Gemini refusing the
+/// API key, both of which a fallback can fix.
+fn ends_the_chain(err: &ProviderError) -> bool {
+    match err {
+        ProviderError::Status {
+            status: status @ (400 | 413 | 415 | 422),
+            message,
+            ..
+        } => {
+            !message.to_ascii_lowercase().contains("model")
+                && !super::is_bad_key_400(*status, message)
+        }
+        _ => false,
+    }
 }
 
 async fn chat_stream_attempts(
@@ -160,6 +319,8 @@ async fn chat_stream_attempts(
     cfg: &GatewayConfig,
     primary: &ResolvedConfig,
     req: &ChatRequest,
+    deadline: Instant,
+    log: &mut AttemptLog,
 ) -> Result<
     (
         BoxStream<'static, Result<ChatChunk, ProviderError>>,
@@ -168,7 +329,7 @@ async fn chat_stream_attempts(
     GatewayError,
 > {
     let attempts = build_attempts(primary, cfg);
-    let mut last: Option<GatewayError> = None;
+    let mut failures = Failures::default();
     let total = attempts.len();
     for (i, attempt) in attempts.iter().enumerate() {
         log_request("chat_stream", attempt, i, total);
@@ -180,18 +341,27 @@ async fn chat_stream_attempts(
         ) {
             Ok(p) => p,
             Err(e) => {
-                last = Some(e);
+                failures.note_gateway(e);
                 continue;
             }
         };
         // The initial connect (status check) happens before any chunk flows, so a
         // parameter-rejection surfaces here and is safe to fix-and-retry — same as `chat`.
-        let mut work_req = req.clone();
+        let mut work_req = Cow::Borrowed(req);
         let mut work_cfg = attempt.clone();
         let mut applied: Vec<ParamFix> = Vec::new();
         loop {
-            match provider.chat_stream(&work_req, &work_cfg).await {
+            log.start(&attempt.provider, &attempt.model, attempt.platform_paid);
+            let budget = attempt_budget(deadline, total - i);
+            match within_attempt_budget(
+                &attempt.model,
+                budget,
+                provider.chat_stream(&work_req, &work_cfg),
+            )
+            .await
+            {
                 Ok(stream) => {
+                    log.settle();
                     tracing::info!(
                         target: "nasiko::llm_router::provider",
                         provider = %attempt.provider,
@@ -201,18 +371,36 @@ async fn chat_stream_attempts(
                     return Ok((stream, (attempt.provider.clone(), attempt.model.clone())));
                 }
                 Err(e) => {
-                    if try_fix_param(&*provider, &e, &mut work_req, &mut work_cfg, &mut applied) {
+                    if names_a_param(&*provider, &e)
+                        && try_fix_param(
+                            &*provider,
+                            &e,
+                            work_req.to_mut(),
+                            &mut work_cfg,
+                            &mut applied,
+                        )
+                    {
+                        log.settle();
                         log_param_fix(attempt, &applied.last().unwrap().0, &e);
                         continue;
                     }
-                    warn_attempt(attempt, &e, i, total);
-                    last = Some(e.into());
+                    log.fail(&e);
+                    if !ends_the_chain(&e) {
+                        warn_attempt(attempt, &e, i, total);
+                    }
+                    if let Some(stop) = failures.note(attempt, e) {
+                        return Err(stop);
+                    }
                     break;
                 }
             }
         }
     }
-    Err(last.unwrap_or_else(|| GatewayError::Upstream("no provider attempts".to_string())))
+    Err(failures.into_error())
+}
+
+fn names_a_param(provider: &dyn ProviderClient, err: &ProviderError) -> bool {
+    provider.droppable_param(err).is_some() || provider.repairable_param(err).is_some()
 }
 
 /// Log the outbound request to an upstream LLM — provider + model only (never the
@@ -229,18 +417,17 @@ fn log_request(op: &str, attempt: &ResolvedConfig, i: usize, total: usize) {
     );
 }
 
-/// Log the response body returned by the upstream LLM. `info!` so it shows at the
-/// default log level; bodies can be large, so filter this target down to `warn` if
-/// it gets noisy (`RUST_LOG=nasiko::llm_router::provider=warn`).
+/// Log that the upstream LLM answered, and how large the answer was. Never the body itself: it is
+/// the conversation (the model's reply, its tool calls and their arguments), and logs — exported
+/// as span events when OTLP is on — are no place to keep one.
 fn log_response<T: serde::Serialize>(op: &str, attempt: &ResolvedConfig, resp: &T) {
-    tracing::info!(
+    tracing::debug!(
         target: "nasiko::llm_router::provider",
         op,
         provider = %attempt.provider,
         model = %attempt.model,
-        response_body = %serde_json::to_string(resp)
-            .unwrap_or_else(|e| format!("<serialize error: {e}>")),
-        "provider response ← {op} body"
+        response_bytes = serde_json::to_vec(resp).map_or(0, |body| body.len()),
+        "provider response ← {op}"
     );
 }
 
@@ -1095,6 +1282,101 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
     }
 
+    fn bedrock_primary(base: String) -> ResolvedConfig {
+        let mut p = primary("my-bedrock", vec![]);
+        p.model = "global.anthropic.claude-haiku-5-5".into();
+        p.temperature = Some(0.3);
+        p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
+            base_url: base,
+            dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+        });
+        p
+    }
+
+    async fn bedrock_refuses_temperature(
+        server: &mut mockito::ServerGuard,
+        path: &str,
+        wording: &str,
+    ) -> (mockito::Mock, mockito::Mock) {
+        let rejected = server
+            .mock("POST", path)
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "inferenceConfig": { "temperature": 0.3 } }),
+            ))
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(json!({ "message": wording }).to_string())
+            .expect(1)
+            .create_async()
+            .await;
+        let ok = server
+            .mock("POST", path)
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "output": { "message": { "role": "assistant", "content": [{ "text": "ok" }] } },
+                    "stopReason": "end_turn",
+                    "usage": { "inputTokens": 5, "outputTokens": 1, "totalTokens": 6 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        (rejected, ok)
+    }
+
+    #[tokio::test]
+    async fn bedrock_retries_without_a_temperature_its_claude_5_models_call_deprecated() {
+        for wording in [
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+            "This model doesn't support the temperature field.",
+        ] {
+            let mut bedrock = mockito::Server::new_async().await;
+            let path = "/model/global.anthropic.claude-haiku-5-5/converse";
+            let (rejected, ok) = bedrock_refuses_temperature(&mut bedrock, path, wording).await;
+            let primary = bedrock_primary(bedrock.url());
+
+            let (resp, _) = execute_chat(&reqwest::Client::new(), &cfg(""), &primary, &hi())
+                .await
+                .unwrap_or_else(|e| panic!("{wording}: {e}"));
+
+            rejected.assert_async().await;
+            ok.assert_async().await;
+            assert_eq!(resp.choices[0].message.text().as_deref(), Some("ok"));
+        }
+    }
+
+    #[tokio::test]
+    async fn bedrock_streaming_retries_without_a_deprecated_temperature() {
+        let mut bedrock = mockito::Server::new_async().await;
+        let path = "/model/global.anthropic.claude-haiku-5-5/converse-stream";
+        let (rejected, ok) = bedrock_refuses_temperature(
+            &mut bedrock,
+            path,
+            "The model returned the following errors: `temperature` is deprecated for this model.",
+        )
+        .await;
+        let primary = bedrock_primary(bedrock.url());
+
+        let established = execute_chat_stream(
+            &reqwest::Client::new(),
+            &cfg(""),
+            &primary,
+            &hi(),
+            &mut AttemptLog::default(),
+        )
+        .await;
+
+        assert!(
+            established.is_ok(),
+            "stream was not retried without temperature"
+        );
+        rejected.assert_async().await;
+        ok.assert_async().await;
+    }
+
     #[tokio::test]
     async fn anthropic_deprecated_param_is_dropped_and_retried_on_same_model() {
         // claude-opus-4-8 rejects `temperature` with a 400 naming it in the message text
@@ -1222,11 +1504,324 @@ mod tests {
         assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
     }
 
-    /// A provider that accepts the connection and never answers costs each attempt its
-    /// read timeout. Three attempts at 700 ms would be 2.1 s; the shared 1 s deadline ends
-    /// the chain part-way through the second.
+    fn openai_chain(base: String, fallbacks: Vec<&str>) -> (GatewayConfig, ResolvedConfig) {
+        let cfg = GatewayConfig {
+            openai_api_base: base,
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("openai", fallbacks);
+        primary.model = "gpt-4o".into();
+        primary.litellm_model = "openai/gpt-4o".into();
+        primary.temperature = None;
+        primary.max_tokens = None;
+        (cfg, primary)
+    }
+
+    fn ok_body() -> String {
+        json!({
+            "id": "chatcmpl-1", "object": "chat.completion", "model": "gpt-4o-mini",
+            "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+            "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+        })
+        .to_string()
+    }
+
+    async fn model_mock(
+        server: &mut mockito::ServerGuard,
+        model: &str,
+        status: usize,
+        body: String,
+        hits: usize,
+    ) -> mockito::Mock {
+        server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+            .with_status(status)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .expect(hits)
+            .create_async()
+            .await
+    }
+
+    fn hi() -> ChatRequest {
+        serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn a_stalled_provider_is_bounded_once_across_all_attempts() {
+    async fn a_fallback_that_takes_forced_tool_choice_answers_after_claude_refuses_it() {
+        let mut anthropic = mockito::Server::new_async().await;
+        anthropic
+            .mock("POST", "/messages")
+            .with_status(400)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({"type": "error", "error": {"type": "invalid_request_error",
+                    "message": "tool_choice: type \"tool\" and \"any\" are not supported for this model"}})
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let mut openai = mockito::Server::new_async().await;
+        let answered = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let cfg = GatewayConfig {
+            anthropic_api_base: anthropic.url(),
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("anthropic", vec!["openai/gpt-4o-mini"]);
+        primary.model = "claude-sonnet-5-5".into();
+        let mut req = chat_req();
+        req.tool_choice = Some(json!("required"));
+
+        let (_, (provider, _)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap();
+
+        assert_eq!(provider, "openai");
+        answered.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_payload_error_ends_the_chain_and_is_what_the_caller_sees() {
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();
+        let first = model_mock(&mut openai, "gpt-4o", 400, corrupt, 1).await;
+        let fallback = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("could not be processed"), "{err}");
+        first.assert_async().await;
+        fallback.assert_async().await;
+    }
+
+    #[derive(Clone, Default)]
+    struct LoggedMessages(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+    impl tracing::field::Visit for LoggedMessages {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.0.lock().unwrap().push(format!("{value:?}"));
+            }
+        }
+    }
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for LoggedMessages {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            event.record(&mut self.clone());
+        }
+    }
+
+    impl LoggedMessages {
+        /// Collect this thread's log messages until the guard drops. An idle second dispatcher
+        /// is held with it: while only one scoped dispatcher exists, tracing takes a callsite's
+        /// interest from the default of whichever thread reaches it first, so a parallel test
+        /// with no subscriber would silence that callsite here.
+        fn capture() -> (Self, (tracing::Dispatch, tracing::subscriber::DefaultGuard)) {
+            use tracing_subscriber::prelude::*;
+            let logged = Self::default();
+            let idle = tracing::Dispatch::new(tracing_subscriber::registry());
+            let guard = tracing::subscriber::set_default(
+                tracing_subscriber::registry().with(logged.clone()),
+            );
+            (logged, (idle, guard))
+        }
+
+        fn any(&self, needle: &str) -> bool {
+            self.0.lock().unwrap().iter().any(|m| m.contains(needle))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_stops_never_logs_that_it_is_trying_a_fallback() {
+        let (logged, _capturing) = LoggedMessages::capture();
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "The file could not be processed."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 400, corrupt, 2).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+        let http = reqwest::Client::new();
+
+        execute_chat(&http, &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+        assert!(
+            execute_chat_stream(&http, &cfg, &primary, &hi(), &mut AttemptLog::default())
+                .await
+                .is_err()
+        );
+
+        assert!(logged.any("not re-sending it to a fallback"));
+        assert!(
+            !logged.any("trying fallback"),
+            "{:?}",
+            logged.0.lock().unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_chain_that_moves_on_still_logs_that_it_is_trying_a_fallback() {
+        let (logged, _capturing) = LoggedMessages::capture();
+        let mut openai = mockito::Server::new_async().await;
+        let missing =
+            json!({"error": {"message": "The model `gpt-4o` does not exist."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 404, missing, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert!(logged.any("llm attempt failed; trying fallback"));
+        assert!(!logged.any("not re-sending"));
+    }
+
+    #[tokio::test]
+    async fn a_payload_error_ends_a_streaming_chain_too() {
+        let mut openai = mockito::Server::new_async().await;
+        let corrupt = json!({"error": {"message": "Invalid MIME type."}}).to_string();
+        let first = model_mock(&mut openai, "gpt-4o", 400, corrupt, 1).await;
+        let fallback = model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 0).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let err = match execute_chat_stream(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary,
+            &hi(),
+            &mut AttemptLog::default(),
+        )
+        .await
+        {
+            Ok(_) => panic!("a payload error must not be answered by a fallback"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        first.assert_async().await;
+        fallback.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn a_400_that_blames_the_model_still_lets_the_fallback_answer() {
+        let mut openai = mockito::Server::new_async().await;
+        let refusal =
+            json!({"error": {"message": "The model `gpt-4o` does not exist or you do not have access to it."}})
+                .to_string();
+        model_mock(&mut openai, "gpt-4o", 400, refusal, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let (_, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert_eq!(model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_says_whose_key_it_was_and_stays_a_502() {
+        let mut openai = mockito::Server::new_async().await;
+        let refused =
+            json!({"error": {"message": "Incorrect API key provided: sk-..."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 401, refused.clone(), 2).await;
+
+        let (cfg, platform) = openai_chain(openai.url(), vec![]);
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &platform, &hi())
+            .await
+            .unwrap_err();
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(
+            err.to_string(),
+            "Upstream LLM error: provider 'openai' rejected this server's API key (HTTP 401). \
+             Ask your admin to check PLATFORM_OPENAI_API_KEY."
+        );
+
+        let (cfg, mut own_key) = openai_chain(openai.url(), vec![]);
+        own_key.platform_paid = false;
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &own_key, &hi())
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Upstream LLM error: provider 'openai' rejected the API key from your LLM config \
+             (HTTP 401). Update the key in LLM router."
+        );
+        assert!(!err.to_string().contains("Incorrect API key"));
+    }
+
+    #[test]
+    fn a_gemini_bad_key_400_does_not_end_the_chain() {
+        let bad_key = ProviderError::Status {
+            status: 400,
+            message: "API key not valid. Please pass a valid API key.".into(),
+            retryable: false,
+        };
+        assert!(!ends_the_chain(&bad_key));
+    }
+
+    #[tokio::test]
+    async fn a_missing_model_still_lets_the_fallback_answer() {
+        let mut openai = mockito::Server::new_async().await;
+        let gone = json!({"error": {"message": "This model has been deprecated."}}).to_string();
+        model_mock(&mut openai, "gpt-4o", 404, gone, 1).await;
+        model_mock(&mut openai, "gpt-4o-mini", 200, ok_body(), 1).await;
+        let (cfg, primary) = openai_chain(openai.url(), vec!["openai/gpt-4o-mini"]);
+
+        let (_, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap();
+
+        assert_eq!(model, "gpt-4o-mini");
+    }
+
+    #[tokio::test]
+    async fn an_input_refused_by_name_beats_a_later_server_error() {
+        let mut openai = mockito::Server::new_async().await;
+        model_mock(&mut openai, "gpt-4o-mini", 502, "bad gateway".into(), 1).await;
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let mut primary = primary("anthropic", vec!["openai/gpt-4o-mini"]);
+        primary.temperature = None;
+        let req: ChatRequest = serde_json::from_value(json!({
+            "messages": [{ "role": "user", "content": [
+                { "type": "text", "text": "what is this" },
+                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
+            ]}]
+        }))
+        .unwrap();
+
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &req)
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(
+            err.to_string()
+                .starts_with("Anthropic does not accept this input"),
+            "{err}"
+        );
+    }
+
+    /// A listener that accepts every connection and never answers, and how many it took.
+    async fn stalled_listener() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
         use std::sync::Arc;
         use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -1242,6 +1837,17 @@ mod tests {
                 held.push(socket);
             }
         });
+        (base, connections)
+    }
+
+    /// A provider that accepts the connection and never answers. Each of the three attempts
+    /// gets its share of the 1 s deadline, so all three are tried and the chain still ends
+    /// near 1 s, as a 504 that says which model did not answer.
+    #[tokio::test]
+    async fn a_stalled_provider_is_bounded_once_across_all_attempts() {
+        use std::sync::atomic::Ordering;
+
+        let (base, connections) = stalled_listener().await;
         let cfg = GatewayConfig {
             openai_api_base: base,
             platform_openai_api_key: "sk-platform".into(),
@@ -1254,23 +1860,111 @@ mod tests {
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
                 .unwrap();
-        let http = crate::provider_client(std::time::Duration::from_millis(700));
+        // The read timeout is longer than the deadline: the shares, not it, end each attempt.
+        let http = crate::provider_client(std::time::Duration::from_secs(5));
 
         let started = std::time::Instant::now();
-        let err = execute_chat(&http, &cfg, &primary, &req).await.unwrap_err();
+        let mut attempts = AttemptLog::default();
+        let err = execute_chat_by(
+            &http,
+            &cfg,
+            &primary,
+            &req,
+            provider_deadline(&cfg),
+            &mut attempts,
+        )
+        .await
+        .unwrap_err();
         let elapsed = started.elapsed();
 
         assert!(
-            err.to_string().contains("across all attempts"),
-            "expected the chain deadline, got {err}"
+            err.to_string().contains("did not answer within"),
+            "expected a per-attempt timeout, got {err}"
         );
-        assert_eq!(err.status(), axum::http::StatusCode::BAD_GATEWAY);
+        assert_eq!(err.status(), axum::http::StatusCode::GATEWAY_TIMEOUT);
         assert!(
-            elapsed < std::time::Duration::from_millis(1600),
+            elapsed < std::time::Duration::from_millis(1300),
             "{elapsed:?}"
         );
-        // The fallback did run — the deadline, not the read timeout, ended the chain.
-        assert!(connections.load(Ordering::SeqCst) >= 2);
+        assert_eq!(connections.load(Ordering::SeqCst), 3);
+        let classes: Vec<_> = attempts
+            .take_failed()
+            .into_iter()
+            .map(|f| f.failure.class)
+            .collect();
+        assert_eq!(classes, vec!["timeout"; 3]);
+    }
+
+    /// With one attempt, its share is the whole deadline, the same as the client's read
+    /// timeout. Whichever timer fires first, the caller gets a 504 that names the model.
+    #[tokio::test]
+    async fn a_single_stalled_attempt_is_a_timeout_even_when_the_read_timeout_fires() {
+        let (base, _) = stalled_listener().await;
+        let cfg = GatewayConfig {
+            openai_api_base: base,
+            provider_timeout_secs: 1,
+            ..Default::default()
+        };
+        let mut primary = primary("openai", vec![]);
+        primary.temperature = None;
+        primary.max_tokens = None;
+        let http = crate::provider_client(std::time::Duration::from_secs(1));
+
+        let err = execute_chat(&http, &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+
+        assert_eq!(
+            err.status(),
+            axum::http::StatusCode::GATEWAY_TIMEOUT,
+            "{err}"
+        );
+        assert!(err.to_string().contains("did not answer within"), "{err}");
+    }
+
+    /// A stalled primary is cut off at its share, and the healthy fallback answers well
+    /// inside the chain deadline.
+    #[tokio::test]
+    async fn a_stalled_primary_leaves_time_for_a_healthy_fallback() {
+        let (stalled, _) = stalled_listener().await;
+        let mut healthy = mockito::Server::new_async().await;
+        let answered = healthy
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ok_body())
+            .expect(1)
+            .create_async()
+            .await;
+        let cfg = GatewayConfig {
+            openai_api_base: healthy.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            provider_timeout_secs: 2,
+            ..Default::default()
+        };
+        // The primary is a custom endpoint that stalls; the cross-provider fallback is
+        // OpenAI on the healthy mock.
+        let mut primary = primary("stall-gw", vec!["openai/backup"]);
+        primary.custom_endpoint = Some(crate::resolver::CustomEndpoint {
+            base_url: stalled,
+            dialect: crate::providers::ProviderDialect::OpenAi,
+        });
+        let req: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+                .unwrap();
+        let http = crate::provider_client(std::time::Duration::from_secs(5));
+
+        let started = std::time::Instant::now();
+        let (_, (provider, model)) = execute_chat(&http, &cfg, &primary, &req).await.unwrap();
+
+        assert_eq!((provider.as_str(), model.as_str()), ("openai", "backup"));
+        // Primary's share is half of 2 s; the fallback answers at once after it.
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(1600),
+            "{:?}",
+            started.elapsed()
+        );
+        answered.assert_async().await;
     }
 
     /// The compact-tools re-send runs a second chain against the first one's deadline, so
@@ -1297,18 +1991,172 @@ mod tests {
         let http = reqwest::Client::new();
         let deadline = provider_deadline(&cfg);
 
-        let first = execute_chat_by(&http, &cfg, &primary, &req, deadline).await;
+        let mut attempts = AttemptLog::default();
+        let first = execute_chat_by(&http, &cfg, &primary, &req, deadline, &mut attempts).await;
         assert!(first.is_err());
+        // The attempt the deadline cut off held the request at the provider: a failed call.
+        let cut_off = attempts.take_failed();
+        assert_eq!(cut_off.len(), 1);
+        assert_eq!(cut_off[0].failure.class, "timeout");
         let started = std::time::Instant::now();
-        let second = execute_chat_by(&http, &cfg, &primary, &req, deadline).await;
+        let second = execute_chat_by(&http, &cfg, &primary, &req, deadline, &mut attempts).await;
 
         let err = second.unwrap_err();
         assert!(err.to_string().contains("across all attempts"), "{err}");
+        assert!(
+            attempts.take_failed().is_empty(),
+            "a spent budget sends nothing"
+        );
         assert!(
             started.elapsed() < std::time::Duration::from_millis(200),
             "{:?}",
             started.elapsed()
         );
+    }
+
+    /// A primary that answers 503 and a fallback that succeeds are two calls: the failed one
+    /// is left in the log for the caller to bill, the success is returned as before.
+    #[tokio::test]
+    async fn a_failed_primary_before_a_successful_fallback_is_logged_as_its_own_call() {
+        let mut openai = mockito::Server::new_async().await;
+        openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "model": "primary-model" }),
+            ))
+            .with_status(503)
+            .with_body("overloaded")
+            .create_async()
+            .await;
+        openai
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::PartialJson(json!({ "model": "backup" })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "x", "object": "chat.completion", "created": 1, "model": "backup",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" }, "finish_reason": "stop" }],
+                    "usage": { "prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            ..Default::default()
+        };
+        let primary = primary("openai", vec!["openai/backup"]);
+        let req: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+                .unwrap();
+        let mut attempts = AttemptLog::default();
+
+        let (resp, (_, model)) = execute_chat_by(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary,
+            &req,
+            provider_deadline(&cfg),
+            &mut attempts,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(model, "backup");
+        assert_eq!(resp.usage.and_then(|u| u.prompt_tokens), Some(3));
+        let failed = attempts.take_failed();
+        assert_eq!(failed.len(), 1, "{failed:?}");
+        assert_eq!(failed[0].model, "primary-model");
+        assert_eq!(failed[0].failure.class, "status");
+        assert_eq!(failed[0].failure.http_status, Some(503));
+    }
+
+    /// A chain where every attempt fails leaves one failed call per attempt, non-streaming
+    /// (429 then 500) and streaming (a 503 before any chunk) alike.
+    #[tokio::test]
+    async fn an_exhausted_chain_logs_every_failed_attempt() {
+        let mut openai = mockito::Server::new_async().await;
+        for (model, status) in [("primary-model", 429), ("backup", 500)] {
+            openai
+                .mock("POST", "/chat/completions")
+                .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                .with_status(status)
+                .with_body("upstream error")
+                .create_async()
+                .await;
+        }
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            ..Default::default()
+        };
+        let primary = primary("openai", vec!["openai/backup"]);
+        let req: ChatRequest =
+            serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))
+                .unwrap();
+        let http = reqwest::Client::new();
+
+        let mut attempts = AttemptLog::default();
+        let err = execute_chat_by(
+            &http,
+            &cfg,
+            &primary,
+            &req,
+            provider_deadline(&cfg),
+            &mut attempts,
+        )
+        .await
+        .unwrap_err();
+        // The primary's 429 is reported, not the fallback's later 500.
+        assert_eq!(err.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        let statuses: Vec<_> = attempts
+            .take_failed()
+            .into_iter()
+            .map(|f| (f.model, f.failure.http_status))
+            .collect();
+        assert_eq!(
+            statuses,
+            vec![
+                ("primary-model".to_string(), Some(429)),
+                ("backup".to_string(), Some(500))
+            ]
+        );
+
+        let mut streamed = AttemptLog::default();
+        let only_primary = ResolvedConfig {
+            fallback_models: Vec::new(),
+            ..primary
+        };
+        let mut stream_server = mockito::Server::new_async().await;
+        stream_server
+            .mock("POST", "/chat/completions")
+            .with_status(503)
+            .with_body("overloaded")
+            .create_async()
+            .await;
+        let stream_cfg = GatewayConfig {
+            openai_api_base: stream_server.url(),
+            ..Default::default()
+        };
+        let streaming_req = ChatRequest {
+            stream: Some(true),
+            ..req
+        };
+        assert!(
+            execute_chat_stream(
+                &http,
+                &stream_cfg,
+                &only_primary,
+                &streaming_req,
+                &mut streamed
+            )
+            .await
+            .is_err()
+        );
+        let failed = streamed.take_failed();
+        assert_eq!(failed.len(), 1);
+        assert_eq!(failed[0].failure.http_status, Some(503));
     }
 
     /// An audio part routed to Anthropic is refused by the spoke before any request
@@ -1349,5 +2197,163 @@ mod tests {
         );
         assert!(err.to_string().contains("input_audio"), "{err}");
         never_called.assert_async().await;
+    }
+
+    /// One OpenAI mock answering `primary-model` with `primary` and `backup` with
+    /// `backup` (status, body), and the chain config pointing at it. Each mock expects
+    /// exactly the given number of calls.
+    async fn two_model_server(
+        primary: (u16, &str, usize),
+        backup: (u16, &str, usize),
+    ) -> (mockito::ServerGuard, Vec<mockito::Mock>, GatewayConfig) {
+        let mut openai = mockito::Server::new_async().await;
+        let mut mocks = Vec::new();
+        for (model, (status, body, calls)) in [("primary-model", primary), ("backup", backup)] {
+            mocks.push(
+                openai
+                    .mock("POST", "/chat/completions")
+                    .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
+                    .with_status(status as usize)
+                    .with_header("content-type", "application/json")
+                    .with_body(body)
+                    .expect(calls)
+                    .create_async()
+                    .await,
+            );
+        }
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        (openai, mocks, cfg)
+    }
+
+    /// A request the provider refuses as malformed would be refused by every model: it is
+    /// sent once, and its 400 comes back, however many fallbacks are configured.
+    #[tokio::test]
+    async fn a_bad_request_is_sent_once_however_many_fallbacks() {
+        let refused = r#"{"error":{"message":"The file could not be processed."}}"#;
+        let mut openai = mockito::Server::new_async().await;
+        let only_once = openai
+            .mock("POST", "/chat/completions")
+            .with_status(400)
+            .with_body(refused)
+            .expect(1)
+            .create_async()
+            .await;
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            ..Default::default()
+        };
+        let primary = primary("openai", vec!["openai/backup", "openai/backup-2"]);
+
+        let mut attempts = AttemptLog::default();
+        let err = execute_chat_by(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary,
+            &hi(),
+            provider_deadline(&cfg),
+            &mut attempts,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert!(err.to_string().contains("could not be processed"), "{err}");
+        assert_eq!(attempts.take_failed().len(), 1);
+        only_once.assert_async().await;
+    }
+
+    /// A model the provider does not know is the model's fault, not the request's: the
+    /// fallback answers. Bedrock says so with a 400, which must not end the chain either.
+    #[tokio::test]
+    async fn an_unknown_primary_model_falls_back() {
+        for (status, body) in [
+            (
+                404,
+                r#"{"error":{"message":"The model `primary-model` does not exist"}}"#,
+            ),
+            (
+                400,
+                r#"{"message":"The provided model identifier is invalid."}"#,
+            ),
+        ] {
+            let (_server, mocks, cfg) =
+                two_model_server((status, body, 1), (200, &ok_body(), 1)).await;
+            let primary = primary("openai", vec!["openai/backup"]);
+
+            let (_, (_, model)) = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+                .await
+                .unwrap();
+
+            assert_eq!(model, "backup", "after a {status}");
+            for mock in mocks {
+                mock.assert_async().await;
+            }
+        }
+    }
+
+    /// Input the primary's provider cannot take is refused before it is sent; a fallback on
+    /// a provider that takes it answers.
+    #[tokio::test]
+    async fn input_the_primary_cannot_accept_goes_to_the_fallback() {
+        let mut openai = mockito::Server::new_async().await;
+        let answered = openai
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(ok_body())
+            .expect(1)
+            .create_async()
+            .await;
+        let cfg = GatewayConfig {
+            openai_api_base: openai.url(),
+            platform_openai_api_key: "sk-platform".into(),
+            ..Default::default()
+        };
+        let req: ChatRequest = serde_json::from_value(json!({ "messages": [{
+            "role": "user",
+            "content": [
+                { "type": "text", "text": "what is the code?" },
+                { "type": "input_audio", "input_audio": { "data": "UklGRg==", "format": "wav" } }
+            ]
+        }] }))
+        .unwrap();
+
+        let (_, (provider, model)) = execute_chat(
+            &reqwest::Client::new(),
+            &cfg,
+            &primary("anthropic", vec!["openai/backup"]),
+            &req,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!((provider.as_str(), model.as_str()), ("openai", "backup"));
+        answered.assert_async().await;
+    }
+
+    /// When every model fails, the primary's error is the one reported: its 404 tells the
+    /// caller what to fix, the fallback's later 500 does not.
+    #[tokio::test]
+    async fn an_exhausted_chain_reports_the_first_error() {
+        let (_server, mocks, cfg) = two_model_server(
+            (404, r#"{"error":{"message":"model not found"}}"#, 1),
+            (500, "boom", 1),
+        )
+        .await;
+        let primary = primary("openai", vec!["openai/backup"]);
+
+        let err = execute_chat(&reqwest::Client::new(), &cfg, &primary, &hi())
+            .await
+            .unwrap_err();
+
+        assert_eq!(err.status(), axum::http::StatusCode::NOT_FOUND);
+        assert!(err.to_string().contains("model not found"), "{err}");
+        for mock in mocks {
+            mock.assert_async().await;
+        }
     }
 }

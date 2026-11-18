@@ -119,8 +119,6 @@ async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
-# assertion_sign_in generates its own Ed25519 key per run, so no private key is ever committed.
-ring = { workspace = true }
 mockito = { workspace = true }
 zstd = { workspace = true }
 criterion = { workspace = true }

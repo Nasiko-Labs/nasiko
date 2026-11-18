@@ -3,7 +3,7 @@
  * edits replace history), the This-month KPI label, the narrow-screen window Select, and "now" moving only when the
  * user comes back to the page after 1 min+ (month boundary included).
  */
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { configureMocks } from '@nasiko/mocks/handlers'
@@ -32,6 +32,19 @@ async function choose(
   await user.click(await screen.findByRole('option', { name: option }))
 }
 
+/** The Custom range's picker button (one per page: the top bar's on desktop). */
+const rangeButton = () => screen.findByRole('button', { name: /^Custom range \(UTC\)/ })
+
+/** Opens the picker and returns it. */
+async function openPicker(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await rangeButton())
+  return screen.findByRole('dialog')
+}
+
+/** A day in the open picker, by its full name ("March 5th, 2026"). */
+const day = (picker: HTMLElement, name: string) =>
+  within(picker).getByRole('button', { name: new RegExp(`${name}, 2026`) })
+
 // Regression: ISSUE-001 (/qa 2026-09-26, .gstack/qa-reports/qa-report-localhost-3000-2026-09-26.md): an invalid
 // custom range hid the date inputs and lost the user's edit.
 describe('invalid custom range', () => {
@@ -39,23 +52,25 @@ describe('invalid custom range', () => {
     ['inverted', '2026-03-10', '2026-03-01'],
     ['impossible date', '2026-02-30', '2026-03-02'],
     ['future', '2026-04-01', '2026-04-05'],
-  ])('%s: keeps the inputs, flags the range, and shows 30d meanwhile', async (_, from, to) => {
+  ])('%s: keeps the range, flags it, and shows 30d meanwhile', async (_, from, to) => {
     renderApp(`/tokenops?open=all&preset=custom&from=${from}&to=${to}`)
     expect(await screen.findByLabelText('Key metrics, Last 30 days')).toBeInTheDocument()
-    expect(screen.getByLabelText('From (UTC)')).toBeInTheDocument()
-    expect(screen.getByLabelText('To (UTC)')).toHaveAttribute('aria-invalid', 'true')
+    expect(await rangeButton()).toHaveAttribute('aria-invalid', 'true')
     expect(screen.getByRole('status')).toHaveTextContent('Invalid range, showing the last 30 days')
   })
 
-  it('a valid range shows no warning', async () => {
+  it('a valid range shows no warning, and a link to it leaves the picker shut', async () => {
     renderApp('/tokenops?open=all&preset=custom&from=2026-03-01&to=2026-03-10')
-    expect(await screen.findByLabelText('To (UTC)')).not.toHaveAttribute('aria-invalid')
+    const button = await rangeButton()
+    expect(button).not.toHaveAttribute('aria-invalid')
+    expect(button).toHaveAccessibleName('Custom range (UTC): Mar 1 – Mar 10')
     expect(screen.queryByText(/Invalid range/)).toBeNull()
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 })
 
 describe('time control', () => {
-  it('a preset replaces the window; Custom seeds today and edits the From date', async () => {
+  it('a preset replaces the window; Custom seeds today and opens the picker, where two clicks pick the range', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/tokenops?open=all')
     await screen.findByLabelText('Key metrics, Last 30 days')
@@ -69,30 +84,88 @@ describe('time control', () => {
         to: '2026-03-20',
       }),
     )
-    fireEvent.change(screen.getByLabelText('From (UTC)'), { target: { value: '2026-03-05' } })
+    const picker = await screen.findByRole('dialog')
+    await user.click(day(picker, 'March 5th'))
+    await user.click(day(picker, 'March 10th'))
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({
         preset: 'custom',
         from: '2026-03-05',
-        to: '2026-03-20',
+        to: '2026-03-10',
       }),
     )
-    fireEvent.change(screen.getByLabelText('To (UTC)'), { target: { value: '2026-03-10' } })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
+  // Regression (NAS-1516): the custom dates were native date inputs that saved every keystroke, so typing a year
+  // refetched the page with years like 0002 and dragged the other end along. Months are paged in the picker, and only
+  // a whole range is saved.
+  it('pages to another month and saves the range only once both ends are picked', async () => {
+    const user = userEvent.setup()
+    const { router } = renderApp('/tokenops?open=all&preset=custom&from=2026-03-01&to=2026-03-10')
+    const picker = await openPicker(user)
+    expect(within(picker).getByText('Pick the first and last day (UTC)')).toBeInTheDocument()
+    await user.click(within(picker).getByRole('button', { name: /previous month/i }))
+    expect(within(picker).getByRole('grid', { name: /^January 2026/ })).toBeInTheDocument()
+    expect(within(picker).getByRole('grid', { name: /^February 2026/ })).toBeInTheDocument()
+    // No spill-over days: with two months they would show one day twice.
+    expect(within(picker).queryByRole('button', { name: /December 31st, 2025/ })).toBeNull()
+    await user.click(day(picker, 'February 1st'))
+    expect(router.state.location.search).toMatchObject({ from: '2026-03-01', to: '2026-03-10' })
+    expect(within(picker).getByText('Feb 1 – now pick the last day')).toBeInTheDocument()
+    // The range follows the pointer before the second click.
+    await user.hover(day(picker, 'February 10th'))
+    expect(day(picker, 'February 5th')).toHaveAttribute('data-range-middle', 'true')
+    await user.click(day(picker, 'February 28th'))
     await waitFor(() =>
-      expect(router.state.location.search).toMatchObject({ from: '2026-03-05', to: '2026-03-10' }),
+      expect(router.state.location.search).toMatchObject({ from: '2026-02-01', to: '2026-02-28' }),
+    )
+    expect(await screen.findByRole('heading', { name: /February 2026/ })).toBeInTheDocument()
+  })
+
+  it('an end picked before the start swaps them; days after today and later months are off', async () => {
+    const user = userEvent.setup()
+    const { router } = renderApp('/tokenops?open=all&preset=custom&from=2026-03-01&to=2026-03-10')
+    const picker = await openPicker(user)
+    expect(day(picker, 'March 21st')).toBeDisabled()
+    expect(within(picker).getByRole('button', { name: /next month/i })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+    await user.click(day(picker, 'March 12th'))
+    await user.click(day(picker, 'March 4th'))
+    await waitFor(() =>
+      expect(router.state.location.search).toMatchObject({ from: '2026-03-04', to: '2026-03-12' }),
     )
   })
 
-  it('editing custom dates replaces history instead of adding a Back step per change', async () => {
+  it('the month and year dropdowns jump months, back to January 2025 and no further', async () => {
+    const user = userEvent.setup()
+    renderApp('/tokenops?open=all&preset=custom&from=2026-03-01&to=2026-03-10')
+    const picker = await openPicker(user)
+    const year = within(picker).getAllByRole('combobox', { name: /year/i })[0]
+    expect(
+      within(year)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['2025', '2026'])
+    await user.selectOptions(year, '2025')
+    await user.selectOptions(within(picker).getAllByRole('combobox', { name: /month/i })[0], 'Jan')
+    expect(within(picker).getByRole('grid', { name: /^January 2025/ })).toBeInTheDocument()
+    expect(within(picker).getByRole('button', { name: /previous month/i })).toHaveAttribute(
+      'aria-disabled',
+      'true',
+    )
+  })
+
+  it('picking a range replaces history instead of adding a Back step', async () => {
     const user = userEvent.setup()
     const { router } = renderApp('/tokenops?open=all&preset=30d')
     await screen.findByLabelText('Key metrics, Last 30 days')
     await user.click(screen.getAllByRole('radio', { name: 'Custom' })[0])
-    const from = await screen.findByLabelText('From (UTC)')
-    await user.clear(from)
-    await user.type(from, '2026-03-01')
-    await user.clear(screen.getByLabelText('To (UTC)'))
-    await user.type(screen.getByLabelText('To (UTC)'), '2026-03-10')
+    const picker = await screen.findByRole('dialog')
+    await user.click(day(picker, 'March 1st'))
+    await user.click(day(picker, 'March 10th'))
     await waitFor(() =>
       expect(router.state.location.search).toMatchObject({
         preset: 'custom',
@@ -145,6 +218,9 @@ describe('narrow screens', () => {
         to: '2026-03-20',
       }),
     )
+    // The picker opens by itself here too, one month wide.
+    const picker = await screen.findByRole('dialog')
+    expect(within(picker).getAllByRole('grid')).toHaveLength(1)
   })
 })
 
@@ -218,5 +294,24 @@ describe('coming back to the page', () => {
       restoreClockAndVisibility()
       rec.stop()
     }
+  })
+})
+
+// Regression (user report 2026-11-05): picking another month left the month card on this one.
+describe('the month card follows the window', () => {
+  it('shows the whole of last month, without a forecast, when Last month is picked', async () => {
+    renderApp('/tokenops?preset=last-month')
+    const title = await screen.findByRole('heading', { name: /February 2026/ })
+    expect(title).toHaveTextContent(/^Month/)
+    const card = title.closest('section')!
+    expect(await within(card).findByTestId('mtd-spend')).toHaveTextContent(/\$/)
+    expect(within(card).queryByTestId('forecast')).toBeNull()
+    expect(within(card).getByText(/the month before|No spend the month before/)).toBeInTheDocument()
+  })
+
+  it('stays on this month for a window that ends now', async () => {
+    renderApp('/tokenops?preset=7d')
+    const title = await screen.findByRole('heading', { name: /March 2026/ })
+    expect(title).toHaveTextContent(/^This month/)
   })
 })

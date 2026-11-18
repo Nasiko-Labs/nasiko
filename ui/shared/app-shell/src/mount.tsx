@@ -11,14 +11,23 @@ import { initTheme } from '@nasiko/app-core/shell/theme'
 import { env } from '@nasiko/app-core/env'
 import { installStaleBuildDetection } from '@nasiko/app-core/staleBuild'
 import { createQueryClient } from '@nasiko/app-core/queryClient'
+import { captureEarlyErrors, reactRootErrorHandlers } from '@nasiko/app-shell/errorReporting/queue'
+import { startErrorReporting } from '@nasiko/app-shell/errorReporting/start'
 
 const loadMotionFeatures = () => import('@nasiko/ui/lib/motionFeatures').then((m) => m.default)
 
 /**
  * Boot an edition (docs/lab-vs-react-migration-review.md §10.2): each edition's `src/main.tsx` calls this with the
  * edition its `src/edition.ts` declares. The route tree is the edition's own (`@edition/routeTree.gen`).
+ * `beforeRender` runs once the mocks are up (in mock mode) and before the first render; false means the page is
+ * leaving, so nothing renders.
  */
-export async function mount(edition: Edition) {
+export async function mount(
+  edition: Edition,
+  { beforeRender }: { beforeRender?: () => Promise<boolean> } = {},
+) {
+  // Before anything else can throw: held until the error-reporting SDK starts (or reporting turns out to be off).
+  captureEarlyErrors()
   // A holder, since the query client is built before the router it redirects with.
   const routerRef: { current?: AnyRouter } = {}
   const queryClient = createQueryClient(() => routerRef.current)
@@ -28,14 +37,18 @@ export async function mount(edition: Edition) {
   installStaleBuildDetection()
 
   initTheme()
-  const mocking = env.mode === 'mock' || env.partialMocks.length > 0
+  // MOCKS_COMPILED_IN (app-core/env.ts), written out here: Rolldown folds a build-time literal only within its own
+  // module before it makes chunks, so an imported constant would leave MSW's loader chunk in a live bundle.
+  const mocking =
+    (import.meta.env.DEV || import.meta.env.NASIKO_MOCKS_COMPILED_IN === true) &&
+    (env.mode === 'mock' || env.partialMocks.length > 0)
   // eslint-disable-next-line no-console -- documented boot log (CLAUDE.md: startup logs the mode)
   console.info(
     `[ui-lab] mode=${env.mode}${env.partialMocks.length ? ` mocked=${env.partialMocks.join(',')}` : ''} · API via Vite proxy (NASIKO_API_URL)`,
   )
   if (mocking) {
     try {
-      // Dynamic import: MSW never ships in a live-only bundle (A22).
+      // Dynamic import, behind a build-time constant: MSW never ships in a live-only bundle (A22).
       const { startMocks } = await import('@nasiko/mocks/browser')
       await startMocks(env)
     } catch (err) {
@@ -54,9 +67,10 @@ export async function mount(edition: Edition) {
       document.body.prepend(banner)
     }
   }
+  if (beforeRender && !(await beforeRender())) return
   const root = document.getElementById('root')
   if (!root) throw new Error('index.html has no #root element')
-  createRoot(root).render(
+  createRoot(root, reactRootErrorHandlers).render(
     <StrictMode>
       <EditionProvider edition={edition}>
         <QueryClientProvider client={queryClient}>
@@ -75,4 +89,5 @@ export async function mount(edition: Edition) {
       </EditionProvider>
     </StrictMode>,
   )
+  startErrorReporting(routerRef.current, edition.id)
 }

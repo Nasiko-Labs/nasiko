@@ -95,12 +95,7 @@ export function ProvidersSection({
             {catalog.data ? copy.providersCount(groups.length) : null}
           </span>
           {superuser ? (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={onAdd}
-              className="ml-auto pointer-coarse:min-h-11"
-            >
+            <Button size="sm" onClick={onAdd} className="ml-auto pointer-coarse:min-h-11">
               {copy.addCustom}
             </Button>
           ) : null}

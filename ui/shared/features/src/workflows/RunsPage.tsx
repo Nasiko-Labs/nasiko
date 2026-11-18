@@ -46,6 +46,7 @@ import { RUN_AGE_FILTERS, RUN_STATUS_FILTERS, type RunsSearch } from './search'
 import type { ExecutionRow } from './types'
 import { Chip, CreateWorkflowLink, SectionNav, ToneBadge } from './components/bits'
 import { RunSteps } from './components/RunSteps'
+import { StopRunButton } from './components/StopRunButton'
 
 export function RunsPage({
   search,
@@ -301,6 +302,8 @@ function RunCard({
               {run.workflow_status === 'draft' ? copy.openDraft : copy.open}
             </Link>
           ) : null}
+          {/* A run of a deleted workflow is still the caller's to stop. */}
+          {active ? <StopRunButton target={{ run: run.id, title: runTitle(run) }} /> : null}
           {!orphan && run.maf_id && (run.status === 'failed' || run.status === 'stopped') ? (
             <Button variant="outline" size="sm" disabled={rerunning} onClick={onRerun}>
               <RotateCw className={cn(rerunning && 'animate-spin')} aria-hidden /> {copy.rerun}

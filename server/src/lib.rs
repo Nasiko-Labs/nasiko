@@ -3,6 +3,7 @@
 // large-Err-variant lint doesn't fit that idiom, which is used pervasively
 // across this crate's routes.
 #![allow(clippy::result_large_err)]
+#![recursion_limit = "256"]
 
 pub mod acl;
 pub mod admin;
@@ -10,8 +11,10 @@ pub mod admission;
 pub mod agent_client;
 pub mod agent_lifecycle;
 pub mod agent_proxy;
+pub mod agent_resolver;
 pub mod agent_scaling;
 pub mod agent_state;
+pub mod agent_wake;
 pub mod agents;
 pub mod assessment;
 pub mod auth;
@@ -28,8 +31,12 @@ pub mod coding_agent_subagents;
 pub mod coding_agent_telemetry;
 pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
+pub mod composio_settings;
 pub mod context_selection;
+pub mod current_time;
 pub mod embedding_change;
+pub mod error_reporting;
+pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
 pub mod hitl;
@@ -50,11 +57,15 @@ pub mod rate_limit;
 pub mod registry_a2a;
 pub mod router;
 pub mod runtime;
+pub mod sandbox_wiring;
 pub mod secrets;
 pub mod seed;
 pub mod seed_connectors;
 pub mod seed_mirror;
 pub mod seed_registry_ready;
+pub mod seed_workflows;
+pub mod serve;
+pub mod sessions;
 pub mod settings;
 /// The SPA serving shared by every binary that embeds a UI bundle.
 pub use nasiko_spa as spa;
@@ -144,13 +155,13 @@ where
     T: 'static,
 {
     let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
-    // OSS-tier agent grants/visibility API (list grants, public toggle, user
-    // and agent-agent shares, ownership transfer). Mounted HERE and not in
-    // `agents::router()` because EE replaces it wholesale: `build_ee_app`
-    // nests its richer org-aware grants router at the same
-    // `/api/agents/{id}/…` paths, and mounting both would panic on route
-    // conflicts at startup. Handlers gate themselves on owner-or-superuser
-    // (`acl::can_manage_agent`), so the mount needs only `require_auth`.
+    // Agent grants/visibility API (list grants, public toggle, user and
+    // agent-agent shares, ownership transfer). Mounted HERE and not in
+    // `agents::router()` so a caller composing its own app can replace it
+    // wholesale with a grants router at the same `/api/agents/{id}/…` paths;
+    // mounting both would panic on route conflicts at startup. Handlers gate
+    // themselves on owner-or-superuser (`acl::can_manage_agent`), so the mount
+    // needs only `require_auth`.
     let grant_routes = Router::new()
         .nest("/agents", agents::grants::router())
         .layer(middleware::from_fn_with_state(
@@ -174,17 +185,36 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    // Spawn the MAF worker — requires an OpenAI API key for prompt generation,
-    // extraction, and final output synthesis. Degrades gracefully rather than
-    // panicking: MAF routes still work (create/list/run) without a key, jobs
-    // just queue in Redis unprocessed until one is configured.
-    if let Some(api_key) = state.config.openai_api_key.clone() {
+    // Spawn the MAF worker. It needs an OpenAI key for prompt generation, extraction and final
+    // output synthesis: the one the execution's owner saved from the UI, else the server's
+    // `OPENAI_API_KEY`. With neither, a step that
+    // needs the model fails with "No OpenAI API key"; steps that don't call it still run.
+    {
+        let api_key = state.config.openai_api_key.clone().unwrap_or_default();
         let worker_config = nasiko_orchestrator::maf::WorkerConfig {
             llm: nasiko_orchestrator::maf::LlmConfig {
                 api_key,
                 base_url: state.config.openai_base_url.clone(),
-                model: state.config.openai_model.clone(),
+                // Empty unless `OPENAI_MODEL` is set: routed calls then use the router's
+                // default model; direct user-key calls fall back to `gpt-4o-mini` in `LlmClient`.
+                model: crate::state::explicit_openai_model(&state.config.openai_model)
+                    .unwrap_or_default(),
             },
+            ledger: state.usage_tracker.ledger(),
+            // Platform-key calls go through the in-process router, so any configured
+            // provider (OpenAI, Vertex, Anthropic, ...) serves them and the router alone
+            // writes their usage.
+            backend: Some(std::sync::Arc::new(
+                crate::llm_router::platform_backend::RouterBackend::new(
+                    nasiko_llm_router::platform::PlatformLlm::new(
+                        nasiko_llm_router::LlmRouterCtx {
+                            ledger: state.usage_tracker.ledger(),
+                            payer: state.shared_call_payer.clone(),
+                            ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+                        },
+                    ),
+                ),
+            )),
             concurrency: state.config.maf_worker_concurrency,
             heartbeat: std::time::Duration::from_secs(state.config.maf_heartbeat_secs),
         };
@@ -200,7 +230,9 @@ where
             .expect("failed to build MAF agent client");
         nasiko_orchestrator::maf::start_worker(
             state.db.clone(),
-            state.redis.clone(),
+            // Its own connections: the worker blocks on stream reads, which would stall the
+            // shared one.
+            state.redis.client().clone(),
             maf_client,
             // Step calls bypass the proxy, so they report their load through this seam.
             nasiko_orchestrator::maf::AgentCalls {
@@ -211,6 +243,12 @@ where
                 outbound: std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
                     state.prompt_context.clone(),
                 )),
+                // Each step's message carries the current date and time, as every other path's does.
+                clock: state.agent_clock(),
+                // Wakes a parked agent before its step is sent, like the proxy and dispatch do.
+                targets: std::sync::Arc::new(crate::agent_resolver::ServerTargetResolver::new(
+                    state.clone(),
+                )),
             },
             // The same guard the A2A dispatch and agent-proxy paths use, so a
             // MAF step's agent call is bounded by exactly the cascade limits
@@ -219,10 +257,6 @@ where
             worker_config,
             state.hitl_store.clone(),
             state.maf_executor.clone(),
-        );
-    } else {
-        tracing::warn!(
-            "OPENAI_API_KEY not set — MAF worker not started; MAF executions will queue but not run"
         );
     }
 
@@ -237,6 +271,15 @@ where
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 auth::rbac::require_deployer,
+            ));
+
+    // Operator maintenance (tiering trigger): admin only.
+    let admin_routes =
+        Router::new()
+            .nest("/admin", admin::admin_router())
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                auth::rbac::require_admin,
             ));
 
     // Pool/scaling: read-only stub in OSS (EE's real scaling lives at
@@ -328,9 +371,13 @@ where
         .route("/me", get(me))
         .merge(router::router_routes(a2a_limiter))
         .merge(agent_deploy_routes)
-        .nest("/agents", agents::user_routes())
+        .nest(
+            "/agents",
+            agents::user_routes().merge(agents::capability_routes()),
+        )
         .merge(catalog::router())
         .merge(container_routes)
+        .merge(admin_routes)
         .merge(pool_routes)
         .merge(user_routes)
         .merge(build_routes)
@@ -341,6 +388,7 @@ where
         .merge(assessment::router(assessment_limiter))
         .merge(overview::router())
         .merge(coding_agent_onboarding::router())
+        .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
@@ -393,7 +441,11 @@ where
         .nest("/api", agent_state::router(&state))
         .with_state(state.clone());
 
-    let oci_state = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    let oci_state = nasiko_oci::OciState::new(
+        state.db.clone(),
+        state.oci_storage.clone(),
+        state.config.agent_image_registry.clone(),
+    );
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
@@ -405,12 +457,19 @@ where
         });
     }
     let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
+    // Every in-cluster build pushes as the one `build-service` identity, so it gets a budget of
+    // its own sized for overlapping builds instead of one agent's pull budget.
+    let build_push_limiter = RateLimiter::new(
+        state.config.build_push_rate_limit_per_minute,
+        Duration::from_secs(60),
+    );
     let build_push_token_hash = (!state.config.build_push_token.is_empty())
         .then(|| nasiko_oci::pull_credentials::hash_token(&state.config.build_push_token));
     let oci_auth_state = OciAuthState {
         app: state.clone(),
         bearer_limiter: oci_limiter,
         agent_credential_limiter: oci_pull_limiter,
+        build_push_limiter,
         build_push_token_hash,
     };
     let oci_routes = nasiko_oci::axum_routes(oci_state).layer(middleware::from_fn_with_state(
@@ -426,20 +485,35 @@ where
     let proxy_routes = Router::new()
         .route("/agents/{id}/{*rest}", any(agent_proxy::agent_proxy))
         .route("/agents/{id}", post(agent_proxy::agent_proxy))
+        // The trailing-slash form of the bare id: the wildcard above needs a non-empty tail.
+        .route("/agents/{id}/", post(agent_proxy::agent_proxy))
+        // A user's session, or an agent calling a peer with its own gateway credential.
         .layer(middleware::from_fn_with_state(
-            state.clone(),
-            auth::require_auth,
+            auth::AgentCallerAuth {
+                app: state.clone(),
+                limiter: RateLimiter::new(
+                    state.config.agent_peer_call_rate_limit_per_minute,
+                    Duration::from_secs(60),
+                ),
+            },
+            auth::require_user_or_agent,
         ));
 
     // LLM router: OpenAI-compatible egress proxy for deployed agents. Mounted at the
     // top level (outside `/api` and `auth::require_auth`) — it verifies the agent's
     // own identity JWT internally, not the user session. Deployed agents point their
     // SDK base URL (`LLM_GATEWAY_BASE_URL`) directly at these `/v1/...` routes.
-    let mut llm_ctx = nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone());
-    // A discovered A2A agent's calls become turns of its chat session, so it shows in Sessions.
-    llm_ctx.turn_recorder = std::sync::Arc::new(
-        chat::discovered_turns::DiscoveredAgentSessions::new(state.db.clone()),
-    );
+    let llm_ctx = nasiko_llm_router::LlmRouterCtx {
+        ledger: state.usage_tracker.ledger(),
+        payer: state.shared_call_payer.clone(),
+        // A discovered A2A agent's calls become turns of its chat session, so it shows in Sessions.
+        turn_recorder: std::sync::Arc::new(chat::discovered_turns::DiscoveredAgentSessions::new(
+            state.db.clone(),
+        )),
+        ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
+            .with_config_cache(state.llm_config_cache.clone())
+            .with_attachment_store(state.attachment_store.clone())
+    };
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
@@ -496,6 +570,11 @@ where
         .merge(github::public_router())
         .merge(mcp::composio_callback_router())
         .merge(registry_routes)
+        // Public: the UI's error-reporting settings and its Sentry tunnel (off unless configured).
+        .merge(error_reporting::router(
+            error_reporting::current_config(),
+            state.http_client.clone(),
+        ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
         .with_state(state)
@@ -511,12 +590,29 @@ where
         // session JWT or an OAuth `code`/`state`. See `redact_credential_uri`.
         .layer(TraceLayer::new_for_http().make_span_with(
             |req: &axum::http::Request<axum::body::Body>| {
+                // Record the matched route as `http.route` so the trace UI can show each inbound
+                // call's operation (e.g. `POST /v1/chat/completions` vs `POST /api/mcp`) as the
+                // span's secondary label — telling an LLM-gateway call from an MCP/other call
+                // apart within one `request ×N` group. The span name stays `request`, so
+                // same-name spans still group into one section (NAS-1543). The matched route is a
+                // template (`/api/mcp/s/{token}`), so it carries no secret, unlike the raw URI.
+                // `Router::layer` runs this after routing, so `MatchedPath` is set (as in
+                // `error_reporting::trace_requests`); a request no route matched (UI pages and
+                // assets) records none.
+                let route = req
+                    .extensions()
+                    .get::<axum::extract::MatchedPath>()
+                    .map(|r| format!("{} {}", req.method(), r.as_str()));
                 let span = tracing::info_span!(
                     "request",
                     method = %req.method(),
                     uri = %mcp::redact_credential_uri(req.uri()),
                     version = ?req.version(),
+                    http.route = tracing::field::Empty,
                 );
+                if let Some(route) = &route {
+                    span.record("http.route", route.as_str());
+                }
                 // Adopt the caller's W3C trace context when it sends one, so this
                 // server span joins the flow that triggered it rather than rooting
                 // a trace of its own. Callers without a `traceparent` (a browser
@@ -541,6 +637,9 @@ where
                 span
             },
         ))
+        // Outermost, so the request's Sentry transaction is the parent of the span above. A
+        // pass-through unless this server reports to Sentry (see `error_reporting`).
+        .layer(middleware::from_fn(error_reporting::trace_requests))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error
@@ -566,6 +665,9 @@ struct OciAuthState {
     app: AppState,
     bearer_limiter: RateLimiter,
     agent_credential_limiter: RateLimiter,
+    /// The build service's own budget (`BUILD_PUSH_RATE_LIMIT_PER_MINUTE`): every build pushes
+    /// under one identity, so sharing a per-agent budget throttled overlapping builds.
+    build_push_limiter: RateLimiter,
     /// SHA-256 hex of `state.config.build_push_token`, precomputed once at
     /// router-build time (not per-request) — `None` when unconfigured
     /// (`AGENT_RUNTIME=local`, where no in-cluster build path exists), so the
@@ -633,11 +735,11 @@ async fn authenticate_oci_request(
             && username == nasiko_oci::BUILD_SERVICE_USERNAME
             && nasiko_oci::pull_credentials::hash_token(&password) == *expected_hash
         {
-            if !auth_state
-                .agent_credential_limiter
-                .allow(nasiko_oci::BUILD_SERVICE_USERNAME)
+            if let Err(retry_after) = auth_state
+                .build_push_limiter
+                .check(nasiko_oci::BUILD_SERVICE_USERNAME)
             {
-                return rate_limit::too_many_requests();
+                return rate_limit::too_many_requests_after(retry_after);
             }
             req.extensions_mut()
                 .insert(nasiko_oci::BuildServiceIdentity);
@@ -648,11 +750,11 @@ async fn authenticate_oci_request(
             .await
         {
             Ok(Some(agent_id)) => {
-                if !auth_state
+                if let Err(retry_after) = auth_state
                     .agent_credential_limiter
-                    .allow(&agent_id.to_string())
+                    .check(&agent_id.to_string())
                 {
-                    return rate_limit::too_many_requests();
+                    return rate_limit::too_many_requests_after(retry_after);
                 }
                 req.extensions_mut()
                     .insert(nasiko_oci::PullOnlyIdentity { agent_id });
@@ -682,8 +784,8 @@ async fn authenticate_oci_request(
             };
         }
     };
-    if !auth_state.bearer_limiter.allow(&claims.sub) {
-        return rate_limit::too_many_requests();
+    if let Err(retry_after) = auth_state.bearer_limiter.check(&claims.sub) {
+        return rate_limit::too_many_requests_after(retry_after);
     }
     req.extensions_mut().insert(nasiko_oci::CallerIdentity {
         user_id: claims.sub.clone(),

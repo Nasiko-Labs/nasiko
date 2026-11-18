@@ -5,15 +5,15 @@
 //!
 //! ```text
 //! [⋯ table: 100 rows ⋯]
-//! same: {"incomplete_results":false}
-//! prefix: {"url":"https://github.com/"}
 //! columns: path:str, repository.full_name:str, repository.stars:int, score:num, url:str, error:str?
-//! src/a.py,golang/go,80901,11.84,golang/go/blob/main/src/a.py,
+//! src/a.py,golang/go,80901,11.84,https://github.com/golang/go/blob/main/src/a.py,
 //! ```
 //!
-//! Two more redundancies are stated once in the header, both readable without computation:
-//! `same:` lists columns holding one value in every row (removed from the rows), and `prefix:`
-//! gives text every value of a column starts with (cells keep the rest; value = prefix + cell).
+//! Every cell holds its whole value, even where every row repeats it. Two header shortcuts were
+//! tried and dropped because models misread them in lookups: stating a column that is the same in
+//! every row once (`same:`), which models ignored and answered from other columns instead, and
+//! keeping only the part after a shared prefix (`prefix:`), which models returned as the value
+//! (`04T07:00:00Z` for `2024-01-04T07:00:00Z`).
 //!
 //! Records need not share every key. The columns are every key any record has, and a column some
 //! records lack is marked `?` after its type; an empty cell there means "this record has no such
@@ -41,13 +41,6 @@ use crate::marker;
 /// Fewer rows than this and the header costs about what the table saves.
 const MIN_ROWS: usize = 4;
 const COLUMNS_PREFIX: &str = "columns: ";
-/// Header line stating the columns that hold one value in every row, as a JSON object.
-const SAME_PREFIX: &str = "same: ";
-/// Header line stating the text every value of a column starts with, as a JSON object.
-const AFFIX_PREFIX: &str = "prefix: ";
-/// A shared prefix shorter than this is not worth a header entry.
-const MIN_AFFIX_CHARS: usize = 6;
-const AFFIX_BOUNDARIES: [char; 6] = ['/', '.', ':', '-', '_', ' '];
 /// Follows a column's type when some records lack that key (`error:str?`).
 const OPTIONAL_MARK: &str = "?";
 
@@ -83,63 +76,17 @@ pub(crate) fn tabulate(items: &[Value]) -> Option<String> {
     let optional: Vec<bool> = (0..columns.len())
         .map(|i| rows.iter().any(|row| row[i].is_none()))
         .collect();
-
-    // A column with one value in every row is stated once. At least one column must still vary,
-    // or the rows would be empty lines. A column some records lack is never constant: hoisting
-    // it would give the value to records that never had the key.
-    let constant: Vec<bool> = (0..columns.len())
-        .map(|i| !optional[i] && rows.iter().all(|row| row[i] == rows[0][i]))
-        .collect();
-    let hoist_constants = constant.iter().any(|c| !c);
-    let kept: Vec<usize> = (0..columns.len())
-        .filter(|&i| !(hoist_constants && constant[i]))
-        .collect();
-
-    let types: Vec<ColumnType> = kept
-        .iter()
-        .map(|&i| ColumnType::of(rows.iter().filter_map(|row| row[i])))
-        .collect();
-    // Text every value in a column starts with is stated once; cells keep the rest. A column with
-    // only a few values (an optional key one record has) shares nothing worth stating — its
-    // "prefix" would be one value moved into the header.
-    let prefixes: Vec<Option<&str>> = kept
-        .iter()
-        .zip(&types)
-        .map(|(&i, ty)| {
-            let values = || rows.iter().filter_map(|row| row[i]?.as_str());
-            match ty {
-                ColumnType::Str if values().count() >= MIN_ROWS => shared_prefix(values()),
-                _ => None,
-            }
-        })
+    let types: Vec<ColumnType> = (0..columns.len())
+        .map(|i| ColumnType::of(rows.iter().filter_map(|row| row[i])))
         .collect();
 
     let mut out = marker::table_header(rows.len());
-    if hoist_constants && constant.iter().any(|c| *c) {
-        let same: Map<String, Value> = (0..columns.len())
-            .filter(|&i| constant[i])
-            .filter_map(|i| Some((columns[i].to_string(), rows[0][i]?.clone())))
-            .collect();
-        out.push('\n');
-        out.push_str(SAME_PREFIX);
-        out.push_str(&Value::Object(same).to_string());
-    }
-    if prefixes.iter().any(Option::is_some) {
-        let affixes: Map<String, Value> = kept
-            .iter()
-            .zip(&prefixes)
-            .filter_map(|(&i, p)| Some((columns[i].to_string(), Value::from(p.as_deref()?))))
-            .collect();
-        out.push('\n');
-        out.push_str(AFFIX_PREFIX);
-        out.push_str(&Value::Object(affixes).to_string());
-    }
     out.push('\n');
     out.push_str(COLUMNS_PREFIX);
-    let header: Vec<String> = kept
+    let header: Vec<String> = types
         .iter()
-        .zip(&types)
-        .map(|(&i, t)| {
+        .enumerate()
+        .map(|(i, t)| {
             let mark = if optional[i] { OPTIONAL_MARK } else { "" };
             format!("{}:{}{mark}", columns[i], t.label())
         })
@@ -147,45 +94,18 @@ pub(crate) fn tabulate(items: &[Value]) -> Option<String> {
     out.push_str(&header.join(", "));
     for row in &rows {
         out.push('\n');
-        let cells: Vec<String> = kept
+        let cells: Vec<String> = row
             .iter()
-            .zip(types.iter().zip(&prefixes))
-            .map(|(&i, (t, prefix))| match (row[i], prefix) {
+            .zip(&types)
+            .map(|(cell, t)| match cell {
                 // A missing key is an empty cell; no present value encodes to one.
-                (None, _) => String::new(),
-                (Some(v), Some(p)) => match v.as_str() {
-                    Some(s) => t.encode(&Value::from(s.strip_prefix(p).unwrap_or(s))),
-                    None => t.encode(v),
-                },
-                (Some(v), None) => t.encode(v),
+                None => String::new(),
+                Some(v) => t.encode(v),
             })
             .collect();
         out.push_str(&cells.join(","));
     }
     Some(out)
-}
-
-/// The longest text every value starts with, cut back to a natural boundary (`/` `.` `:` `-`
-/// `_` or a space) so the header reads as a real prefix (`https://github.com/`), not half a
-/// word. `None` when shorter than [`MIN_AFFIX_CHARS`].
-fn shared_prefix<'a>(mut values: impl Iterator<Item = &'a str>) -> Option<&'a str> {
-    let first = values.next()?;
-    let mut len = first.len();
-    for v in values {
-        len = first
-            .char_indices()
-            .zip(v.chars())
-            .take_while(|((i, a), b)| *i < len && a == b)
-            .last()
-            .map_or(0, |((i, a), _)| i + a.len_utf8());
-    }
-    // `len` and `cut` both land on char boundaries (built from `char_indices`, and a boundary
-    // character is ASCII), so `get` never fails here; it is used instead of indexing to keep the
-    // crate free of panicking slices.
-    let common = first.get(..len)?;
-    let cut = common.rfind(AFFIX_BOUNDARIES)? + 1;
-    let prefix = common.get(..cut)?;
-    (prefix.chars().count() >= MIN_AFFIX_CHARS).then_some(prefix)
 }
 
 /// `text` with every table string inside it expanded back into its list of records, or `None`
@@ -213,18 +133,8 @@ fn expand_value(value: Value) -> Option<Value> {
 fn untabulate(table: &str) -> Option<Value> {
     let mut lines = table.split('\n');
     lines.next()?; // header marker
-    let mut line = lines.next()?;
-    let mut same = Map::new();
-    if let Some(json) = line.strip_prefix(SAME_PREFIX) {
-        same = serde_json::from_str(json).ok()?;
-        line = lines.next()?;
-    }
-    let mut affixes = Map::new();
-    if let Some(json) = line.strip_prefix(AFFIX_PREFIX) {
-        affixes = serde_json::from_str(json).ok()?;
-        line = lines.next()?;
-    }
-    let columns: Vec<(String, ColumnType, Option<&str>, bool)> = line
+    let columns: Vec<(String, ColumnType, bool)> = lines
+        .next()?
         .strip_prefix(COLUMNS_PREFIX)?
         .split(", ")
         .map(|c| {
@@ -233,8 +143,7 @@ fn untabulate(table: &str) -> Option<Value> {
                 Some(ty) => (ty, true),
                 None => (ty, false),
             };
-            let prefix = affixes.get(name).and_then(Value::as_str);
-            Some((name.to_string(), ColumnType::parse(ty)?, prefix, optional))
+            Some((name.to_string(), ColumnType::parse(ty)?, optional))
         })
         .collect::<Option<_>>()?;
 
@@ -245,18 +154,11 @@ fn untabulate(table: &str) -> Option<Value> {
                 return None;
             }
             let mut record = Map::new();
-            for ((name, ty, prefix, optional), cell) in columns.iter().zip(cells) {
+            for ((name, ty, optional), cell) in columns.iter().zip(cells) {
                 if *optional && cell.is_empty() {
                     continue;
                 }
-                let value = match (prefix, ty.decode(cell)?) {
-                    (Some(p), Value::String(rest)) => Value::String(format!("{p}{rest}")),
-                    (_, v) => v,
-                };
-                insert_path(&mut record, name, value);
-            }
-            for (name, value) in &same {
-                insert_path(&mut record, name, value.clone());
+                insert_path(&mut record, name, ty.decode(cell)?);
             }
             Some(Value::Object(record))
         })
@@ -417,7 +319,9 @@ fn is_bare_safe(s: &str) -> bool {
     !s.is_empty()
         && !s.starts_with(['[', '{', '"', ' '])
         && !s.ends_with(' ')
-        && !s.contains([',', '"', '\\', '\n', '\r'])
+        // `split_row` counts bracket depth to find cell boundaries, so a bare bracket would
+        // shift every boundary after it.
+        && !s.contains([',', '"', '\\', '\n', '\r', '[', ']', '{', '}'])
 }
 
 #[cfg(test)]
@@ -493,8 +397,6 @@ mod tests {
         let table = tabulate(&search_results(5)).unwrap();
         let mut lines = table.lines();
         assert_eq!(lines.next(), Some("[⋯ table: 5 rows ⋯]"));
-        assert_eq!(lines.next(), Some(r#"same: {"topics":["auth","jwt"]}"#));
-        assert_eq!(lines.next(), Some(r#"prefix: {"path":"src/mod_"}"#));
         let mut columns: Vec<&str> = lines
             .next()
             .and_then(|l| l.strip_prefix(COLUMNS_PREFIX))
@@ -510,6 +412,7 @@ mod tests {
                 "repository.full_name:str",
                 "repository.stars:int",
                 "score:num",
+                "topics:json",
             ]
         );
         assert_eq!(lines.count(), 5, "one row per record");
@@ -521,55 +424,31 @@ mod tests {
     }
 
     #[test]
-    fn hoists_constant_columns_and_shared_prefixes_and_round_trips() {
+    fn every_row_holds_every_value_whole() {
         let items: Vec<Value> = (0..12)
             .map(|i| {
                 json!({
                     "url": format!("https://github.com/org/repo{i}/blob/main/a.py"),
                     "ts": format!("2026-10-27T10:00:{i:02}Z"),
                     "service": "payment",
-                    "level": "ERROR",
                     "code": 500,
-                    "msg": format!("timeout after {i}ms"),
                 })
             })
             .collect();
         let table = tabulate(&items).unwrap();
-        assert!(table.contains(r#""service":"payment""#), "{table}");
-        assert!(table.contains(r#""code":500"#), "{table}");
-        assert!(
-            table.contains(r#""url":"https://github.com/org/""#),
-            "{table}"
-        );
-        assert!(table.contains(r#""ts":"2026-10-27T10:00:""#), "{table}");
-        assert!(
-            !table.contains("\nERROR,"),
-            "constant value must leave the rows: {table}"
-        );
-        round_trip(items);
-    }
-
-    #[test]
-    fn a_value_equal_to_the_prefix_round_trips() {
-        let items: Vec<Value> = [
-            "/project/src/",
-            "/project/src/a.py",
-            "/project/src/b",
-            "/project/src/c/d",
-        ]
-        .iter()
-        .enumerate()
-        .map(|(i, p)| json!({"id": i, "path": p}))
-        .collect();
-        round_trip(items);
-    }
-
-    #[test]
-    fn all_constant_columns_stay_in_the_rows() {
-        // Every column constant: hoisting them all would leave empty rows, so nothing is hoisted.
-        let items: Vec<Value> = (0..5).map(|_| json!({"a": 1, "b": "x"})).collect();
-        let table = tabulate(&items).unwrap();
         assert!(!table.contains("same:"), "{table}");
+        assert!(!table.contains("prefix:"), "{table}");
+        for whole in [
+            "https://github.com/org/repo3/blob/main/a.py",
+            "2026-10-27T10:00:03Z",
+        ] {
+            assert!(table.contains(whole), "cells hold whole values: {table}");
+        }
+        assert_eq!(
+            table.matches("payment").count(),
+            12,
+            "a value every row shares stays in every row: {table}"
+        );
         round_trip(items);
     }
 
@@ -598,6 +477,25 @@ mod tests {
             "the key is still written once"
         );
         round_trip(items);
+    }
+
+    /// The odd value sits in a middle column: a stray bracket in the last cell has no later
+    /// boundary to shift, so it would round-trip even without quoting.
+    #[test]
+    fn strings_with_brackets_inside_round_trip() {
+        for odd in ["a]0", "x}y", "a]", "a[b", "f{x", "[a"] {
+            let items: Vec<Value> = (0..6)
+                .map(|i| {
+                    let s = if i == 2 {
+                        odd.to_string()
+                    } else {
+                        format!("val{i}")
+                    };
+                    json!({"n": i, "s": s, "t": format!("row {i}")})
+                })
+                .collect();
+            round_trip(items);
+        }
     }
 
     #[test]
@@ -641,24 +539,6 @@ mod tests {
             .collect();
         let table = tabulate(&items).unwrap();
         assert!(!table.contains('?'), "no key is missing anywhere: {table}");
-        round_trip(items);
-    }
-
-    #[test]
-    fn a_column_some_records_lack_is_never_hoisted() {
-        // `kind` is "hit" wherever it appears; stating it once would hand it to records that
-        // never had the key.
-        let items: Vec<Value> = (0..6)
-            .map(|i| {
-                if i == 2 {
-                    json!({"id": i})
-                } else {
-                    json!({"id": i, "kind": "hit"})
-                }
-            })
-            .collect();
-        let table = tabulate(&items).unwrap();
-        assert!(!table.contains("same:"), "{table}");
         round_trip(items);
     }
 

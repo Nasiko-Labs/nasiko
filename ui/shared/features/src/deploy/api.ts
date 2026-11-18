@@ -269,6 +269,36 @@ export function useFailureDetails(ids: readonly string[]) {
   return new Map(ids.map((id, i) => [id, results[i]?.data?.error_details ?? null] as const))
 }
 
+/** The build recorded no output — the endpoint answers 404 "no logs available". */
+export const NO_BUILD_LOGS = Symbol('no-build-logs')
+
+/**
+ * A build's captured output (`GET /api/builds/{id}/logs`, build/routes.rs `get_build_logs`): plain
+ * text, or 404 when none was kept — read as "no logs", not an error. A finished build's log never
+ * changes, so it is fetched once, and only when the viewer opens the log panel (`enabled`). The one
+ * hook for both the Builds tab and the Marketplace install panel; `buildId` may be null before a
+ * build id is known (the install panel), which disables the query.
+ */
+export function useBuildLogs(buildId: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['builds', 'logs', buildId ?? ''] as const,
+    enabled: enabled && !!buildId,
+    staleTime: Infinity,
+    queryFn: async ({ signal }) => {
+      // `enabled` already gates on a set buildId; this keeps the type honest without an assertion.
+      if (!buildId) return NO_BUILD_LOGS
+      const res = await fetchApi(`/api/builds/${encodeURIComponent(buildId)}/logs`, {
+        signal: AbortSignal.any([signal, AbortSignal.timeout(30_000)]),
+      })
+      if (res.status === 404) return NO_BUILD_LOGS
+      const text = await res.text()
+      if (!res.ok)
+        throw new ApiError(res.status, text, '/api/builds/logs', `build logs → ${res.status}`)
+      return text.trim() ? text : NO_BUILD_LOGS
+    },
+  })
+}
+
 /** The recent uploads the background follower (eng review R8) and M2 read; enveloped `{data, status_code, message}`. */
 export function recentUploadsQuery(limit: number) {
   return queryOptions({
@@ -477,4 +507,7 @@ export const sendRegistryImport = (reference: string) =>
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reference }),
+    // No deadline: the build and deploy run inside the request, for minutes, and the 30 s default reported an import
+    // still building as failed (NAS-1449).
+    timeout: 0,
   })

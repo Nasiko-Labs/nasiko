@@ -1548,3 +1548,369 @@ async fn test_usage_counts_only_steps_that_called_an_agent_as_unresolved() {
 
     server.cleanup().await;
 }
+
+/// Q1-4: a run costs MAF's own calls plus its agent steps. The execution usage endpoint and the
+/// TokenOps workflow view must both say so, and the workflow view takes its tokens from the
+/// steps' traces rather than from the step records (which never carry any).
+#[tokio::test]
+#[serial]
+async fn test_run_cost_is_maf_cost_plus_step_cost_in_both_views() {
+    let server = common::TestServer::start().await;
+    let user_id = Uuid::new_v4();
+    seed_user(&server, user_id).await;
+    let agent_id = seed_agent(&server, user_id).await;
+    let created: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Costed", agent_id)),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id: Uuid = created["data"]["id"].as_str().unwrap().parse().unwrap();
+
+    let traces = [
+        "1b4f0e9846d24b1c9a2f6e7d8c9b0a11",
+        "2c5a1f0957e35c2d0b3a7f8e9d0c1b22",
+    ];
+    let steps: Vec<_> = traces
+        .iter()
+        .zip(0..)
+        .map(|(trace, index)| {
+            let mut ran = nasiko_orchestrator::maf::executor::pending_result(
+                &nasiko_orchestrator::maf::types::MafStep {
+                    step_id: Uuid::new_v4(),
+                    step_index: index,
+                    agent_id,
+                    agent_name: "MAF Test Agent".to_string(),
+                    agent_endpoint: String::new(),
+                    task_description: format!("task {index}"),
+                    ext: serde_json::Map::new(),
+                },
+            );
+            ran.status = "success".to_string();
+            ran.trace_id = Some(trace.to_string());
+            ran
+        })
+        .collect();
+    // MAF's own planning and selection calls cost 0.50.
+    let execution_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO maf_executions (maf_id, user_id, status, max_attempts, maf_json, step_results, \
+                                     cost_usd, started_at, completed_at) \
+         VALUES ($1, $2, 'success', 3, '{}'::jsonb, $3::jsonb, 0.5, now(), now()) RETURNING id",
+    )
+    .bind(maf_id)
+    .bind(user_id)
+    .bind(serde_json::to_string(&steps).unwrap())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    // The two agent steps cost 1.00 and 0.25.
+    for (trace, cost) in traces.iter().zip([1.0, 0.25]) {
+        sqlx::query(
+            "INSERT INTO trace_usage (trace_id, agent_name, agent_id, user_id, model, provider, \
+                                      input_tokens, output_tokens, cost_usd, started_at) \
+             VALUES ($1, 'MAF Test Agent', $2, $3, 'gpt-4o', 'openai', 100, 10, $4, now())",
+        )
+        .bind(trace)
+        .bind(agent_id)
+        .bind(user_id)
+        .bind(cost)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+
+    let usage: Value = auth(
+        server
+            .client
+            .get(server.url(&format!("/api/maf/execution/{execution_id}/usage"))),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let endpoint_cost = usage["data"]["totals"]["cost_usd"].as_f64().unwrap();
+    assert!((endpoint_cost - 1.75).abs() < 1e-9, "{usage}");
+
+    let view: Value = auth(
+        server
+            .client
+            .get(server.url("/api/observability/finops/attributions?range=7d&view=workflow")),
+        user_id,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let row = view["data"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["maf_id"] == maf_id.to_string())
+        .unwrap_or_else(|| panic!("the workflow must be listed: {view}"));
+    let view_cost = row["total_cost"].as_f64().unwrap();
+    assert!((view_cost - endpoint_cost).abs() < 1e-6, "{view}");
+    assert_eq!(row["prompt_tokens"], 200, "{view}");
+    assert_eq!(row["completion_tokens"], 20, "{view}");
+
+    server.cleanup().await;
+}
+
+// ─── Stopping runs ──────────────────────────────────────────────────────────
+
+/// A run of `maf_id` in `status`, written straight to the table so no worker picks it up.
+async fn seed_run(server: &common::TestServer, user_id: Uuid, maf_id: &str, status: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO maf_executions (user_id, maf_id, status, step_results) \
+         VALUES ($1, $2::uuid, $3, '[]'::jsonb) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(maf_id)
+    .bind(status)
+    .fetch_one(&server.db)
+    .await
+    .expect("seed_run")
+}
+
+#[tokio::test]
+#[serial]
+async fn test_stop_one_run_is_owner_only_and_not_repeatable() {
+    let server = common::TestServer::start().await;
+    let owner = Uuid::new_v4();
+    seed_user(&server, owner).await;
+    let other = Uuid::new_v4();
+    seed_user(&server, other).await;
+    let agent_id = seed_agent(&server, owner).await;
+    let maf: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Stop One MAF", agent_id)),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
+    let run = seed_run(&server, owner, maf_id, "pending").await;
+    let stop_url = server.url(&format!("/api/maf/execution/{run}/stop"));
+
+    let by_other = auth(server.client.post(&stop_url), other)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(by_other.status(), 404, "someone else's run is not found");
+
+    let stopped = auth(server.client.post(&stop_url), owner)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stopped.status(), 200);
+    let body: Value = stopped.json().await.unwrap();
+    assert_eq!(body["data"]["previous_status"], "pending");
+
+    let again = auth(server.client.post(&stop_url), owner)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 409, "a stopped run is already finished");
+
+    let execution: Value = auth(
+        server
+            .client
+            .get(server.url(&format!("/api/maf/execution/{run}"))),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(execution["data"]["status"], "stopped");
+    assert!(
+        !execution["data"]["completed_at"].is_null(),
+        "a stopped run has ended"
+    );
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_bulk_stop_by_ids_or_workflow() {
+    let server = common::TestServer::start().await;
+    let owner = Uuid::new_v4();
+    seed_user(&server, owner).await;
+    let other = Uuid::new_v4();
+    seed_user(&server, other).await;
+    let agent_id = seed_agent(&server, owner).await;
+    let maf: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Stop Many MAF", agent_id)),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
+    let queued = seed_run(&server, owner, maf_id, "pending").await;
+    let paused = seed_run(&server, owner, maf_id, "awaiting_human").await;
+    let done = seed_run(&server, owner, maf_id, "success").await;
+    let bulk_url = server.url("/api/maf/executions/stop");
+
+    for bad in [
+        json!({}),
+        json!({ "execution_ids": [queued], "workflow_id": maf_id }),
+        json!({ "execution_ids": ["not-a-uuid"] }),
+    ] {
+        let res = auth(server.client.post(&bulk_url).json(&bad), owner)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{bad}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["status_code"], 400, "answered in the envelope: {bad}");
+    }
+    let malformed = auth(
+        server
+            .client
+            .post(&bulk_url)
+            .header("content-type", "application/json")
+            .body("{not json"),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(malformed.status(), 400);
+    let body: Value = malformed.json().await.unwrap();
+    assert_eq!(
+        body["status_code"], 400,
+        "a malformed body is answered in the envelope"
+    );
+
+    let by_other = auth(
+        server
+            .client
+            .post(&bulk_url)
+            .json(&json!({ "workflow_id": maf_id })),
+        other,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(
+        by_other.status(),
+        403,
+        "only the workflow's owner stops its runs"
+    );
+
+    let unknown = Uuid::new_v4();
+    let by_ids: Value = auth(
+        server
+            .client
+            .post(&bulk_url)
+            .json(&json!({ "execution_ids": [queued, done, unknown] })),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(by_ids["data"]["stopped"][0]["id"], queued.to_string());
+    assert_eq!(
+        by_ids["data"]["already_finished"][0]["id"],
+        done.to_string()
+    );
+    assert_eq!(by_ids["data"]["already_finished"][0]["status"], "success");
+    assert_eq!(by_ids["data"]["not_found"][0], unknown.to_string());
+
+    let by_workflow: Value = auth(
+        server
+            .client
+            .post(&bulk_url)
+            .json(&json!({ "workflow_id": maf_id })),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let stopped = by_workflow["data"]["stopped"].as_array().unwrap();
+    assert_eq!(stopped.len(), 1, "only the paused run was still unfinished");
+    assert_eq!(stopped[0]["id"], paused.to_string());
+    assert_eq!(stopped[0]["previous_status"], "awaiting_human");
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_success_rate_leaves_stopped_runs_out() {
+    let server = common::TestServer::start().await;
+    let owner = Uuid::new_v4();
+    seed_user(&server, owner).await;
+    let agent_id = seed_agent(&server, owner).await;
+    let maf: Value = auth(
+        server
+            .client
+            .post(server.url("/api/maf/workflows"))
+            .json(&create_maf_body("Success Rate MAF", agent_id)),
+        owner,
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let maf_id = maf["data"]["id"].as_str().unwrap();
+    seed_run(&server, owner, maf_id, "success").await;
+    seed_run(&server, owner, maf_id, "failed").await;
+    seed_run(&server, owner, maf_id, "stopped").await;
+
+    let list: Value = auth(server.client.get(server.url("/api/maf/workflows")), owner)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let row = list["data"]["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["id"] == maf_id)
+        .expect("the workflow is listed")
+        .clone();
+    assert_eq!(
+        row["success_rate"], 50.0,
+        "one of the two runs that finished on their own"
+    );
+
+    server.cleanup().await;
+}

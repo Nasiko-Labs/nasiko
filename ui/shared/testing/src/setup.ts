@@ -5,6 +5,11 @@ import { setupServer } from 'msw/node'
 import { afterAll, afterEach, beforeAll, beforeEach, vi } from 'vitest'
 import { allHandlers, resetAgentsMock } from '@nasiko/mocks/handlers'
 import { editionHandlers } from '@edition/mocks'
+// Loads react-day-picker's @date-fns/tz before any test fakes Date. Its TZDate extends whatever `Date` is global when
+// it is first evaluated; a lazily loaded page that first evaluates it under `setupPinnedSeed`'s fake Date gets a TZDate
+// whose date math breaks (every `addDays` returns its start), so a UTC calendar reports the grid's first day for every
+// click (NAS-1516).
+import '@nasiko/ui/primitives/calendar'
 import { clearQueryClients } from './queryClients'
 
 /**
@@ -64,6 +69,10 @@ if (typeof Element !== 'undefined') {
 // jsdom defines window.scrollTo only to log "Not implemented" on every call, which buried CI logs under thousands of
 // lines. Overwritten, not `??=`: the stub exists, it just does nothing useful.
 if (typeof window !== 'undefined') window.scrollTo = (() => {}) as typeof window.scrollTo
+// Same for canvas (the login showcase's field, the village's sprites): jsdom has none and logs on every getContext.
+if (typeof HTMLCanvasElement !== 'undefined')
+  HTMLCanvasElement.prototype.getContext = (() =>
+    null) as typeof HTMLCanvasElement.prototype.getContext
 
 // Full-page renders under a parallel run (or coverage instrumentation) can exceed the 1 s
 // findBy default on a busy machine, and a file's first render also pays for the React Compiler's

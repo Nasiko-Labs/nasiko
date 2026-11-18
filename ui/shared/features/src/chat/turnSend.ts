@@ -2,6 +2,7 @@
  * Sending (plan §6.1, EN1-EN4, EN7-EN8): create the chat, save the user row, stream a direct reply and save it
  * (a routed stream goes to `turnRouted`); Run again and Save again. A direct reply is the client's to save.
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import { emptyTurn, reduceSseEvent } from './a2aReducer'
 import { readSse, SseOverflowError } from '@nasiko/data-access/sse'
 import { asFileParts } from './attachments'
@@ -12,6 +13,7 @@ import type { SaveMessageBody } from './types'
 import type { Core } from './turnCore'
 import {
   attemptKeyOf,
+  fileIdsOf,
   isLivePhase,
   type LiveTurn,
   type RerunFrom,
@@ -20,13 +22,6 @@ import {
 import type { createRouted } from './turnRouted'
 
 class Unreadable extends Error {}
-
-/**
- * This turn's attachment ids, or none while they are still local (§7.7). Run again re-sends the
- * same ids: the dispatch only reads those files, the user row that claimed them is already saved.
- */
-const fileIdsOf = (t: LiveTurn): string[] | undefined =>
-  t.userFilesPending || !t.userFiles?.length ? undefined : t.userFiles.map((f) => f.id)
 
 export function createSend(core: Core, routed: ReturnType<typeof createRouted>) {
   const { deps, turns, controllers, unknown, transcripts, directEnds, capped, capTimers, saving } =
@@ -286,6 +281,7 @@ export function createSend(core: Core, routed: ReturnType<typeof createRouted>) 
       return Promise.reject(
         new ChatError({ phase: 'save-user', key: 'saveUserFailed', certainty: 'not-dispatched' }),
       )
+    productEvent('chat_message_sent', { mode: input.chatMode ?? 'direct' })
     if (text.length > tuning.MESSAGE_MAX_CHARS)
       return Promise.reject(
         new ChatError({ phase: 'save-user', key: 'tooLong', certainty: 'not-dispatched' }),

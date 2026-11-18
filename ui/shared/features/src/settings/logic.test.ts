@@ -3,8 +3,6 @@ import { copy } from './copy'
 import {
   ago,
   configsUsing,
-  INT_MAX,
-  positiveIntProblem,
   registryProblem,
   secretNameProblem,
   settingsBody,
@@ -13,50 +11,33 @@ import {
 import { SETTINGS_FIELDS } from './types'
 
 const fresh = {
-  router_model: 'gpt-4o',
-  default_provider: 'anthropic',
-  max_flow_depth: 8,
-  max_flow_fan_out: 20,
-  max_flow_tokens: 5000,
-  flow_timeout_secs: 60,
   registry_url: 'https://from-another-admin.example.com',
-  catalog_tabs: null,
+  catalog_tabs: 'devops',
 }
 
 describe('settingsBody (update_settings writes every column)', () => {
   it('sends every field: edited ones from the form, the rest from the fresh read', () => {
     const values = {
       ...valuesOf({ ...fresh, registry_url: 'stale.example.com' }),
-      max_flow_depth: ' 9 ',
+      catalog_tabs: ' finance ',
     }
-    const body = settingsBody(fresh, values, new Set(['max_flow_depth'] as const))
+    const body = settingsBody(fresh, values, new Set(['catalog_tabs'] as const))
     expect(Object.keys(body).sort()).toEqual([...SETTINGS_FIELDS].sort())
-    expect(body).toEqual({ ...fresh, max_flow_depth: 9 })
+    expect(body).toEqual({ ...fresh, catalog_tabs: 'finance' })
   })
 
-  it('sends numbers as numbers and a cleared field as null, never undefined', () => {
-    const values = { ...valuesOf(fresh), catalog_tabs: '  ', max_flow_tokens: '100000' }
-    const body = settingsBody({}, values, new Set(['catalog_tabs', 'max_flow_tokens'] as const))
+  it('sends a cleared field as null, never undefined', () => {
+    const values = { ...valuesOf(fresh), catalog_tabs: '  ' }
+    const body = settingsBody({}, values, new Set(['catalog_tabs'] as const))
     expect(body.catalog_tabs).toBeNull()
-    expect(body.max_flow_tokens).toBe(100_000)
-    expect(body.router_model).toBeNull()
+    expect(body.registry_url).toBeNull()
     expect(Object.values(body).every((v) => v !== undefined)).toBe(true)
   })
 
-  it('reads nulls as empty fields', () => {
-    expect(valuesOf({ router_model: null, max_flow_depth: 5 })).toMatchObject({
-      router_model: '',
-      max_flow_depth: '5',
-      catalog_tabs: '',
-    })
+  it('reads nulls as empty fields, and never what the server runs', () => {
+    const values = valuesOf({ registry_url: null, max_flow_depth: 5, default_provider: 'openai' })
+    expect(values).toEqual({ registry_url: '', catalog_tabs: '' })
   })
-})
-
-it('positiveIntProblem: a whole number from 1 to the column bound', () => {
-  expect(positiveIntProblem('5', INT_MAX)).toBeNull()
-  expect(positiveIntProblem(' ', INT_MAX)).toBe('required')
-  for (const bad of ['0', '-1', '1.5', '1e3', 'ten', String(INT_MAX + 1)])
-    expect(positiveIntProblem(bad, INT_MAX)).toBe('invalid')
 })
 
 it('registryProblem: blank, a host or a URL; not something that allows nothing', () => {

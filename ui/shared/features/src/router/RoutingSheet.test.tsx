@@ -115,7 +115,7 @@ describe('choices', () => {
     renderApp('/router')
     await ready()
     let sheet = await openSheet('Doc Writer')
-    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'claude-sonnet-4')
+    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'claude-sonnet-4{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
     await within(sheet).findByText(copy.savedPlan('Doc Writer'))
     await userEvent.click(within(sheet).getByRole('button', { name: copy.done }))
@@ -143,6 +143,25 @@ describe('choices', () => {
     await within(sheet).findByText(copy.savedPlan('Claude Code (admin@example.com)'))
     await rec.flush()
     expect(routingPatches(rec)).toEqual([{ llm_config_id: configId(2) }])
+  })
+
+  it('gives both CLI commands, following the config chosen, and says a change reaches every session', async () => {
+    renderApp('/router')
+    await ready()
+    const sheet = await openSheet('Claude Code (admin@example.com)')
+    expect(within(sheet).getByText(copy.cliAttachLabel)).toBeInTheDocument()
+    expect(within(sheet).getByText(copy.cliDetachLabel)).toBeInTheDocument()
+    // The agent's own name (the harness seed's, not its display name), as the CLI resolves it.
+    expect(within(sheet).getByRole('button', { name: copy.copyCliDetach })).toBeInTheDocument()
+    const detach = within(sheet).getByText(/^nasiko llm-config detach /)
+    const raw = /^nasiko llm-config detach (\S+)$/.exec(detach.textContent ?? '')?.[1]
+    expect(raw).toMatch(/claude/)
+    await choose(within(sheet).getByRole('combobox', { name: copy.chooseConfig }), 'research-tiers')
+    expect(within(sheet).getByRole('button', { name: copy.copyCliAttach })).toBeInTheDocument()
+    expect(
+      within(sheet).getByText(`nasiko llm-config attach ${raw} research-tiers`),
+    ).toBeInTheDocument()
+    expect(within(sheet).getByText(copy.cliAppliesTo(30))).toBeInTheDocument()
   })
 
   it('closing the sheet returns focus to its opener', async () => {
@@ -296,7 +315,7 @@ describe('session', () => {
         () => new Response('session expired', { status: 401 }),
       ),
     )
-    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'gpt-4o')
+    await userEvent.type(within(sheet).getByLabelText(copy.overrideModel), 'gpt-4o{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
     expect(router.state.location.search).toMatchObject({ expired: true })

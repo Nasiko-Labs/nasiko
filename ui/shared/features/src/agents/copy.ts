@@ -4,6 +4,7 @@
  * labels and hints live in the status matrix (status.ts), the single status source.
  */
 import { ApiError } from '@nasiko/data-access/client'
+import { isObservabilityUnconfigured } from '@nasiko/features/observability/unconfigured'
 import { SERVER_TEXT_MAX } from './tuning'
 
 export const copy = {
@@ -19,12 +20,22 @@ export const copy = {
   publicChip: 'Public',
   harnessChip: 'Coding harness',
   harnessesToggle: (n: number) => `Coding harnesses (${n})`,
+  // With the `agentPlacement` slot (MT): where each agent runs (FR-4, TM-5).
+  local: 'Local',
+  cloud: 'Cloud',
+  localToggle: (n: number) => `Local agents (${n})`,
   ownerLabel: 'Owner',
   ownerFilter: 'Filter by owner',
   anyone: 'Anyone',
   tagLabel: 'Tag',
   tagFilter: 'Filter by tag',
   allTags: 'All',
+  /** The catalog's view switch: the cards, or one table row per agent. */
+  viewLabel: 'View',
+  viewGrid: 'Grid',
+  viewList: 'List',
+  colDescription: 'Description',
+  colSkills: 'Skills',
   harnessUsage: 'See usage on Coding harnesses',
   excludesHarnesses: (n: number) => `Excludes ${n} coding harness${n === 1 ? '' : 'es'}`,
   noResults: 'No agents match this search',
@@ -107,6 +118,8 @@ export const copy = {
   notDeployed: 'Not deployed',
   deploymentUnavailable: "Deployment details aren't available for your role.",
   whatItDoes: 'What it does',
+  overviewSummary: 'Summary',
+  allDetails: 'All details',
   noDescription: 'No description.',
   skills: 'Skills',
   noSkills: 'No skills advertised.',
@@ -172,6 +185,7 @@ export const copy = {
   rollBackTitle: (v: string) => `Roll back to ${v}?`,
   rollBackBody: 'The agent redeploys this version. Callers may see errors while it restarts.',
   rollBackReason: 'Reason (optional)',
+  rollBackReasonPlaceholder: 'e.g. The new version fails on long inputs',
   rollBackQueued: (build: string) => `Roll back queued (build ${build}).`,
   stillRollingBack: (build: string) => `Still rolling back (build ${build}). Check the logs:`,
   keepWatching: 'Keep watching',
@@ -206,17 +220,31 @@ export const copy = {
 
   settings: 'Settings',
   displayName: 'Display name',
+  displayNamePlaceholder: 'e.g. Support bot',
   description: 'Description',
+  descriptionPlaceholder: 'What this agent does, in a sentence or two',
   save: 'Save',
   saved: 'Saved',
   secrets: 'Secrets',
   noSecrets: 'No secrets set.',
   secretName: 'Name',
+  secretNamePlaceholder: 'API_KEY',
   secretValue: 'Value',
+  secretValuePlaceholder: 'Paste the value',
   addSecret: 'Add or replace',
   // Verified live (QA 2026-09-27): Restart redeploys and injects the new value; the running container doesn't see it before.
+  // NAS-1489: say the agent uses them at runtime. Agent secrets list names only (agent_secrets.rs `list_secrets`).
   secretsHowItWorks:
-    'Available to the agent as environment variables. Restart or redeploy the agent to apply a change.',
+    'The agent reads these as environment variables at runtime. Values can’t be read back; Add or replace overwrites one. Restart or redeploy the agent to apply a change.',
+  // NAS-1458. agent_secrets.rs `resolve_secret_env`: the owner's user secrets first, the agent's own on top.
+  secretsPrecedence:
+    'The agent also gets every secret its owner keeps in Settings → Secrets. A secret set here overrides one of the same name there, for this agent only.',
+  inheritedSecrets: 'From the owner’s secrets',
+  inheritedSecretsLink: 'Manage in Settings → Secrets',
+  noInheritedSecrets: 'None. Secrets the owner adds in Settings → Secrets will appear here.',
+  inheritedBadge: 'Inherited',
+  overriddenBadge: 'Overridden here',
+  overridesBadge: 'Overrides owner’s secret',
   // Agent flags (catalog/routes.rs `AgentDetailResponse` at nasiko-cloud-rs 1a305a63): the legacy Settings tab's copy.
   features: 'Features',
   featuresHint: 'Agent-level feature flags. Changes take effect on next restart.',
@@ -256,6 +284,20 @@ export const copy = {
   start: 'Start',
   stopTitle: (name: string) => `Stop ${name}?`,
   stopBody: 'The container stops; callers get errors until you start it again.',
+  stopSharedWarning:
+    'Others use this agent: it is shared with people besides you. They will see it was stopped by its owner and cannot chat with it until you start it again.',
+  stoppedByOwner: 'This agent was stopped by its owner. You can use it again once they start it.',
+  // NAS-1487: what Parked means and what to do, under the detail header; the switch is on the Settings tab.
+  parkedTitle: 'Parked while idle',
+  parkedBody:
+    'Nobody called this agent for a while, so its container was released to save resources. Nothing is lost: the next message starts it again, and that first reply takes a little longer.',
+  parkedStart: 'Select Start to bring it up now.',
+  parkedKeepRunning: 'Select Start to bring it up now, or keep it running with Always on in',
+  availability: 'Availability',
+  alwaysOn: 'Always on',
+  alwaysOnHint:
+    'Off: when nobody has called it for a while, the agent is parked and the next message starts it again. On: it keeps running, and using resources, while idle.',
+  alwaysOnUnavailable: 'This workspace parks every idle agent, so none can be kept always on.',
   restarted: 'Restarted',
   started: 'Started',
   stoppedDone: 'Stopped',
@@ -275,11 +317,16 @@ export const copy = {
   details: 'Details',
   cancel: 'Cancel',
   retry: 'Retry',
-  serverDown: 'OpenRuntime server unreachable.',
+  serverDown: 'Open Runtime server unreachable.',
   somethingWrong: 'Something went wrong.',
+  /** The server's own reason, when it gave one we have no better words for. */
+  serverSaid: (t: string) => `Open Runtime said: ${/[.!?]$/.test(t) ? t : `${t}.`}`,
 } as const
 
-/** What the user reads for a failed call (plan §6.4): our copy first, server text behind Details. */
+/**
+ * What the user reads for a failed call (plan §6.4): our copy first, server text behind Details. When we have no
+ * words of our own for it, the server's reason is the message itself (NAS-1624), never "Something went wrong".
+ */
 export interface ErrorCopy {
   message: string
   detail: string | null
@@ -313,22 +360,26 @@ export function errorCopy(err: unknown, context: ErrorContext = 'read'): ErrorCo
     return { message: 'Another build may be in progress.', detail }
   if (s === 422 && context === 'secret')
     return { message: 'Names use letters, digits and underscores.', detail }
-  if (s === 500 && context === 'lifecycle')
+  // A missing container answers a bare "internal error" (containers.rs); any other reason is the real one.
+  if (s === 500 && context === 'lifecycle' && (!detail || GENERIC_500.test(detail)))
     return {
       message:
         "The runtime couldn't find this agent's container. Redeploy it with `nasiko deploy`.",
       detail,
     }
-  if (s === 503) return { message: copy.obsOff, detail }
-  if (api.isServerUnreachable) return { message: copy.serverDown, detail }
+  if (isObservabilityUnconfigured(api)) return { message: copy.obsOff, detail }
+  if (api.isServerUnreachable && !detail) return { message: copy.serverDown, detail }
+  if (detail && !GENERIC_500.test(detail)) return { message: copy.serverSaid(detail), detail: null }
   return { message: copy.somethingWrong, detail }
 }
 
-/** Plain-text server bodies only, cut short (HTML error pages and JSON envelopes are dropped). */
+/** The server's catch-all 500 text: it names no cause, so it never becomes the message. */
+const GENERIC_500 = /^internal (server )?error\.?$/i
+
+/** The server's reason (plain text, `{message}`, `{error}`), cut short; HTML error pages are dropped. */
 function serverDetail(api: ApiError | null): string | null {
-  if (!api || typeof api.body !== 'string') return null
-  const text = api.body.trim()
-  if (!text || text.startsWith('<')) return null
+  const text = api?.serverMessage
+  if (!text) return null
   return text.length > SERVER_TEXT_MAX ? `${text.slice(0, SERVER_TEXT_MAX)}…` : text
 }
 

@@ -1,8 +1,12 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
+use nasiko_config::SeedAgentSettings;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use crate::agent_scaling::{
+    AgentResources, ParkingPolicy, ReplicaBounds, save_agent_resources, save_parking_policy,
+};
 use crate::catalog::models::Agent;
 use crate::seed_mirror::{self, MirrorSettings, RegistryCredential};
 use crate::seed_registry_ready;
@@ -69,9 +73,14 @@ pub async fn seed_agents_if_configured(state: &AppState) {
     // (e.g. gpt-4o-mini), which non-OpenAI providers reject with a 400.
     let openai_model = std::env::var("OPENAI_MODEL").unwrap_or_default();
     let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").unwrap_or_default();
-    let oci = nasiko_oci::OciState::new(state.db.clone(), state.oci_storage.clone());
+    let oci = nasiko_oci::OciState::new(
+        state.db.clone(),
+        state.oci_storage.clone(),
+        state.config.agent_image_registry.clone(),
+    );
     let mirror_settings = mirror_settings(&state.config);
     let mut registry_checked = false;
+    warn_unmatched_settings(&state.config.seed_agent_settings, &images);
 
     for source_image in images.split_whitespace() {
         let agent_name = extract_name(source_image);
@@ -87,6 +96,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         .fetch_optional(&state.db)
         .await
         .unwrap_or(None);
+        if let Some(agent) = &existing {
+            keep_resident(&state.db, agent.id, &agent_name).await;
+        }
 
         let Some((mirrored, repointed)) = resolve_seed_image(
             state,
@@ -102,15 +114,22 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
         let image = mirrored.as_str();
 
+        let settings = state.config.seed_agent_settings.get(&agent_name);
+        let settings_changed = match &existing {
+            Some(agent) => apply_seed_settings(state, agent.id, &agent_name, settings).await,
+            None => false,
+        };
+
         let force_pull = std::env::var("SEED_FORCE_PULL").is_ok();
         let needs_deploy = match &existing {
             None => true,
             Some(agent) => {
                 // `repointed`: the external tag moved, so the internal tag now
                 // holds new content under the same ref string — redeploy so the
-                // running agent picks it up.
+                // running agent picks it up. Changed settings reach the workload
+                // only through a deploy too.
                 let image_changed = agent.image.as_deref() != Some(image) || repointed;
-                if image_changed || force_pull {
+                if image_changed || force_pull || settings_changed {
                     true
                 } else {
                     // UUID-keyed (see agents::build_agent_spec / RUN-2c) — the deploy a
@@ -158,7 +177,11 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 a.clone()
             }
             None => match register_agent(&state.db, &agent_name, image, owner_id).await {
-                Ok(a) => a,
+                Ok(a) => {
+                    // Before the first deploy's plan is read, so it deploys with them.
+                    apply_seed_settings(state, a.id, &agent_name, settings).await;
+                    a
+                }
                 Err(e) => {
                     warn!(agent = %agent_name, error = %e, "failed to register seed agent");
                     continue;
@@ -167,10 +190,10 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
 
         let scaling = state.agent_scaling.begin_deploy(agent.id).await;
-        let replica_bounds = match scaling.bounds().await {
-            Ok(bounds) => bounds,
+        let plan = match scaling.plan().await {
+            Ok(plan) => plan,
             Err(e) => {
-                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's replica bounds");
+                warn!(agent = %agent_name, error = %e, "failed to read the seed agent's deploy plan");
                 continue;
             }
         };
@@ -212,7 +235,7 @@ pub async fn seed_agents_if_configured(state: &AppState) {
             vec![AGENT_PORT],
             env,
             &state.config.agent_default_memory,
-            replica_bounds,
+            plan,
             // SEED_AGENTS has no --writable equivalent yet.
             false,
             None,
@@ -260,14 +283,17 @@ pub async fn seed_agents_if_configured(state: &AppState) {
                 )
                 .await;
 
-                // Wait for container to become healthy, then fetch agent card
-                crate::agents::utils::fetch_agent_card_with_retry(
+                // Fetch the agent card once the container is healthy. In the background: the
+                // wait can be long (see `fetch_agent_card_with_retry`), and the next seed agent
+                // must not queue behind it.
+                tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
                     state.db.clone(),
                     state.http_client.clone(),
+                    state.runtime.clone(),
+                    state.llm_backend.clone(),
                     agent.id,
                     agent_url.clone(),
-                )
-                .await;
+                ));
             }
             Err(e) => {
                 warn!(agent = %agent_name, error = %e, "failed to deploy seed agent");
@@ -443,6 +469,9 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
     .fetch_optional(&state.db)
     .await
     .unwrap_or(None);
+    if let Some(agent) = &existing {
+        keep_resident(&state.db, agent.id, &agent_name).await;
+    }
 
     let needs_deploy = match &existing {
         None => true,
@@ -495,8 +524,8 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
         None => {
             let inserted = sqlx::query_as::<_, Agent>(
-                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, writable, writable_path, metadata)
-                   VALUES ($1, $2, $3, 'deploying', $4, true, $5, $6, '{"seed": true}')
+                r#"INSERT INTO agents (name, owner_id, image, status, is_public, is_internal, writable, writable_path, parking_policy, metadata)
+                   VALUES ($1, $2, $3, 'deploying', $4, true, $5, $6, $7, '{"seed": true}')
                    RETURNING *"#,
             )
             .bind(&agent_name)
@@ -505,6 +534,7 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
             .bind(public)
             .bind(writable_path.is_some())
             .bind(&writable_path)
+            .bind(ParkingPolicy::Resident.as_str())
             .fetch_one(&state.db)
             .await;
             match inserted {
@@ -544,10 +574,10 @@ async fn deploy_internal_agent(
     force_pull: bool,
 ) -> Result<(), String> {
     let scaling = state.agent_scaling.begin_deploy(agent_id).await;
-    let replica_bounds = scaling
-        .bounds()
+    let plan = scaling
+        .plan()
         .await
-        .map_err(|e| format!("failed to read the replica bounds: {e}"))?;
+        .map_err(|e| format!("failed to read the deploy plan: {e}"))?;
     let mut env = state.agent_env(agent_id).await;
     env.insert("PORT".into(), AGENT_PORT.to_string());
     // Without the gateway credential, McpInjector still sets MCP_GATEWAY_URL but has
@@ -574,7 +604,7 @@ async fn deploy_internal_agent(
         vec![AGENT_PORT],
         env,
         &state.config.agent_default_memory,
-        replica_bounds,
+        plan,
         writable,
         writable_path,
         owner_id,
@@ -605,10 +635,90 @@ async fn deploy_internal_agent(
     tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
         state.db.clone(),
         state.http_client.clone(),
+        state.runtime.clone(),
+        state.llm_backend.clone(),
         agent_id,
         agent_url,
     ));
     Ok(())
+}
+
+/// Keeps a platform agent (a seed or an internal agent) `resident`: it always runs. Written on
+/// every seed, so a row created while new agents defaulted to `auto` is resident too. A failed
+/// write is logged and the seed goes on; the agent's next seed tries again.
+async fn keep_resident(db: &sqlx::PgPool, agent_id: Uuid, agent_name: &str) {
+    if let Err(e) = save_parking_policy(db, agent_id, ParkingPolicy::Resident).await {
+        warn!(agent = %agent_name, error = %e, "could not keep the platform agent resident");
+    }
+}
+
+/// Saves the agent's `SEED_AGENT_SETTINGS` entry, the config being the source of truth for what
+/// it names: its CPU and memory (a value it leaves out returns to the platform's), and, when it
+/// names replicas, its replica bounds as a stateless agent. An agent with no entry keeps what it
+/// has. `true` when anything changed, which only a deploy brings to its workload. A failed save is
+/// logged and the agent deploys with what it had.
+async fn apply_seed_settings(
+    state: &AppState,
+    agent_id: Uuid,
+    agent_name: &str,
+    settings: Option<&SeedAgentSettings>,
+) -> bool {
+    let Some(settings) = settings else {
+        return false;
+    };
+    let resources = AgentResources {
+        cpu_limit_milli: settings.cpu_limit_milli,
+        cpu_request_milli: settings.cpu_request_milli,
+        memory_limit_mib: settings.memory_limit_mib,
+    };
+    let resources_changed = save_agent_resources(&state.db, agent_id, resources)
+        .await
+        .unwrap_or_else(|e| {
+            warn!(agent = %agent_name, error = %e, "could not save the seed agent's CPU and memory");
+            false
+        });
+    let bounds_changed = match settings.replicas {
+        None => false,
+        Some((min, max)) => {
+            let bounds = ReplicaBounds {
+                min,
+                max,
+                target: settings.replica_target,
+            };
+            state
+                .agent_scaling
+                .declare_stateless_bounds(agent_id, bounds)
+                .await
+                .unwrap_or_else(|e| {
+                    warn!(agent = %agent_name, error = %e, "could not save the seed agent's replica bounds");
+                    false
+                })
+        }
+    };
+    if resources_changed || bounds_changed {
+        info!(agent = %agent_name, ?settings, "seed agent settings changed");
+    }
+    resources_changed || bounds_changed
+}
+
+/// Warns for each `SEED_AGENT_SETTINGS` entry that names no agent in `images` (`SEED_AGENTS`):
+/// most likely a typo, which would leave the agent it meant on the platform's defaults.
+fn warn_unmatched_settings(settings: &BTreeMap<String, SeedAgentSettings>, images: &str) {
+    for name in unmatched_settings(settings, images) {
+        warn!(agent = %name, "SEED_AGENT_SETTINGS names an agent SEED_AGENTS does not seed; ignored");
+    }
+}
+
+fn unmatched_settings<'a>(
+    settings: &'a BTreeMap<String, SeedAgentSettings>,
+    images: &str,
+) -> Vec<&'a str> {
+    let seeded: HashSet<String> = images.split_whitespace().map(extract_name).collect();
+    settings
+        .keys()
+        .filter(|name| !seeded.contains(name.as_str()))
+        .map(String::as_str)
+        .collect()
 }
 
 /// The `(writable, writable_path)` an agent's row records, as `build_agent_spec` takes them.
@@ -698,18 +808,19 @@ async fn register_agent(
     owner_id: Uuid,
 ) -> Result<Agent, sqlx::Error> {
     sqlx::query_as::<_, Agent>(
-        r#"INSERT INTO agents (name, owner_id, image, status, is_public, metadata)
-           VALUES ($1, $2, $3, 'deploying', true, '{"seed": true}')
+        r#"INSERT INTO agents (name, owner_id, image, status, is_public, parking_policy, metadata)
+           VALUES ($1, $2, $3, 'deploying', true, $4, '{"seed": true}')
            RETURNING *"#,
     )
     .bind(name)
     .bind(owner_id)
     .bind(image)
+    .bind(ParkingPolicy::Resident.as_str())
     .fetch_one(db)
     .await
 }
 
-fn toolkit_description(toolkit: &str) -> Option<&'static str> {
+pub(crate) fn toolkit_description(toolkit: &str) -> Option<&'static str> {
     Some(match toolkit {
         "slack" => "Send messages, read channels, and manage threads in Slack.",
         "gmail" => "Read, send, and manage emails in Gmail.",
@@ -741,7 +852,7 @@ fn toolkit_description(toolkit: &str) -> Option<&'static str> {
     })
 }
 
-fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
+pub(crate) fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
     // simple-icons on jsdelivr CDN — monochrome SVGs, always available.
     Some(match toolkit {
         "slack" => "https://cdn.jsdelivr.net/npm/simple-icons@latest/icons/slack.svg",
@@ -776,27 +887,66 @@ fn toolkit_logo_url(toolkit: &str) -> Option<&'static str> {
     })
 }
 
+/// The Composio toolkits an admin can switch on from Settings — the ones with a
+/// description and logo above.
+pub(crate) const KNOWN_TOOLKITS: &[&str] = &[
+    "slack",
+    "gmail",
+    "github",
+    "notion",
+    "jira",
+    "linear",
+    "asana",
+    "trello",
+    "discord",
+    "dropbox",
+    "salesforce",
+    "hubspot",
+    "zendesk",
+    "intercom",
+    "stripe",
+    "airtable",
+    "clickup",
+    "monday",
+    "gitlab",
+    "pagerduty",
+    "sentry",
+    "confluence",
+    "bitbucket",
+    "googlecalendar",
+    "googledrive",
+    "googlesheets",
+];
+
 /// Auto-register Composio toolkits from `SEED_TOOLKITS` config.
 /// Runs once at boot — skips toolkits that already exist in the DB.
-/// Requires `COMPOSIO_API_KEY` to be set; silently skips otherwise.
+/// Needs a Composio key (`COMPOSIO_API_KEY` or one saved in Settings); skips otherwise.
 pub async fn seed_toolkits_if_configured(state: &AppState) {
     if state.config.seed_toolkits.is_empty() {
         info!("SEED_TOOLKITS not set, skipping toolkit seeding");
         return;
     }
-    if state.config.composio_api_key.is_none() {
+    if state.mcp.providers.composio.get().is_none() {
         warn!(
-            "SEED_TOOLKITS is set but COMPOSIO_API_KEY is not — \
-             cannot register Composio toolkits without an API key"
+            "SEED_TOOLKITS is set but no Composio API key is configured — \
+             cannot register Composio toolkits without one"
         );
         return;
     }
-
-    let toolkits = &state.config.seed_toolkits;
     info!(
-        count = toolkits.len(),
+        count = state.config.seed_toolkits.len(),
         "SEED_TOOLKITS configured, registering"
     );
+    register_toolkits(state, &state.config.seed_toolkits).await;
+}
+
+/// Register `toolkits` as platform Composio connectors and sync their tools; ones
+/// already registered are skipped. Returns `(toolkit, error)` for each that failed.
+pub(crate) async fn register_toolkits(
+    state: &AppState,
+    toolkits: &[String],
+) -> Vec<(String, String)> {
+    let mut failed: Vec<(String, String)> = Vec::new();
 
     // Phase 1: register each toolkit connector (fast, one API call each).
     let mut newly_seeded: HashMap<String, Uuid> = HashMap::new();
@@ -836,7 +986,10 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
                     newly_seeded.insert(toolkit, cid);
                 }
             }
-            Err(e) => warn!(toolkit = %toolkit, %e, "failed to seed composio toolkit"),
+            Err(e) => {
+                warn!(toolkit = %toolkit, %e, "failed to seed composio toolkit");
+                failed.push((toolkit, e.to_string()));
+            }
         }
     }
 
@@ -845,10 +998,10 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
     // missed tools — e.g. gmail has 63 tools but only 23 were synced.  The v3.1
     // per-toolkit endpoint returns only that toolkit's tools, no cap risk.
     if newly_seeded.is_empty() {
-        return;
+        return failed;
     }
-    let Some(provider) = &state.mcp.providers.composio else {
-        return;
+    let Some(provider) = state.mcp.providers.composio.get() else {
+        return failed;
     };
     info!(
         count = newly_seeded.len(),
@@ -919,6 +1072,79 @@ pub async fn seed_toolkits_if_configured(state: &AppState) {
     if let Err(e) = state.mcp.search_index.rebuild(&state.db).await {
         warn!(%e, "search index rebuild after seed failed");
     }
+    failed
+}
+
+/// What a seed agent may never do through a toolkit, whoever calls it: delete, and send mail (a
+/// reply is saved as a draft). Lowercase, as the gateway compares (`permissions::get_stance`).
+const SEED_AGENT_TOOL_RULES: &[&str] = &[
+    "*delete*",
+    "*remove*",
+    "*trash*",
+    "gmail_send*",
+    "gmail_reply*",
+    "gmail_forward*",
+];
+
+/// Turn the platform's Composio toolkits on for the seed agents, so they can read and write the
+/// apps a user names. Each call still runs on the CALLER's own connection: the gateway resolves
+/// tools per user, and a user who has not connected the app gets a connect card instead.
+///
+/// A connector without an access row is off for an agent (`PermissionContext::decide`), and only
+/// the agent's owner can add one, so without this no user could reach a toolkit through a seed
+/// agent. Existing rows are left alone, so a toolkit an admin switched off for a seed agent stays
+/// off.
+/// Runs at boot after the toolkits are registered; a toolkit added later is turned on at the next
+/// start.
+pub async fn grant_toolkits_to_seed_agents(state: &AppState) {
+    let names: Vec<String> = std::env::var("SEED_AGENTS")
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(extract_name)
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let rules: Vec<serde_json::Value> = SEED_AGENT_TOOL_RULES
+        .iter()
+        .map(|pattern| serde_json::json!({ "pattern": pattern, "stance": "block" }))
+        .collect();
+    // The seed's own rows only (as in `seed_agents_if_configured`): another user's agent may
+    // share a seed agent's name.
+    let granted = sqlx::query_scalar::<_, Uuid>(
+        r#"INSERT INTO mcp_agent_connector_access (agent_id, connector_id, enabled, tool_rules)
+           SELECT a.id, c.id, true, $2
+           FROM agents a
+           CROSS JOIN mcp_connectors c
+           WHERE a.name = ANY($1)
+             AND a.deleted_at IS NULL
+             AND a.owner_id = (SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL
+                               ORDER BY created_at LIMIT 1)
+             AND c.provider_type = 'composio'
+             AND COALESCE(c.is_active, true)
+           ON CONFLICT (agent_id, connector_id) DO NOTHING
+           RETURNING agent_id"#,
+    )
+    .bind(&names)
+    .bind(serde_json::Value::Array(rules))
+    .fetch_all(&state.db)
+    .await;
+    match granted {
+        Ok(rows) => {
+            let agents: HashSet<Uuid> = rows.into_iter().collect();
+            for agent_id in &agents {
+                nasiko_mcp_gateway::permissions::invalidate_permission_cache(&state.mcp, *agent_id)
+                    .await;
+            }
+            if !agents.is_empty() {
+                info!(
+                    agents = agents.len(),
+                    "seed agents: Composio toolkits turned on"
+                );
+            }
+        }
+        Err(e) => warn!(%e, "seed agents: turning on Composio toolkits failed"),
+    }
 }
 
 #[cfg(test)]
@@ -945,6 +1171,21 @@ mod registry_address_pending_tests {
     fn seeding_runs_when_no_placeholder_is_configured() {
         assert!(!registry_address_pending("", None));
         assert!(!registry_address_pending("registry.example.com", None));
+    }
+}
+
+#[cfg(test)]
+mod unmatched_settings_tests {
+    use super::*;
+
+    #[test]
+    fn only_settings_for_an_agent_seed_agents_does_not_seed_are_unmatched() {
+        let settings: BTreeMap<String, SeedAgentSettings> = ["summarizer", "summariser"]
+            .into_iter()
+            .map(|name| (name.to_owned(), SeedAgentSettings::default()))
+            .collect();
+        let images = "registry.nasiko.com/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
+        assert_eq!(unmatched_settings(&settings, images), ["summariser"]);
     }
 }
 
@@ -1001,5 +1242,216 @@ mod extract_name_tests {
             extract_name("myregistry.example.com:5000/team/project/agent:v3"),
             "agent"
         );
+    }
+}
+
+/// Why harness agents must not be seeded, if they must not: sessions could not run anyway.
+///
+/// A harness sandbox's credentials are signed with `AGENT_JWT_SECRET`, so without it every turn
+/// fails; and a server whose sandbox provider is not available (a backend that is not built in or
+/// not reachable) cannot start one. Seeding the agents would only advertise harnesses that cannot
+/// work. The reason is `(level_is_error, message)`.
+fn harness_seeding_blocked(
+    jwt_secret_set: bool,
+    provider_available: bool,
+    provider_kind: &str,
+) -> Option<(bool, String)> {
+    if !jwt_secret_set {
+        return Some((
+            true,
+            "harness sessions disabled: AGENT_JWT_SECRET unset".into(),
+        ));
+    }
+    if !provider_available {
+        return Some((
+            false,
+            format!("harness sessions disabled: sandbox provider {provider_kind} unavailable"),
+        ));
+    }
+    None
+}
+
+/// Boot-time harness seeding: [`seed_harness_agents`], unless coding sessions are switched off
+/// (`HARNESS_SESSIONS_ENABLED`, then [`hide_harness_agents`]) or [`harness_seeding_blocked`].
+/// When blocked, logs the reason once (error for a missing secret, warn for an unavailable
+/// provider) with the harness agents already seeded, which stay listed but cannot run.
+pub async fn seed_harness_agents_if_enabled(state: &AppState) {
+    if !state.config.harness_sessions_enabled {
+        hide_harness_agents(&state.db).await;
+        return;
+    }
+    let session_key = nasiko_runtime::SandboxKey::Session {
+        session_id: uuid::Uuid::nil(),
+    };
+    let blocked = harness_seeding_blocked(
+        !state.config.agent_jwt_secret.is_empty(),
+        state.sandbox.is_available_for(&session_key),
+        &state.sandbox.kind().to_string(),
+    );
+    if let Some((is_error, reason)) = blocked {
+        let advertised: Vec<String> = sqlx::query_scalar(&format!(
+            "SELECT name FROM agents WHERE {} AND deleted_at IS NULL",
+            crate::sessions::PLATFORM_HARNESS_AGENT
+        ))
+        .fetch_all(&state.db)
+        .await
+        .unwrap_or_default();
+        if is_error {
+            tracing::error!(
+                ?advertised,
+                "{reason} (agents already seeded stay listed but cannot run)"
+            );
+        } else {
+            tracing::warn!(
+                ?advertised,
+                "{reason} (agents already seeded stay listed but cannot run)"
+            );
+        }
+        return;
+    }
+    seed_harness_agents(state).await;
+}
+
+/// With coding sessions switched off, soft-delete the platform harness agents an earlier boot
+/// created, so no agent list, chat picker or registry offers them and no turn reaches them.
+/// [`seed_harness_agents`] restores them when the switch is turned back on. A user's own
+/// harness agent is left alone: none is created while sessions are refused.
+pub async fn hide_harness_agents(db: &sqlx::PgPool) {
+    let hidden = sqlx::query(&format!(
+        "UPDATE agents SET deleted_at = now() WHERE {} AND deleted_at IS NULL",
+        crate::sessions::PLATFORM_HARNESS_AGENT
+    ))
+    .execute(db)
+    .await;
+    match hidden {
+        Ok(done) => info!(
+            hidden = done.rows_affected(),
+            "coding sessions are off (HARNESS_SESSIONS_ENABLED); no harness agents are offered"
+        ),
+        Err(e) => {
+            warn!(error = %e, "coding sessions are off, but the harness agents could not be hidden")
+        }
+    }
+}
+
+/// Bring back the platform harness agents [`hide_harness_agents`] hid, keeping their ids so the
+/// sessions opened on them still resolve: per harness, the most recently hidden row of `owner_id`,
+/// unless that owner already has a live one.
+async fn restore_hidden_harness_agents(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    harness_ids: &[String],
+) -> sqlx::Result<u64> {
+    sqlx::query(&format!(
+        "UPDATE agents SET deleted_at = NULL \
+          WHERE id IN (SELECT DISTINCT ON (name) id FROM agents \
+                        WHERE {platform} AND owner_id = $1 AND name = ANY($2) \
+                          AND deleted_at IS NOT NULL \
+                        ORDER BY name, deleted_at DESC) \
+            AND NOT EXISTS (SELECT 1 FROM agents live \
+                             WHERE live.owner_id = $1 AND live.name = agents.name \
+                               AND live.deleted_at IS NULL)",
+        platform = crate::sessions::PLATFORM_HARNESS_AGENT
+    ))
+    .bind(owner_id)
+    .bind(harness_ids)
+    .execute(db)
+    .await
+    .map(|done| done.rows_affected())
+}
+
+/// Ensure every enabled harness has the `agents` row sessions attach to, restoring a row
+/// [`hide_harness_agents`] hid before creating one.
+///
+/// A harness agent is a routable identity, not a deployment: `status = 'running'` with no
+/// container, because each session brings up its own sandbox. Idempotent. The upsert only
+/// ever updates a row that is already a harness, so an unrelated agent that happens to share
+/// the name is left alone and reported instead of being repurposed. It re-asserts `is_public`
+/// every time: a platform row is the catalog entry everyone starts sessions from, and the only
+/// public kind of harness agent (`nasiko_auth::sharing`).
+pub async fn seed_harness_agents(state: &AppState) {
+    let owner_id: Uuid = match sqlx::query_scalar(
+        "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
+    )
+    .fetch_optional(&state.db)
+    .await
+    {
+        Ok(Some(id)) => id,
+        _ => {
+            warn!("no admin user found, cannot seed harness agents (run bootstrap first)");
+            return;
+        }
+    };
+    let harnesses = match crate::sessions::HarnessCatalog::new(state.db.clone())
+        .list_enabled()
+        .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            warn!(error = %e, "harness catalog unreadable, skipping harness agent seeding");
+            return;
+        }
+    };
+    let ids: Vec<String> = harnesses.iter().map(|h| h.id.clone()).collect();
+    match restore_hidden_harness_agents(&state.db, owner_id, &ids).await {
+        Ok(0) => {}
+        Ok(n) => info!(
+            restored = n,
+            "restored the harness agents hidden while coding sessions were off"
+        ),
+        Err(e) => warn!(error = %e, "could not restore hidden harness agents; creating new ones"),
+    }
+    for harness in harnesses {
+        match upsert_harness_agent(&state.db, owner_id, &harness).await {
+            Ok(1) => info!(harness = %harness.id, "harness agent ready"),
+            Ok(_) => warn!(
+                harness = %harness.id,
+                "an agent named '{}' already exists and is not a harness; not seeding it", harness.id
+            ),
+            Err(e) => warn!(harness = %harness.id, error = %e, "failed to seed harness agent"),
+        }
+    }
+}
+
+async fn upsert_harness_agent(
+    db: &sqlx::PgPool,
+    owner_id: Uuid,
+    harness: &crate::sessions::Harness,
+) -> sqlx::Result<u64> {
+    sqlx::query(
+        r#"INSERT INTO agents (name, display_name, owner_id, image, status, is_public, is_internal,
+                               workload_kind, harness_id)
+           VALUES ($1, $2, $3, $4, 'running', true, false, 'harness', $1)
+           ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
+               SET display_name = EXCLUDED.display_name, image = EXCLUDED.image,
+                   is_public = true, updated_at = now()
+               WHERE agents.workload_kind = 'harness'"#,
+    )
+    .bind(&harness.id)
+    .bind(&harness.name)
+    .bind(owner_id)
+    .bind(&harness.image)
+    .execute(db)
+    .await
+    .map(|done| done.rows_affected())
+}
+
+#[cfg(test)]
+mod harness_seeding_tests {
+    use super::harness_seeding_blocked;
+
+    #[test]
+    fn seeding_needs_a_secret_and_a_live_provider() {
+        assert_eq!(harness_seeding_blocked(true, true, "docker"), None);
+        let (error, msg) = harness_seeding_blocked(false, true, "docker").unwrap();
+        assert!(error && msg.contains("AGENT_JWT_SECRET unset"), "{msg}");
+        let (error, msg) = harness_seeding_blocked(true, false, "pod").unwrap();
+        assert!(!error, "an unavailable provider is a warning");
+        assert_eq!(
+            msg,
+            "harness sessions disabled: sandbox provider pod unavailable"
+        );
+        // The secret is reported first when both are missing.
+        assert!(harness_seeding_blocked(false, false, "pod").unwrap().0);
     }
 }

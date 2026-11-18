@@ -152,17 +152,23 @@ fn capture_locked(
         pending: pending.len(),
         ..Captured::default()
     };
+    // Chat history only with the consent this CLI records, given for a cluster that keeps it; a
+    // yes an older CLI saved under its default doesn't count. Everything else is usage.
+    let capture_content = agent_state.capture_content && agent_state.chat_history;
     for turn in &pending {
-        let record = QueueRecord::new(
-            destination.clone(),
-            sanitized(canonical_event(
-                agent_id,
-                &agent_state.agent_name,
-                snapshot,
-                turn,
-                agent_state.capture_content,
-            )),
-        );
+        let record = QueueRecord {
+            chat_history: capture_content,
+            ..QueueRecord::new(
+                destination.clone(),
+                sanitized(canonical_event(
+                    agent_id,
+                    &agent_state.agent_name,
+                    snapshot,
+                    turn,
+                    capture_content,
+                )),
+            )
+        };
         if let Err(error) = record.event.validate() {
             queue::reject_invalid(&record, &error)?;
             lock.mark_captured(
@@ -414,14 +420,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn a_turn_with_nul_characters_is_queued_clean_instead_of_quarantined() {
+    /// Captures one turn (with NUL characters in its prompt and title) for an agent saved with chat
+    /// history on, bound to `cluster_url`; returns what was queued.
+    fn capture_with_content_on(consented: bool) -> Vec<CodingAgentEventV1> {
         let dir = tempfile::tempdir().unwrap();
         let lock =
             SessionLock::acquire(&dir.path().join("s.lock"), dir.path().join("s.json")).unwrap();
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: consented,
             hook_version: 3,
             binding: None,
         };
@@ -455,10 +463,28 @@ mod tests {
         .unwrap();
 
         assert_eq!((captured.queued.len(), captured.rejected), (1, 0));
-        let event = &queued.borrow()[0];
+        let queued = queued.into_inner();
+        assert_eq!(captured.queued[0], queued[0].event_id);
+        queued
+    }
+
+    #[test]
+    fn a_turn_with_nul_characters_is_queued_clean_instead_of_quarantined() {
+        let event = &capture_with_content_on(true)[0];
         assert_eq!(event.turn.prompt.as_deref(), Some("readthis"));
         assert_eq!(event.session.title.as_deref(), Some("t"));
-        assert_eq!(captured.queued[0], event.event_id);
+    }
+
+    #[test]
+    fn a_yes_saved_by_an_older_cli_captures_usage_only() {
+        let event = &capture_with_content_on(false)[0];
+        assert_eq!(event.capture_policy, CapturePolicy::MetadataOnly);
+        assert_eq!((&event.turn.prompt, &event.turn.response), (&None, &None));
+        assert_eq!(event.session.title, None);
+        assert!(
+            !event.turn.llm_calls.is_empty(),
+            "token usage is still reported"
+        );
     }
 
     #[test]
@@ -469,6 +495,7 @@ mod tests {
         let state = AgentState {
             agent_name: "codex".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 2,
             binding: None,
         };
@@ -535,6 +562,7 @@ mod tests {
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 4,
             binding: None,
         };
@@ -613,6 +641,7 @@ mod tests {
         let state = super::super::state::AgentState {
             agent_name: "alice-claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 1,
             binding: Some(super::super::state::InstallationBinding {
                 cluster_name: "cluster-a".into(),
@@ -632,6 +661,7 @@ mod tests {
         let state = super::super::state::AgentState {
             agent_name: "alice-claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: 1,
             binding: None,
         };

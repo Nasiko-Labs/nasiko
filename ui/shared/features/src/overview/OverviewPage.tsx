@@ -9,8 +9,8 @@
  * The grids follow the page area's width, not the viewport, because the sidebar changes it (design review 1A). The summary
  * is a bento: the headline in a lead card beside the KPI tiles (2×2) from 1100 px of content, stacked below (tiles 2
  * across from 560 px). Below it, from 1100 px, twelve columns: Needs you and Spend each span the row, then Fleet health
- * beside Recent sessions and Recent chats beside Quick actions; 2 columns from 700 px, 1 below. DOM order stays the priority order (Needs you first); wide layouts place cards
- * explicitly, so nothing leaves a hole.
+ * beside Recent sessions and Recent chats; 2 columns from 700 px, 1 below. DOM order stays the priority order (Needs you first); wide layouts place cards
+ * explicitly, so nothing leaves a hole. A card below Needs you with nothing to show steps out (user 2026-11-06).
  *
  * Restored at `/` on 2026-10-17 in place of the agent-centric Home (its table, scope switch and chart band are gone),
  * with Home's Budget burn panel (the `budgets.useHomePanel` slot, EE only) spanning the row under Needs you. The panel
@@ -52,13 +52,15 @@ import {
   useNeedsYou,
   useOverviewSavings,
   useSavedByAgent,
+  useSetupSteps,
   useSpend,
 } from './api'
 import { FirstRunHero, FirstRunPreview } from './components/FirstRun'
 import { FleetHealth } from './components/FleetHealth'
+import { HarnessActivity, PreviewActivity } from './components/HarnessActivity'
+import { PreviewHeader, PreviewProvider } from './components/HarnessPreview'
 import { NeedsYou } from './components/NeedsYou'
 import { usePausedFlows } from '@nasiko/features/flows/paused'
-import { QuickActions } from './components/QuickActions'
 import { RecentChats } from './components/RecentChats'
 import { RecentSessions } from './components/RecentSessions'
 import { SavedByAgent } from './components/SavedByAgent'
@@ -66,11 +68,14 @@ import { SetupGuide } from './components/SetupGuide'
 import { SetUpNow } from './components/SetUpNow'
 import { SummaryCard } from './components/SummaryCard'
 import { Spend } from './components/Spend'
+import { TryAgentRun } from './components/TryAgentRun'
+import { readDone, showTryRun } from './tryRun'
 import { FilterBar } from './components/FilterBar'
 import { copy } from './copy'
 import { useEstate, useProblemAction } from './estate/api'
 import { estateCopy } from './estate/copy'
 import type { ProblemPatch } from './estate/types'
+import { watchSummary } from './needs'
 import { useEstateView } from './estate/useEstateView'
 import { formatSel, parseSel, type Selection } from './map/selection'
 import type { ProblemActions } from './panel/ProblemCard'
@@ -114,11 +119,16 @@ function Frame({
   actions?: ReactNode
   children: ReactNode
 }) {
+  // The coding harness preview plays on the page itself (HarnessPreview.tsx), its bar in the header's place.
   return (
-    <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
-      <PageHeader title={copy.title} description={description} actions={actions} />
-      {children}
-    </div>
+    <PreviewProvider>
+      <div className="@container/overview mx-auto flex w-full max-w-page flex-col gap-4">
+        <PreviewHeader>
+          <PageHeader title={copy.title} description={description} actions={actions} />
+        </PreviewHeader>
+        {children}
+      </div>
+    </PreviewProvider>
   )
 }
 
@@ -227,15 +237,22 @@ function HeaderActions({
 // row per item (its tiles start at 900 px of card). Budget burn and Spend span the row; then Recent sessions (7) beside
 // Saved tokens by agent (5), and Recent chats (7) beside Quick actions (5): pairs of about the same height, so neither
 // card in a row is left half empty.
+// 2026-11-06: Coding harness activity spans the row right under Needs your attention and Fleet health.
+// 2026-11-06 (user): a card with nothing to show steps out and Quick actions is gone (the sidebar, Agents and "Did you
+// know?" cover it). Recent sessions and Saved tokens share a flex row, so either alone takes the whole row and the row
+// itself collapses (`empty:hidden`) when both step out; Recent chats spans the row.
+const FULL = '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12'
 const PLACE = {
+  tryRun: FULL,
   needs: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-8',
   health: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-4',
-  burn: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12',
-  spend: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-12',
-  sessions: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7',
-  saved: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5',
-  chats: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-7',
-  actions: '@[700px]/overview:col-span-2 @[1100px]/overview:col-span-5',
+  burn: FULL,
+  spend: FULL,
+  pair: `${FULL} flex flex-col gap-3 empty:hidden @[1100px]/overview:flex-row`,
+  sessions: '@[1100px]/overview:flex-7',
+  saved: '@[1100px]/overview:flex-5',
+  chats: FULL,
+  harness: FULL,
 } as const
 
 export function OverviewPage({
@@ -292,10 +309,13 @@ function Overview({
   const days = RANGE_DAYS[range]
   const qc = useQueryClient()
   const returnTick = useReturnTick(RETURN_REFRESH_MS)
+  // A try-a-run finished: Home moves on and refreshes as on a return, so the run's spend and tokens show at once.
+  const [ranTick, setRanTick] = useState(0)
+  const refreshTick = returnTick + ranTick
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const now = useMemo(() => new Date(), [returnTick])
+  const now = useMemo(() => new Date(), [refreshTick])
   useEffect(() => {
-    if (!returnTick) return
+    if (!refreshTick) return
     // Window-keyed queries (finops, sessions) move with `now`; these keys don't, so refresh them.
     void qc.invalidateQueries({ queryKey: ['agents'], exact: true })
     void qc.invalidateQueries({ queryKey: ['agents', 'deployment'] })
@@ -305,7 +325,12 @@ function Overview({
     // The month calendar is keyed by month, not window: refresh it too, as TokenOps does (/ship review).
     void qc.invalidateQueries({ queryKey: ['tokenops', 'calendar'] })
     void qc.invalidateQueries({ queryKey: ['overview', 'estate'] })
-  }, [returnTick, qc])
+  }, [refreshTick, qc])
+  // A try-a-run just finished: its spend, tokens and run are already metered, but the range-keyed cards (`7d`, `30d`)
+  // keep their query keys when `now` moves, so refetch everything Home shows rather than wait for them to go stale.
+  useEffect(() => {
+    if (ranTick) void qc.invalidateQueries({ type: 'active' })
+  }, [ranTick, qc])
 
   const fleet = useFleetHealth(now)
   // A failed agent list must not freeze the other cards: they load, and Needs you says agent health failed (/ship review).
@@ -316,6 +341,7 @@ function Overview({
   const savings = useOverviewSavings(now, range, ready)
   const savedByAgent = useSavedByAgent(now, range, fleet, ready && !firstRun)
   const needsYou = useNeedsYou(now, me, fleet, ready)
+  const setup = useSetupSteps(ready && !firstRun)
   const harnesses = useHarnessSummary(now, me, range)
   // The Recent chats card's own query (same key): first paint waits for it too.
   const chats = useChatSessions()
@@ -329,6 +355,8 @@ function Overview({
     unitLabel: null,
   })
   const { needs } = needsYou
+  // Watch agents for an otherwise empty inbox (user 2026-11-05: Fleet health keeps them otherwise).
+  const watch = fleet.summary ? watchSummary(fleet.summary.watch) : null
   // Read only when there are requests to link (plans/feat-flows.md O2, amended 2026-10-06).
   const pausedFlows = usePausedFlows(needs.rows.some((r) => r.kind === 'request'))
   const narrative = useMemo(
@@ -340,8 +368,10 @@ function Overview({
         waitingCount: needs.waitingCount,
         otherCount: needs.rows.filter((r) => r.kind === 'budget' || r.kind === 'sessions').length,
         empty: needs.empty,
+        setupCount: setup.left,
+        watchCount: watch?.count,
       }),
-    [spend.summary, spend.unpriced, needs],
+    [spend.summary, spend.unpriced, needs, setup.left, watch?.count],
   )
 
   // `list` was the village's List view; its list is the Map's System card now, so an old link opens the Map. Without
@@ -450,11 +480,20 @@ function Overview({
       (spend.isPending ||
         (!spend.totals && !spend.totalsError) ||
         needsYou.sessions.recent.isPending ||
+        setup.isPending ||
+        // The lead card's foot is the savings band or a tip: waiting for it means the two never swap.
+        savings.isPending ||
         !persona.settled ||
         burn.pending ||
         chats.isPending))
   const [painted, setPainted] = useState(false)
-  if (!painted && !coldPending) setPainted(true)
+  // The try-a-run card, decided once at the first paint: it asks for a refresh after each run, so it must not vanish
+  // when its own run lands mid-visit.
+  const [tryRun, setTryRun] = useState(false)
+  if (!painted && !coldPending) {
+    setPainted(true)
+    setTryRun(!firstRun && showTryRun(readDone(me.sub), spend.totals?.runs ?? null))
+  }
   if (!painted && coldPending) {
     return (
       <Frame description={description} actions={actions}>
@@ -552,30 +591,57 @@ function Overview({
         <VillageLoading view={view === 'map' ? 'map' : 'village'} />
       )}
       <div className="grid grid-cols-1 items-stretch gap-3 @[700px]/overview:grid-cols-2 @[1100px]/overview:grid-cols-12">
+        {/* The coding harness preview's sample card (HarnessPreview.tsx), right under the summary it plays in (user
+            2026-11-06; the real card sits below the inbox), above the try-a-run card too (user 2026-11-13). Renders
+            nothing outside a preview. */}
+        {harnesses.ownOnly || harnesses.notVisible ? null : (
+          <PreviewActivity days={days} className={PLACE.harness} />
+        )}
+        {/* Right after setup, before anything has run: the call to run the agent they picked, first in line. */}
+        {tryRun ? (
+          <TryAgentRun
+            userId={me.sub}
+            className={PLACE.tryRun}
+            onRan={() => setRanTick((n) => n + 1)}
+          />
+        ) : null}
         <NeedsYou
           data={needsYou}
           now={now.getTime()}
           userId={me.sub}
           pausedFlows={pausedFlows}
+          setup={setup.items}
+          watch={watch}
           className={PLACE.needs}
         />
         <FleetHealth fleet={fleet} className={PLACE.health} />
+        {/* The coding harnesses' behaviour, beside the money the Harnesses tile shows (2026-11-06), right under the
+            inbox and fleet health (user 2026-11-06: too important to sit under Spend). A server without
+            the harness usage endpoint (own usage only) or nothing visible at the landing scope has none to show. */}
+        {harnesses.ownOnly || harnesses.notVisible ? null : (
+          <HarnessActivity data={harnesses} days={days} className={PLACE.harness} />
+        )}
         {burn.node ? <div className={PLACE.burn}>{burn.node}</div> : null}
-        <Spend spend={spend} now={now.getTime()} className={PLACE.spend} />
-        <RecentSessions
-          sessions={needsYou.sessions}
-          displayName={fleet.displayName}
-          now={now.getTime()}
-          className={PLACE.sessions}
-        />
-        <SavedByAgent data={savedByAgent} className={PLACE.saved} />
+        {/* Each card below renders nothing when it has nothing to show (user 2026-11-06); elsewhere (Weave) they keep
+            their quiet states. */}
+        <Spend spend={spend} now={now.getTime()} className={PLACE.spend} hideEmpty />
+        <div className={PLACE.pair}>
+          <RecentSessions
+            sessions={needsYou.sessions}
+            displayName={fleet.displayName}
+            now={now.getTime()}
+            className={PLACE.sessions}
+            hideEmpty
+          />
+          <SavedByAgent data={savedByAgent} className={PLACE.saved} />
+        </div>
         <RecentChats
           byId={fleet.byId}
           username={me.username}
           now={now.getTime()}
           className={PLACE.chats}
+          hideEmpty
         />
-        <QuickActions className={PLACE.actions} />
       </div>
     </Frame>
   )

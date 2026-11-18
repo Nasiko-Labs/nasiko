@@ -5,7 +5,8 @@
  *     each user row opens a turn; assistant rows attach to the turn before them;
  *     rows before the first user row (a page that starts mid-turn) form a boundary turn;
  *     requests attach to the turn whose user row is the latest one at or before them.
- *   live turn ─► attached to its user row once history has it; dropped once history holds
+ *   live turn ─► attached to its user row once history has it (a resume: to the last turn from that row on,
+ *     `ownTurn`); dropped once history holds
  *     its saved reply (persisted wins); otherwise appended as a pending turn.
  */
 import { tuning } from './tuning'
@@ -18,6 +19,8 @@ export interface LiveRef {
   finalized: boolean
   /** Routed turns stay attached until the registry settles them on their own reply (v1b §5.4). */
   chatMode?: 'direct' | 'routed'
+  /** Set on a resume: the request whose answer it continues. */
+  resumedRequestId?: string
 }
 
 export interface DisplayTurn<L extends LiveRef = LiveRef> {
@@ -50,7 +53,11 @@ export function mergeTurns<L extends LiveRef>(
     for (const m of p.data) if (m.role !== 'system') seen.set(m.id, m)
     for (const h of p.hitl) requests.set(h.id, h)
   }
-  const rows = [...seen.values()].sort(byTime)
+  // An answer the server saved as a user row (router/hitl.rs resolve) shows on its request's card;
+  // as a row it would open a turn of its own and split the paused turn in two (NAS-1540).
+  const rows = [...seen.values()]
+    .filter((m) => !requests.has(String(m.metadata?.hitl_request_id)))
+    .sort(byTime)
   const turns: DisplayTurn<L>[] = []
   for (const m of rows) {
     if (m.role === 'user') turns.push({ key: m.id, user: m, replies: [], requests: [] })
@@ -71,7 +78,7 @@ export function mergeTurns<L extends LiveRef>(
     ;(target ?? turns[turns.length - 1])?.requests.push(r)
   }
   if (!live) return turns
-  const own = live.userMessageId ? turns.find((t) => t.user?.id === live.userMessageId) : undefined
+  const own = ownTurn(turns, live)
   if (own) {
     // A routed attempt's own reply is matched by trace id, not by "any reply" (a rerun or resume
     // has older replies): the registry forgets it once settled, so keep it until then.
@@ -86,6 +93,20 @@ export function mergeTurns<L extends LiveRef>(
     live,
   })
   return turns
+}
+
+/**
+ * The history turn a live turn belongs to: its user row's. A resume's is the last turn from that row on: the server
+ * saves each answer as a user row (router/hitl.rs resolve), which opens a turn, and what the continuation raises
+ * or replies is saved after it (NAS-1540: on the row's own turn, a request it raised again showed twice).
+ */
+export function ownTurn<T extends Pick<DisplayTurn, 'user'>>(
+  turns: readonly T[],
+  live: LiveRef | undefined,
+): T | undefined {
+  const i = live?.userMessageId ? turns.findIndex((t) => t.user?.id === live.userMessageId) : -1
+  if (i < 0) return undefined
+  return live?.resumedRequestId ? turns[turns.length - 1] : turns[i]
 }
 
 export type ReplyStatus = 'checking' | 'unconfirmed' | null

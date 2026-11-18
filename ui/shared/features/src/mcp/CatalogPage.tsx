@@ -4,12 +4,14 @@
  * all replacing history. The page's actions sit in the shell's top bar.
  * A custom server's name links to its page; its Connect control sits beside the link, never inside it.
  */
+import { useQuery } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { CheckCircle2, Plug, Plus, RotateCw, SearchX, Upload } from 'lucide-react'
+import { CheckCircle2, Plug, Plus, RotateCw, SearchX, Settings, Upload } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
+import { meQuery } from '@nasiko/data-access/auth'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import {
   Select,
@@ -27,6 +29,7 @@ import { AgentMark } from '@nasiko/features/agents/components/bits'
 import { useConnectors, useToolkits } from './api'
 import { ServerStatusBadge } from './components/bits'
 import { ConnectControl } from './components/ConnectControl'
+import { McpNav } from './components/McpNav'
 import { RegisterDialog } from './components/RegisterDialog'
 import { UploadDialog } from './components/UploadDialog'
 import { copy, reason } from './copy'
@@ -51,6 +54,7 @@ export function CatalogPage({
 }) {
   const servers = useConnectors()
   const toolkits = useToolkits()
+  const admin = useQuery(meQuery).data?.is_superuser === true
   const openPopup = useOAuthPopup()
   const [dialog, setDialog] = useState<'register' | 'upload' | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -83,6 +87,10 @@ export function CatalogPage({
   // The empty card repeats both header actions, so the header drops them (legacy: never each button twice).
   const scopeEmpty =
     !!servers.data && !scoped.length && search.view !== 'shared' && search.view !== 'toolkits'
+  // No toolkit yet: how to get some, in every view that would list them. Seeded servers (SEED_CONNECTORS) keep "All"
+  // from ever being empty, so this can't wait for the empty card. In "Toolkits" it is the empty card.
+  const noToolkits =
+    toolkits.data?.toolkits.length === 0 && search.view !== 'yours' && search.view !== 'shared'
 
   const actions = (
     <>
@@ -109,7 +117,8 @@ export function CatalogPage({
   const header = (
     <>
       <TopBar actions={scopeEmpty ? null : actions} />
-      <PageHeader title={copy.title} description={copy.sub} className="mb-2" />
+      <PageHeader title={copy.title} description={copy.sub} />
+      <McpNav current="/mcp" />
     </>
   )
 
@@ -200,8 +209,11 @@ export function CatalogPage({
           }
         />
       ) : null}
+      {noToolkits ? <ToolkitSetup admin={admin} /> : null}
       {!scoped.length ? (
-        <ScopeEmpty view={search.view} actions={scopeEmpty ? actions : null} />
+        noToolkits && search.view === 'toolkits' ? null : (
+          <ScopeEmpty view={search.view} actions={scopeEmpty ? actions : null} />
+        )
       ) : shown.length ? (
         <ul data-tour="mcp-grid" className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {shown.map((s) => (
@@ -251,6 +263,35 @@ function ScopeEmpty({ view, actions }: { view: CatalogSearch['view']; actions: R
     <EmptyState icon={Plug} title={e.title} action={actions ?? undefined}>
       {e.desc}
     </EmptyState>
+  )
+}
+
+/** The steps to the first toolkit. The Settings link is for admins only: that route sends everyone else away. */
+function ToolkitSetup({ admin }: { admin: boolean }) {
+  const s = copy.toolkitSetup
+  return (
+    <StateCard
+      title={s.title}
+      fix={admin ? undefined : s.askAdmin}
+      action={
+        admin ? (
+          <Link
+            to="/settings"
+            search={{ section: 'mcp' }}
+            {...asButton({ variant: 'outline', size: 'sm', className: 'pointer-coarse:min-h-11' })}
+          >
+            <Settings aria-hidden /> {s.open}
+          </Link>
+        ) : undefined
+      }
+    >
+      <p>{s.intro}</p>
+      <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+        {s.steps.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+    </StateCard>
   )
 }
 

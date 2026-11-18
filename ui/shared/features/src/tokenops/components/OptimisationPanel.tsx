@@ -51,6 +51,9 @@ const LAYER_LABEL: Record<string, string> = {
   brevity: 'answer length',
   minimal_code: 'code written',
   prompt_comments: 'agent instructions',
+  compact_tools: 'tool definitions',
+  tool_search: 'tools listed',
+  context_budget: 'injected context',
 }
 
 /** `null` percentages mean "no baseline to compare against", not zero. */
@@ -79,7 +82,7 @@ export function OptimisationPanel({
       actions={
         <span className="flex items-center gap-1.5">
           <BetaBadge />
-          <BasisBadge basis={data.basis} calibratedPct={data.calibratedPct} />
+          <BasisBadge basis={data.basis} />
         </span>
       }
     >
@@ -512,18 +515,11 @@ function BasisMark({ basis, notes }: { basis: SavingsBasis; notes?: string }) {
   )
 }
 
-function BasisBadge({
-  basis,
-  calibratedPct,
-}: {
-  basis: SavingsBasis
-  calibratedPct: number | null
-}) {
+function BasisBadge({ basis }: { basis: SavingsBasis }) {
   if (basis === 'measured') {
     return (
       <Badge variant="outline" className="text-muted-foreground">
         Measured
-        {calibratedPct != null ? ` · ${Math.round(calibratedPct)}% calibrated` : null}
       </Badge>
     )
   }

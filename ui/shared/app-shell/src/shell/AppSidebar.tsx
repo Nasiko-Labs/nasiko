@@ -1,5 +1,5 @@
 /**
- * The app's left sidebar (plans/feat-app-shell.md §3–§4): the header (OpenRuntime home link, collapse), the nav groups
+ * The app's left sidebar (plans/feat-app-shell.md §3–§4): the header (Open Runtime home link, collapse), the nav groups
  * from `nav.ts` or a page's drill-in panel (`SidebarPanel`: Chat's history, Settings' sections), and the footer
  * (status in local builds, account; account settings open from the account menu). Built on shadcn's sidebar primitive.
  */
@@ -8,7 +8,8 @@ import { Link, useNavigate, useRouter, useRouterState } from '@tanstack/react-ro
 import {
   ArrowLeft,
   BookOpen,
-  CalendarClock,
+  Bug,
+  ClipboardCheck,
   CircleAlert,
   CircleUser,
   Compass,
@@ -28,6 +29,7 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type ReactNode,
   type RefObject,
 } from 'react'
 import {
@@ -63,12 +65,12 @@ import { ApiError } from '@nasiko/data-access/client'
 import { SIDEBAR_HEALTH_INTERVAL_MS, useHealth } from '@nasiko/data-access/health'
 import { env } from '@nasiko/app-core/env'
 import { IS_MAC } from '@nasiko/ui/lib/keys'
-import { DOCS_URL, EXPERT_CALL_URL } from '@nasiko/app-core/links'
+import { DOCS_URL, SUPPORT_MAIL_URL } from '@nasiko/app-core/links'
 import { askForTour } from '@nasiko/app-core/tour'
 import { cn } from '@nasiko/ui/lib/utils'
 import { pickShared, withoutWindow } from '@nasiko/app-core/shell/context'
 import { copy } from '@nasiko/app-core/shell/copy'
-import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
+import { NasikoLockup, NasikoMark } from '@nasiko/ui/composites/NasikoMark'
 import {
   activeItem,
   backIndex,
@@ -89,9 +91,9 @@ import {
   type Theme,
 } from '@nasiko/app-core/shell/theme'
 import { SidebarPanelContext } from '@nasiko/app-core/shell/panelSlot'
-// The waitlist card gave way to the free-assessment card (user request 2026-10-22); WaitlistCta.tsx stays for now.
+// The waitlist card gave way to the free-assessment banner above the top bar (AssessmentCta.tsx); WaitlistCta.tsx stays
+// for now.
 // import { WaitlistCard } from './WaitlistCta'
-import { AssessmentCard } from './AssessmentCta'
 
 /** How long a pending health check stays quiet before "Checking…" shows (design review 2A). */
 const CHECKING_DELAY_MS = 1_000
@@ -111,13 +113,15 @@ export type NavBadges = Partial<Record<string, { count: number; label: string }>
 export function AppSidebar({
   badges,
   hidden,
-}: { badges?: NavBadges; hidden?: readonly string[] } = {}) {
+  assessment = false,
+}: { badges?: NavBadges; hidden?: readonly string[]; assessment?: boolean } = {}) {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
   const href = useRouterState({ select: (s) => s.location.href })
   const navigate = useNavigate()
   const { edition, slots } = use(EditionContext)
   const layers = edition.layers
   const Brand = slots.sidebarBrand
+  const SidebarCard = slots.sidebarCard
   const { setOpenMobile, isMobile, state } = useSidebar()
   const rail = state === 'collapsed' && !isMobile
   const { panels, setTarget } = use(SidebarPanelContext)
@@ -183,10 +187,9 @@ export function AppSidebar({
                     {/* A plain link: TanStack's Link would mark it aria-current on /, doubling the nav's Home item
                       (§3 rule 4: one current item). */}
 
-                    <NasikoMark className="size-4 shrink-0 text-logo" />
-                    <span className={cn(LABEL, 'flex min-w-0 flex-col leading-tight')}>
-                      <span className="truncate font-semibold">{copy.brand}</span>
-                    </span>
+                    {/* h-4: the mark stays the rail's 16 px size. `!` beats the button's `[&>svg]:size-4`, which would
+                      squeeze the whole lockup into a 16 px square. */}
+                    <NasikoLockup className="h-4! w-auto! shrink-0" />
                   </SidebarMenuButton>
                 )}
               </SidebarMenuItem>
@@ -194,9 +197,10 @@ export function AppSidebar({
             </>
           )}
         </SidebarMenu>
-        {/* In the rail a layer's brand row goes under the mark, which keeps expanding the sidebar. */}
+        {/* In the rail a layer's brand row goes under the mark, which keeps expanding the sidebar. A brand with
+            nothing to add there renders nothing, and leaves no gap. */}
         {rail && Brand ? (
-          <SidebarMenu>
+          <SidebarMenu className="has-[>li:empty]:hidden">
             <SidebarMenuItem>
               <Brand />
             </SidebarMenuItem>
@@ -223,6 +227,9 @@ export function AppSidebar({
           hidden={hidden}
           focusNextRef={focusNextRef}
           onPick={pick}
+          // A layer's card ends the scrolling list, hidden while a page's panel holds the sidebar: pinned above the
+          // footer it took the nav's room, so more of the nav had to scroll.
+          end={holds || !SidebarCard ? null : <SidebarCard />}
         />
       )}
       {/* The panel's slot stays mounted (only hidden) under Main menu: the page still knows the sidebar holds its
@@ -235,13 +242,10 @@ export function AppSidebar({
           className="flex min-h-0 flex-1 flex-col"
         />
       ) : null}
-      {/* Not while a page's panel holds the sidebar: Chat's history and Settings' sections keep the room, and Chat's dot
-          background stays its page's one effect (CLAUDE.md, Aceternity effects). */}
       {/* {holds ? null : <WaitlistCard />} */}
-      {holds || pathname === '/assessment' ? null : <AssessmentCard />}
       <SidebarFooter className={cn(GROUP, 'gap-0 border-t border-sidebar-border py-2')}>
         <SidebarMenu>
-          <HelpRows pathname={pathname} onPick={pick} />
+          <HelpRows pathname={pathname} onPick={pick} assessment={assessment} />
           {SHOW_STATUS ? <StatusRow /> : null}
           <AccountMenu onPick={pick} />
         </SidebarMenu>
@@ -305,12 +309,15 @@ function NavGroups({
   hidden,
   focusNextRef,
   onPick,
+  end,
 }: {
   pathname: string
   badges?: NavBadges
   hidden?: readonly string[]
   focusNextRef: FocusNext
   onPick(): void
+  /** After the nav, in the same scrolling list (a layer's card). */
+  end?: ReactNode
 }) {
   // A layer's nav patches (EE: Lab → Weave fixtures) apply on top of the core's items.
   const items = applyNav(NAV_ITEMS, use(EditionContext).edition.layers).filter(
@@ -347,22 +354,22 @@ function NavGroups({
     return () => ro.disconnect()
   }, [measure])
   return (
-    <nav aria-label={copy.navLabel} className="flex min-h-0 flex-1 flex-col">
-      <SidebarContent
-        ref={scroller}
-        onScroll={measure}
-        className={cn(
-          // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
-          'gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
-          edges.top && edges.bottom
-            ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
-            : edges.top
-              ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px)]'
-              : edges.bottom
-                ? '[mask-image:linear-gradient(to_top,transparent,black_16px)]'
-                : undefined,
-        )}
-      >
+    <SidebarContent
+      ref={scroller}
+      onScroll={measure}
+      className={cn(
+        // py-1 leaves room for the first and last rows' focus ring; the rail scrolls too (§4.2a).
+        'gap-0 py-1 group-data-[collapsible=icon]:overflow-auto',
+        edges.top && edges.bottom
+          ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px,black_calc(100%-16px),transparent)]'
+          : edges.top
+            ? '[mask-image:linear-gradient(to_bottom,transparent,black_16px)]'
+            : edges.bottom
+              ? '[mask-image:linear-gradient(to_top,transparent,black_16px)]'
+              : undefined,
+      )}
+    >
+      <nav aria-label={copy.navLabel}>
         {/* A group with no items (Lab, in a production build) has no header either, and the first group drawn has none:
             while the onboarding guide hides Home, Fleet opens the nav without a header or a leading hairline. */}
         {NAV_GROUPS.filter((g) => items.some((n) => n.group === g.id)).map((g, i) => (
@@ -429,26 +436,42 @@ function NavGroups({
             </SidebarMenu>
           </SidebarGroup>
         ))}
-      </SidebarContent>
-    </nav>
+      </nav>
+      {/* Pushed to the bottom while everything fits, as when it sat above the footer. */}
+      {end ? <div className="mt-auto">{end}</div> : null}
+    </SidebarContent>
   )
 }
 
-/** How to use (the docs), the CLI guide (in the app) and Talk to an expert (the booking page), above the account. */
-function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
+/** How to use (the docs), the CLI guide (in the app) and Report an issue (a mail to support), above the account. */
+function HelpRows({
+  pathname,
+  onPick,
+  assessment,
+}: {
+  pathname: string
+  onPick(): void
+  assessment: boolean
+}) {
   const { setOpenMobile } = useSidebar()
-  const external = (href: string, label: string, Icon: typeof BookOpen) => (
+  // A mail link opens the mail app, not a tab: `newTab` false.
+  const external = (href: string, label: string, Icon: typeof BookOpen, newTab = true) => (
     <SidebarMenuItem>
       <SidebarMenuButton
         tooltip={label}
         className={ROW}
         render={
-          <a
-            href={href}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={`${label} ${copy.help.newTab}`}
-          />
+          newTab ? (
+            <a
+              href={href}
+              target="_blank"
+              rel="noopener noreferrer"
+              aria-label={`${label} ${copy.help.newTab}`}
+            />
+          ) : (
+            // eslint-disable-next-line jsx-a11y/anchor-has-content -- its content is the button's children, rendered into it
+            <a href={href} />
+          )
         }
       >
         <Icon aria-hidden />
@@ -478,7 +501,29 @@ function HelpRows({ pathname, onPick }: { pathname: string; onPick(): void }) {
           <span className={LABEL}>{copy.help.cli}</span>
         </SidebarMenuButton>
       </SidebarMenuItem>
-      {external(EXPERT_CALL_URL, copy.help.expert, CalendarClock)}
+      {/* Only once its banner is dismissed, so the assessment stays one click away without showing twice. */}
+      {assessment ? (
+        <SidebarMenuItem>
+          <SidebarMenuButton
+            isActive={pathname === '/assessment'}
+            tooltip={copy.help.assessment}
+            className={cn(ROW, ACTIVE_ROW)}
+            render={
+              <Link
+                to="/assessment"
+                onClick={() => {
+                  onPick()
+                  setOpenMobile(false)
+                }}
+              />
+            }
+          >
+            <ClipboardCheck aria-hidden />
+            <span className={LABEL}>{copy.help.assessment}</span>
+          </SidebarMenuButton>
+        </SidebarMenuItem>
+      ) : null}
+      {external(SUPPORT_MAIL_URL, copy.help.issue, Bug, false)}
     </>
   )
 }

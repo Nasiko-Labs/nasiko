@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Multi-stage build for nasiko-server.
-# Build context must be the workspace root (oss/ in the public repo).
+# Build context must be the directory holding this workspace's Cargo.toml.
 #
 #   docker build -f server/Dockerfile -t nasiko-server .
 
@@ -31,14 +31,19 @@ RUN pnpm fetch
 # package.json, and the members differ between this repo and the public one.
 COPY ui/ ./
 RUN pnpm install --offline --frozen-lockfile
-# `oss` explicitly: in the private repo this tree also holds the enterprise
-# edition, and an unqualified build would produce both. The public repo has
-# only this one, and scripts/editions.ts finds editions by directory shape, so
-# the same command is correct in both.
+# `oss` explicitly: a checkout can hold more than one edition, and an
+# unqualified build would build each. scripts/editions.ts finds editions by
+# directory shape, so this command is correct whichever ones are present.
 RUN node scripts/app.ts build oss
 
 # ── Stage 2: build ──────────────────────────────────────────────────────────
 FROM rust:latest AS builder
+
+# `lance` (event-store/) compiles protobufs at build time and needs `protoc`,
+# plus the well-known types it imports (google/protobuf/empty.proto), which
+# come from libprotobuf-dev: only a recommend of protobuf-compiler.
+RUN apt-get update && apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build
 COPY . .

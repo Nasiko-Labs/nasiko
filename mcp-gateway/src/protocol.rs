@@ -5,7 +5,10 @@
 //! for this agent. Composio meta-tools are never filtered at list; per-toolkit
 //! enforcement happens here at `tools/call` via slug→connector resolution.
 
+use std::collections::HashSet;
+
 use serde_json::{Value, json};
+use tracing::{Instrument as _, Span};
 use uuid::Uuid;
 
 use crate::aggregator;
@@ -15,6 +18,7 @@ use crate::provider::generic::DEFAULT_CALL_TIMEOUT;
 use crate::router;
 use crate::session::{self, ResolvedSession};
 use crate::state::McpState;
+use crate::tool_span;
 use crate::types::{
     ConnectorUnusable, LATEST_PROTOCOL_VERSION, MCPServerConfig, SUPPORTED_PROTOCOL_VERSIONS,
     ServerType, codes,
@@ -45,6 +49,11 @@ pub fn rpc_error(req_id: &Value, code: i64, message: impl Into<String>) -> Value
 const SEARCH_TOOLS_META: &str = "nasiko_search_tools";
 const CALL_TOOL_META: &str = "nasiko_call_tool";
 const RECOVER_COMPRESSED_META: &str = "recover_compressed";
+/// Asks the user to connect a Composio toolkit (e.g. `gmail`) the agent needs
+/// but has no active connection for. Unconnected toolkits contribute no tools
+/// to search or listing, so without this an agent never reaches a tool call
+/// that could return `AUTH_REQUIRED` and the user never sees a Connect card.
+const CONNECT_TOOLKIT_META: &str = "nasiko_connect_toolkit";
 
 /// Full JSON-RPC dispatch for the agent-facing gateway. Returns `None` for a
 /// notification (a request with no `id`).
@@ -316,7 +325,10 @@ pub async fn handle_tools_list(
         )
         .await
         {
-            Ok(tools) => ok(req_id, json!({ "tools": tools })),
+            Ok(mut tools) => {
+                tools.push(nasiko_connect_toolkit_definition());
+                ok(req_id, json!({ "tools": tools }))
+            }
             Err(e) => err(req_id, e.json_rpc_code(), e.to_json_rpc().message),
         };
     }
@@ -358,6 +370,18 @@ pub async fn handle_tools_list(
             .await;
 
         tools.extend(search_matches_to_json(&matches, resolved));
+        // A query is only ever resolved from a verified flow, so this always holds here.
+        if let Some(flow_id) = verified_flow_id {
+            record_tool_search_saving(
+                state,
+                user_id,
+                perms,
+                flow_id,
+                resolved,
+                accessible_ids,
+                matches,
+            );
+        }
     }
 
     // The meta-tools ride along in every search-mode listing: the search
@@ -367,6 +391,7 @@ pub async fn handle_tools_list(
     tools.push(nasiko_search_tools_definition());
     tools.push(nasiko_call_tool_definition());
     tools.push(recover_compressed_definition());
+    tools.push(nasiko_connect_toolkit_definition());
 
     ok(req_id, json!({ "tools": tools }))
 }
@@ -401,23 +426,131 @@ fn search_matches_to_json(
 ) -> Vec<Value> {
     matches
         .iter()
-        .filter_map(|m| {
-            let name = router::callable_tool_name(
-                m.connector_id,
-                &m.tool_name,
-                &resolved.servers,
-                &resolved.toolkit_to_connector,
-            )?;
-            let mut obj = json!({ "name": name });
-            if let Some(ref desc) = m.description {
-                obj["description"] = json!(desc);
-            }
-            if let Some(ref schema) = m.input_schema {
-                obj["inputSchema"] = schema.clone();
-            }
-            Some(obj)
-        })
+        .filter_map(|m| search_match_to_json(m, resolved))
         .collect()
+}
+
+fn search_match_to_json(m: &crate::search::ToolMatch, resolved: &ResolvedSession) -> Option<Value> {
+    let name = router::callable_tool_name(
+        m.connector_id,
+        &m.tool_name,
+        &resolved.servers,
+        &resolved.toolkit_to_connector,
+    )?;
+    let mut obj = json!({ "name": name });
+    if let Some(ref desc) = m.description {
+        obj["description"] = json!(desc);
+    }
+    if let Some(ref schema) = m.input_schema {
+        obj["inputSchema"] = schema.clone();
+    }
+    Some(obj)
+}
+
+/// Write the `tool_search` savings row for one search-mode listing (`crate::savings`).
+///
+/// Both the measuring and the insert run in a spawned task, so the listing waits on neither.
+fn record_tool_search_saving(
+    state: &McpState,
+    user_id: Uuid,
+    perms: &PermissionContext,
+    flow_id: &str,
+    resolved: &ResolvedSession,
+    accessible_ids: Vec<Uuid>,
+    matches: Vec<crate::search::ToolMatch>,
+) {
+    let index = state.search_index.clone();
+    let db = state.db.clone();
+    let perms = perms.clone();
+    let resolved = resolved.clone();
+    let flow_id = flow_id.to_string();
+    tokio::spawn(async move {
+        let (baseline_bytes, listed_bytes) =
+            tool_search_bytes(index.as_ref(), &resolved, &perms, &accessible_ids, &matches);
+        let Some(row) = crate::savings::tool_search_row(
+            baseline_bytes,
+            listed_bytes,
+            crate::savings::ListingContext {
+                user_id,
+                agent_id: perms.agent_id,
+                flow_id,
+            },
+        ) else {
+            return;
+        };
+        nasiko_savings::insert(&db, &row).await;
+    });
+}
+
+/// `(baseline, listed)` bytes for one search-mode listing.
+///
+/// The baseline is every granted tool of the session's generic connectors, rendered as
+/// `tools/list` renders it, which is what the listing holds with search off. Rendering goes
+/// through `router::callable_tool_name`, so it drops exactly what `aggregate_tools` drops: servers
+/// with no URL, and a system connector's tools its synced `tool_names` do not claim. The listed
+/// side is the matches from those same connectors plus the three meta-tools, which only search
+/// mode lists.
+fn tool_search_bytes(
+    index: &dyn crate::search::ToolSearchIndex,
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
+    accessible_ids: &[Uuid],
+    matches: &[crate::search::ToolMatch],
+) -> (usize, usize) {
+    let generic: Vec<Uuid> = accessible_ids
+        .iter()
+        .copied()
+        .filter(|id| {
+            resolved
+                .servers
+                .iter()
+                .any(|s| s.connector_id == *id && s.kind == ServerType::Mcp)
+        })
+        .collect();
+    let baseline = index.granted_tools(&generic, perms);
+    let baseline_bytes = rendered_bytes(baseline.iter(), resolved);
+    let meta_bytes: usize = [
+        nasiko_search_tools_definition(),
+        nasiko_call_tool_definition(),
+        recover_compressed_definition(),
+    ]
+    .iter()
+    .map(|v| v.to_string().len())
+    .sum();
+    let listed_bytes = rendered_bytes(
+        matches.iter().filter(|m| generic.contains(&m.connector_id)),
+        resolved,
+    ) + meta_bytes;
+    (baseline_bytes, listed_bytes)
+}
+
+/// The bytes `tools/list` spends on `tools`, each rendered as it is listed.
+fn rendered_bytes<'a>(
+    tools: impl Iterator<Item = &'a crate::search::ToolMatch>,
+    resolved: &ResolvedSession,
+) -> usize {
+    tools
+        .filter_map(|m| search_match_to_json(m, resolved))
+        .map(|v| v.to_string().len())
+        .sum()
+}
+
+/// The `nasiko_connect_toolkit` meta-tool definition.
+fn nasiko_connect_toolkit_definition() -> Value {
+    json!({
+        "name": CONNECT_TOOLKIT_META,
+        "description": "Ask the user to connect an app account (e.g. gmail, googlecalendar, slack, github) when the tools you need are missing because the account is not connected. Returns 'connected' if it already is; otherwise the user is shown a Connect button.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "toolkit": {
+                    "type": "string",
+                    "description": "Toolkit slug, lowercase, e.g. 'gmail'"
+                }
+            },
+            "required": ["toolkit"]
+        }
+    })
 }
 
 /// The `nasiko_search_tools` meta-tool definition — always included in
@@ -631,6 +764,65 @@ pub async fn handle_tools_call(
     traceparent: Option<&str>,
     verified_flow_id: Option<&str>,
 ) -> Value {
+    let tool = invoked_tool_name(params);
+    let entry = if params.get("name").and_then(Value::as_str) == Some(CALL_TOOL_META) {
+        "nasiko_call_tool"
+    } else {
+        "direct"
+    };
+    let span = tool_span::tool_call_span(
+        tool,
+        entry,
+        req_id,
+        perms.agent_id,
+        verified_flow_id.and(traceparent),
+        matches!(
+            tool,
+            SEARCH_TOOLS_META | RECOVER_COMPRESSED_META | CONNECT_TOOLKIT_META
+        ),
+    );
+    if state.config.capture_content {
+        let arguments = match params.get("name").and_then(Value::as_str) {
+            Some(CALL_TOOL_META) => parse_call_tool_target(params.get("arguments"))
+                .map(|(_, inner)| inner)
+                .unwrap_or_else(|_| json!({})),
+            _ => params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({})),
+        };
+        tool_span::record_arguments(&span, &arguments);
+    }
+    let response = handle_tools_call_inner(
+        state,
+        user_id,
+        req_id,
+        params,
+        resolved,
+        perms,
+        traceparent,
+        verified_flow_id,
+    )
+    .instrument(span.clone())
+    .await;
+    tool_span::record_outcome(&span, &response);
+    if state.config.capture_content {
+        tool_span::record_result(&span, &response);
+    }
+    response
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn handle_tools_call_inner(
+    state: &McpState,
+    user_id: Uuid,
+    req_id: &Value,
+    params: &Value,
+    resolved: &ResolvedSession,
+    perms: &PermissionContext,
+    traceparent: Option<&str>,
+    verified_flow_id: Option<&str>,
+) -> Value {
     let outer_name = params.get("name").and_then(|v| v.as_str()).unwrap_or("");
 
     // ── nasiko_call_tool meta-tool: the fixed-menu executor ──────────────
@@ -705,6 +897,100 @@ pub async fn handle_tools_call(
             "isError": false,
         });
         return ok(req_id, result);
+    }
+
+    // ── nasiko_connect_toolkit meta-tool ─────────────────────────────────
+    if tool_name == CONNECT_TOOLKIT_META {
+        let toolkit: String = arguments
+            .get("toolkit")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_ascii_lowercase();
+        if toolkit.is_empty() {
+            return err(
+                req_id,
+                codes::INVALID_PARAMS,
+                "nasiko_connect_toolkit requires `toolkit`",
+            );
+        }
+        let connector = match crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
+        {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("No app named '{toolkit}' is available on this platform.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Err(e) => {
+                return err(
+                    req_id,
+                    codes::INTERNAL_ERROR,
+                    format!("connector lookup failed: {e}"),
+                );
+            }
+        };
+        if !connector.active() {
+            return err(
+                req_id,
+                codes::TOOL_BLOCKED,
+                format!("'{toolkit}' has been switched off by an admin."),
+            );
+        }
+        // Asking to connect a toolkit is the agent declaring it needs it: turn the connector on
+        // for this agent so its tools show up after consent. An explicit "off" set by whoever
+        // manages the agent is respected; only a never-configured connector is enabled.
+        if let Err(e) = crate::repo::insert_agent_connector_access_if_absent(
+            &state.db,
+            perms.agent_id,
+            connector.id,
+            true,
+        )
+        .await
+        {
+            tracing::warn!(agent_id = %perms.agent_id, connector = %connector.name, error = %e, "connect_toolkit: enabling connector for agent failed");
+        }
+        match crate::repo::get_agent_connector_access_row(&state.db, perms.agent_id, connector.id)
+            .await
+        {
+            Ok(Some(row)) if !row.enabled => {
+                tracing::info!(agent_id = %perms.agent_id, connector = %connector.name, "connect_toolkit: connector disabled for agent, not enabling");
+                return ok(
+                    req_id,
+                    json!({
+                        "content": [{"type": "text", "text": format!("'{toolkit}' is turned off for this agent. Ask its owner to enable it in the agent's MCP settings.")}],
+                        "isError": true
+                    }),
+                );
+            }
+            Ok(Some(_)) | Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(agent_id = %perms.agent_id, error = %e, "connect_toolkit: access lookup failed")
+            }
+        }
+        let connection = crate::repo::get_user_connection(&state.db, user_id, connector.id).await;
+        if needs_auth_required(&connection) {
+            return handle_auth_required(
+                state,
+                user_id,
+                req_id,
+                perms.agent_id,
+                connector.id,
+                &connector.name,
+                verified_flow_id,
+            )
+            .await;
+        }
+        let text: String =
+            format!("'{toolkit}' is connected. Use nasiko_search_tools to find its tools.");
+        return ok(
+            req_id,
+            json!({"content": [{"type": "text", "text": text}], "isError": false}),
+        );
     }
 
     // ── recover_compressed meta-tool (IP-5) ──────────────────────────────
@@ -866,6 +1152,17 @@ async fn call_routed_tool(
             if let Ok(Some(connector)) =
                 crate::repo::get_composio_connector_by_name(&state.db, &toolkit).await
             {
+                // A toolkit switched off in Settings can't be connected, so asking the
+                // user to authenticate it would be a dead end.
+                if !connector.active() {
+                    return err(
+                        req_id,
+                        codes::TOOL_BLOCKED,
+                        format!(
+                            "Tool '{tool_name}' belongs to a toolkit an admin has switched off."
+                        ),
+                    );
+                }
                 // `Err` (a transient DB blip) and `Ok(None)` (genuinely no connection row) are
                 // distinct outcomes — collapsing them via `.ok().flatten()` used to treat a
                 // momentary DB error as "not connected," filing a spurious `auth_required` pause
@@ -919,6 +1216,7 @@ async fn call_routed_tool(
                     if let Ok(Some(connector)) =
                         crate::repo::get_connector_by_id(&state.db, connector_id).await
                         && connector.is_composio()
+                        && connector.active()
                     {
                         candidates.push(connector);
                     }
@@ -1007,6 +1305,28 @@ async fn call_routed_tool(
         }
     }
 
+    // ── Composio toolkit switched off in Settings ───────────────────────────
+    // Hiding a toolkit drops it from `toolkit_to_connector`, but the user's account stays
+    // connected on Composio's side and the session resolves accounts by user id, so a
+    // call naming a hidden toolkit would otherwise skip `perms.decide` below and run.
+    let mut hidden = HiddenToolkits::new(state, resolved);
+    if server.kind == ServerType::Composio && !tool_name.starts_with("COMPOSIO_") {
+        match hidden
+            .contains(&toolkit_from_composio_slug(tool_name))
+            .await
+        {
+            Ok(false) => {}
+            Ok(true) => {
+                return err(
+                    req_id,
+                    codes::TOOL_BLOCKED,
+                    format!("Tool '{tool_name}' belongs to a toolkit an admin has switched off."),
+                );
+            }
+            Err(e) => return hidden_check_failed(req_id, &e),
+        }
+    }
+
     // ── Composio DIRECT tool call: enforce per-toolkit permission ───────────
     // A direct toolkit tool (e.g. GMAIL_SEND_EMAIL) resolves to its connector and
     // is subject to the same decide() as any other tool. Previously only the two
@@ -1076,11 +1396,17 @@ async fn call_routed_tool(
             .iter()
             .filter_map(|v| v.as_str().map(str::to_string))
             .collect();
-        let blocked: Vec<String> = requested
-            .iter()
-            .filter(|tk| connector_disabled(resolved, perms, tk))
-            .cloned()
-            .collect();
+        let mut blocked: Vec<String> = Vec::new();
+        for tk in &requested {
+            let off = connector_disabled(resolved, perms, tk)
+                || match hidden.contains(tk).await {
+                    Ok(hidden) => hidden,
+                    Err(e) => return hidden_check_failed(req_id, &e),
+                };
+            if off {
+                blocked.push(tk.clone());
+            }
+        }
         if !blocked.is_empty() {
             let allowed: Vec<String> = requested
                 .iter()
@@ -1143,7 +1469,11 @@ async fn call_routed_tool(
                     }
                     ToolAccess::Allowed => allowed.push(t.clone()),
                 },
-                None => allowed.push(t.clone()),
+                None => match hidden.contains(&toolkit).await {
+                    Ok(true) => blocked_slugs.push(slug.to_string()),
+                    Ok(false) => allowed.push(t.clone()),
+                    Err(e) => return hidden_check_failed(req_id, &e),
+                },
             }
         }
 
@@ -1228,8 +1558,12 @@ async fn call_routed_tool(
     };
 
     tracing::info!(tool = %tool_name, forwarded_as = %forward_name, kind = ?server.kind, "routing tool call");
+    tool_span::record_server(&Span::current(), server);
 
-    match state
+    let backend = tool_span::backend_span(server, &forward_name, 1);
+    let backend_traceparent =
+        tool_span::outbound_traceparent(outbound_traceparent.is_some(), &backend);
+    let first_attempt = state
         .providers
         .mcp
         .call_tool(
@@ -1238,10 +1572,14 @@ async fn call_routed_tool(
             &forward_name,
             &forward_args,
             DEFAULT_CALL_TIMEOUT,
-            outbound_traceparent,
+            backend_traceparent.as_deref(),
         )
-        .await
-    {
+        .instrument(backend.clone())
+        .await;
+    if first_attempt.is_err() {
+        tool_span::record_backend_failure(&backend);
+    }
+    match first_attempt {
         Ok(response) if server.kind == ServerType::Composio && response.get("error").is_some() => {
             match resolved
                 .toolkit_to_connector
@@ -1290,7 +1628,10 @@ async fn call_routed_tool(
                 tracing::info!(server = %server.name, connector_id = %server.connector_id, "endpoint stale — retrying tool call against refreshed address");
                 let mut refreshed = server.clone();
                 refreshed.url = new_url;
-                match state
+                let retry = tool_span::backend_span(&refreshed, &original, 2);
+                let retry_traceparent =
+                    tool_span::outbound_traceparent(outbound_traceparent.is_some(), &retry);
+                let second_attempt = state
                     .providers
                     .mcp
                     .call_tool(
@@ -1299,10 +1640,14 @@ async fn call_routed_tool(
                         &original,
                         &arguments,
                         DEFAULT_CALL_TIMEOUT,
-                        outbound_traceparent,
+                        retry_traceparent.as_deref(),
                     )
-                    .await
-                {
+                    .instrument(retry.clone())
+                    .await;
+                if second_attempt.is_err() {
+                    tool_span::record_backend_failure(&retry);
+                }
+                match second_attempt {
                     Ok(response) => return response,
                     Err(e2) => {
                         tracing::warn!(server = %server.name, tool = %original, error = %e2, "backend tool call failed again after endpoint refresh");
@@ -1357,7 +1702,7 @@ async fn detect_composio_auth_required(
     verified_flow_id: Option<&str>,
     original_response: Value,
 ) -> Value {
-    let Some(provider) = &state.providers.composio else {
+    let Some(provider) = state.providers.composio.get() else {
         return original_response;
     };
     let Ok(Some(connector)) = crate::repo::get_connector_by_id(&state.db, connector_id).await
@@ -1483,6 +1828,9 @@ async fn handle_auth_required(
         }
     }
 
+    // The agent forwards this link on its A2A `TASK_STATE_AUTH_REQUIRED` message
+    // (`metadata.auth_url`), so the chat renders the Connect button.
+    let auth_url: Value = question.get("auth_url").cloned().unwrap_or(Value::Null);
     match nasiko_hitl::repo::create_pending_auth_required_with_ttl(
         &state.db,
         nasiko_hitl::NewAuthRequired {
@@ -1504,7 +1852,12 @@ async fn handle_auth_required(
                  recorded (id {}); ask the user to re-authenticate, then retry this tool.",
                 request.id
             ),
-            json!({ "connector": connector_name, "connector_id": connector_id, "hitl_request_id": request.id }),
+            json!({
+                "connector": connector_name,
+                "connector_id": connector_id,
+                "hitl_request_id": request.id,
+                "auth_url": auth_url,
+            }),
         ),
         Err(e) => {
             tracing::error!(connector = %connector_name, %connector_id, error = %e, "failed to persist auth_required hitl request");
@@ -1748,6 +2101,49 @@ fn is_connection_level_failure(e: &McpError) -> bool {
     matches!(e, McpError::Http(re) if re.is_connect() || re.is_timeout())
 }
 
+/// The Composio toolkits switched off in Settings, read at most once per call and only for
+/// a toolkit outside the user's connected set — a hidden toolkit is never in it
+/// (`repo::list_active_composio_connections`), so connected toolkits need no lookup.
+struct HiddenToolkits<'a> {
+    state: &'a McpState,
+    resolved: &'a ResolvedSession,
+    loaded: Option<HashSet<String>>,
+}
+
+impl<'a> HiddenToolkits<'a> {
+    fn new(state: &'a McpState, resolved: &'a ResolvedSession) -> Self {
+        Self {
+            state,
+            resolved,
+            loaded: None,
+        }
+    }
+
+    async fn contains(&mut self, toolkit: &str) -> crate::error::Result<bool> {
+        let toolkit = toolkit.to_ascii_lowercase();
+        if self.resolved.toolkit_to_connector.contains_key(&toolkit) {
+            return Ok(false);
+        }
+        if self.loaded.is_none() {
+            self.loaded = Some(crate::repo::list_hidden_composio_toolkits(&self.state.db).await?);
+        }
+        Ok(self
+            .loaded
+            .as_ref()
+            .is_some_and(|hidden| hidden.contains(&toolkit)))
+    }
+}
+
+/// A call that names a toolkit the gateway couldn't check is refused, never forwarded.
+fn hidden_check_failed(req_id: &Value, e: &McpError) -> Value {
+    tracing::warn!(error = %e, "could not read hidden composio toolkits — refusing the call");
+    err(
+        req_id,
+        codes::INTERNAL_ERROR,
+        "Could not check whether this toolkit is switched on.",
+    )
+}
+
 /// True when a Composio toolkit maps to a connector that is disabled for the agent.
 fn connector_disabled(
     resolved: &ResolvedSession,
@@ -1761,31 +2157,32 @@ fn connector_disabled(
         .unwrap_or(false)
 }
 
-/// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to a normal tool
-/// response the agent expects.
-///
-/// MULTI_EXECUTE returns:
-/// ```json
-/// { "jsonrpc": "2.0", "id": 1, "result": {
-///     "content": [{ "type": "text", "text": "[{\"data\": {...}, ...}]" }]
-/// }}
-/// ```
-///
-/// We extract the inner JSON from the first `content[].text` entry and return
-/// it as a standard `result.content[].text` with the unwrapped payload.
+/// Follows a preview of a result Composio found too large to send inline. The full copy it keeps
+/// is a file in its own sandbox, which the agent cannot open, so asking for less is the only way
+/// to all of it.
+const PARTIAL_RESULT_NOTE: &str = "Partial result: the full output was too large to return, so \
+    this is only a preview of it. Ask for less (fewer items, a narrower time range, or without \
+    full message bodies) to get everything.";
+
+/// Stands in for a result Composio found too large to send inline and sent no preview of.
+const TOO_LARGE_RESULT_NOTE: &str = "The output was too large to return. Ask for less (fewer \
+    items, a narrower time range, or without full message bodies).";
+
 /// Unwrap a `COMPOSIO_MULTI_EXECUTE_TOOL` response back to the clean tool
 /// result the agent expects.
 ///
 /// MULTI_EXECUTE returns:
 /// ```text
 /// result.content[0].text = JSON string of {
-///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }] },
+///   "data": { "results": [{ "response": { "successful": bool, "data": {…} }, … }],
+///             "remote_file_info": {…} only when the output was too large to send inline },
 ///   "successful": bool
 /// }
 /// ```
 ///
 /// We extract `data.results[0].response.data` (the actual tool output) and
-/// return it as a clean `result.content[0].text`.
+/// return it as a clean `result.content[0].text`. An output too large to send
+/// inline comes as `response.data_preview` instead: see [`successful_output`].
 fn unwrap_multi_execute_response(response: Value) -> Value {
     let text = response
         .get("result")
@@ -1811,7 +2208,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
         .and_then(|r| r.as_array())
         .and_then(|arr| arr.first());
 
-    let inner_text = match first_result {
+    let parts: Vec<String> = match first_result {
         Some(result) => {
             let tool_response = result.get("response");
             let successful = tool_response
@@ -1820,12 +2217,7 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                 .unwrap_or(false);
 
             if successful {
-                // Success: return response.data (the actual tool output).
-                let data = tool_response
-                    .and_then(|r| r.get("data"))
-                    .cloned()
-                    .unwrap_or(json!({"success": true}));
-                serde_json::to_string(&data).unwrap_or_else(|_| text.to_string())
+                successful_output(result, &parsed)
             } else {
                 // Failure: return a clean error message.
                 let error = result
@@ -1838,21 +2230,57 @@ fn unwrap_multi_execute_response(response: Value) -> Value {
                             .and_then(|m| m.as_str())
                     })
                     .unwrap_or("tool execution failed");
-                serde_json::to_string(&json!({"error": error})).unwrap_or_else(|_| text.to_string())
+                vec![
+                    serde_json::to_string(&json!({"error": error}))
+                        .unwrap_or_else(|_| text.to_string()),
+                ]
             }
         }
-        None => text.to_string(),
+        None => vec![text.to_string()],
     };
 
     // Rebuild as a standard MCP tool response.
+    let content: Vec<Value> = parts
+        .into_iter()
+        .map(|text| json!({ "type": "text", "text": text }))
+        .collect();
     let mut out = response.clone();
-    out["result"] = json!({
-        "content": [{
-            "type": "text",
-            "text": inner_text
-        }]
-    });
+    out["result"] = json!({ "content": content });
     out
+}
+
+/// A successful tool's output, as content parts: `response.data`; or, when Composio found the
+/// output too large to send inline, its `response.data_preview` followed by a note that it is
+/// partial; or only that note when it sent no preview either. Composio's pointer to the full copy
+/// (`remote_file_info`, a file in its sandbox) is not passed on: the agent cannot open it.
+fn successful_output(result: &Value, envelope: &Value) -> Vec<String> {
+    let tool_response = result.get("response");
+    if let Some(data) = tool_response.and_then(|r| r.get("data")) {
+        return vec![data.to_string()];
+    }
+    let tool = result
+        .get("tool_slug")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if let Some(preview) = tool_response.and_then(|r| r.get("data_preview")) {
+        tracing::info!(
+            tool,
+            "composio sent a preview of an output too large to return inline"
+        );
+        return vec![preview.to_string(), PARTIAL_RESULT_NOTE.to_string()];
+    }
+    if envelope
+        .get("data")
+        .and_then(|d| d.get("remote_file_info"))
+        .is_some()
+    {
+        tracing::info!(
+            tool,
+            "composio kept an output too large to return inline and sent no preview"
+        );
+        return vec![TOO_LARGE_RESULT_NOTE.to_string()];
+    }
+    vec![json!({ "success": true }).to_string()]
 }
 
 #[cfg(test)]
@@ -1949,7 +2377,9 @@ mod tests {
     fn test_state() -> McpState {
         let db = sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
             .expect("lazy pool construction must not touch the network");
-        let redis = redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client");
+        let redis = nasiko_redis::SharedRedis::new(
+            redis::Client::open("redis://127.0.0.1:1/").expect("lazy redis client"),
+        );
         McpState {
             db,
             redis,
@@ -1972,13 +2402,13 @@ mod tests {
                 tool_search_mode: ToolSearchMode::Semantic,
                 tool_search_tool_limit: 0,
                 tool_search_meta_limit: 0,
-                openai_api_key: None,
                 embedding_model: "".to_string(),
                 gateway_instructions: String::new(),
                 identity_signing_key: b"test-identity-signing-key".to_vec(),
+                capture_content: false,
             },
             providers: Providers {
-                composio: None,
+                composio: Default::default(),
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer: std::sync::Arc::new(crate::authorizer::OssConnectorAuthorizer),
@@ -2173,6 +2603,191 @@ mod tests {
             .await;
         let url = format!("http://localhost:{}/mcp", server.socket_address().port());
         (server, url)
+    }
+
+    type CapturedSpans = std::sync::Arc<std::sync::Mutex<Vec<(String, Vec<(String, String)>)>>>;
+
+    struct FieldVisitor<'a>(&'a mut Vec<(String, String)>);
+
+    impl tracing::field::Visit for FieldVisitor<'_> {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .push((field.name().to_string(), format!("{value:?}")));
+        }
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.0.push((field.name().to_string(), value.to_string()));
+        }
+    }
+
+    /// Collects every span's name and fields, including ones recorded after creation.
+    struct CaptureLayer(CapturedSpans);
+
+    impl<S> tracing_subscriber::Layer<S> for CaptureLayer
+    where
+        S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    {
+        fn on_new_span(
+            &self,
+            attrs: &tracing::span::Attributes<'_>,
+            id: &tracing::Id,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let mut fields = Vec::new();
+            attrs.record(&mut FieldVisitor(&mut fields));
+            let mut spans = self.0.lock().unwrap();
+            spans.push((attrs.metadata().name().to_string(), fields));
+            let index = spans.len() - 1;
+            ctx.span(id).unwrap().extensions_mut().insert(index);
+        }
+
+        fn on_record(
+            &self,
+            id: &tracing::Id,
+            values: &tracing::span::Record<'_>,
+            ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            let index = *ctx.span(id).unwrap().extensions().get::<usize>().unwrap();
+            let mut fields = Vec::new();
+            values.record(&mut FieldVisitor(&mut fields));
+            self.0.lock().unwrap()[index].1.extend(fields);
+        }
+    }
+
+    fn field<'a>(fields: &'a [(String, String)], name: &str) -> Option<&'a str> {
+        fields
+            .iter()
+            .rev()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.as_str())
+    }
+
+    #[tokio::test]
+    async fn a_tool_call_emits_an_execute_tool_span_with_one_backend_span_per_attempt() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let (_guard, fresh_url) = spawn_ok_backend().await;
+        let mut state = test_state();
+        state.authorizer = std::sync::Arc::new(AllowAllAuthorizer);
+        state.endpoint_refresher = std::sync::Arc::new(FakeRefresher(fresh_url));
+        let cid = Uuid::new_v4();
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", cid, true);
+        let p = perms(&[cid], vec![]);
+        let tool = format!("{}__echo", crate::types::connector_prefix(cid));
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(7),
+            &json!({ "name": tool, "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let calls: Vec<_> = spans.iter().filter(|(n, _)| n == "execute_tool").collect();
+        let backends: Vec<_> = spans.iter().filter(|(n, _)| n == "mcp.backend").collect();
+        assert_eq!(calls.len(), 1);
+        let call = &calls[0].1;
+        assert_eq!(field(call, "gen_ai.operation.name"), Some("execute_tool"));
+        assert_eq!(field(call, "mcp.method.name"), Some("tools/call"));
+        assert_eq!(field(call, "gen_ai.tool.name"), Some(tool.as_str()));
+        assert_eq!(
+            field(call, "agent.id"),
+            Some(p.agent_id.to_string().as_str())
+        );
+        assert_eq!(field(call, "nasiko.mcp.entry"), Some("direct"));
+        assert_eq!(field(call, "nasiko.mcp.server_kind"), Some("uploaded"));
+        assert_eq!(field(call, "nasiko.mcp.outcome"), Some("ok"));
+        assert_eq!(field(call, "otel.status_code"), None);
+
+        assert_eq!(backends.len(), 2, "the refused attempt and the retry");
+        assert_eq!(field(&backends[0].1, "attempt"), Some("1"));
+        assert_eq!(field(&backends[0].1, "otel.status_code"), Some("ERROR"));
+        assert_eq!(field(&backends[1].1, "attempt"), Some("2"));
+        assert_eq!(field(&backends[1].1, "otel.status_code"), None);
+    }
+
+    async fn arguments_recorded_on_a_nasiko_call_tool_call(capture: bool) -> Option<String> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let mut state = test_state();
+        state.config.capture_content = capture;
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", Uuid::new_v4(), true);
+        let p = perms(&[], vec![]);
+        let inner = json!({ "name": "nope__tool", "arguments": { "query": "needle" } });
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": CALL_TOOL_META, "arguments": inner }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let call = &spans.iter().find(|(n, _)| n == "execute_tool").unwrap().1;
+        field(call, "tool.arguments").map(str::to_owned)
+    }
+
+    #[tokio::test]
+    async fn the_inner_arguments_are_recorded_when_content_capture_is_on() {
+        assert_eq!(
+            arguments_recorded_on_a_nasiko_call_tool_call(true)
+                .await
+                .as_deref(),
+            Some(r#"{"query":"needle"}"#)
+        );
+    }
+
+    #[tokio::test]
+    async fn no_arguments_are_recorded_when_content_capture_is_off() {
+        assert_eq!(
+            arguments_recorded_on_a_nasiko_call_tool_call(false).await,
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unroutable_call_is_recorded_as_an_error_span() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        let captured = CapturedSpans::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(captured.clone()));
+        let _default = tracing::subscriber::set_default(subscriber);
+
+        let state = test_state();
+        let resolved = mcp_session("http://127.0.0.1:1/mcp", Uuid::new_v4(), true);
+        let p = perms(&[], vec![]);
+
+        handle_tools_call(
+            &state,
+            Uuid::new_v4(),
+            &json!(1),
+            &json!({ "name": "nope__tool", "arguments": {} }),
+            &resolved,
+            &p,
+            None,
+            None,
+        )
+        .await;
+
+        let spans = captured.lock().unwrap();
+        let call = &spans.iter().find(|(n, _)| n == "execute_tool").unwrap().1;
+        assert_eq!(field(call, "nasiko.mcp.outcome"), Some("invalid_params"));
+        assert_eq!(field(call, "otel.status_code"), Some("ERROR"));
+        assert_eq!(field(call, "error.type"), Some("invalid_params"));
     }
 
     // ── Step 13: endpoint self-heal on connection failure ────────────────────
@@ -2517,7 +3132,7 @@ mod tests {
         // gate in `handle_tools_call` were ever loosened to match on
         // `Some(_)` instead of `AuthRequired` specifically, this would start
         // touching `state.db` (`session::resolve_context_id`'s
-        // `session_traces` lookup) — and, since `test_state()`'s pool can't
+        // `flows.session_id` lookup) — and, since `test_state()`'s pool can't
         // reach a real Postgres, still degrade to the same generic error
         // (not crash), but the whole point of the gate is to skip that DB
         // work entirely for non-AuthRequired reasons. Passing `None` here would
@@ -2730,6 +3345,94 @@ mod tests {
         });
         let unwrapped = unwrap_multi_execute_response(response.clone());
         assert_eq!(unwrapped, response);
+    }
+
+    /// A MULTI_EXECUTE response carrying `tool_response` as its one result, shaped as Composio
+    /// answers (`remote_file_info` only with an output too large to send inline).
+    fn multi_execute(tool_response: Value, remote_file_info: Option<Value>) -> Value {
+        let mut data = json!({
+            "results": [{ "response": tool_response, "tool_slug": "GMAIL_FETCH_EMAILS", "index": 0 }],
+            "total_count": 1, "success_count": 1, "error_count": 0
+        });
+        if let Some(info) = remote_file_info {
+            data["remote_file_info"] = info;
+        }
+        let envelope =
+            json!({ "successful": true, "data": data, "error": null, "log_id": "log_test" });
+        json!({ "jsonrpc": "2.0", "id": "test", "result": {
+            "content": [{ "type": "text", "text": envelope.to_string() }]
+        }})
+    }
+
+    fn texts(unwrapped: &Value) -> Vec<String> {
+        unwrapped["result"]["content"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|part| part["text"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    fn large_output_info() -> Value {
+        json!({
+            "message": "Complete response was large (40329 tokens). Full data saved to sandbox in /mnt/files/mex/wind.json.",
+            "file_path": "/mnt/files/mex/wind.json",
+            "filename": "wind.json"
+        })
+    }
+
+    #[test]
+    fn unwrap_returns_the_data_alone_when_it_was_sent_inline() {
+        let response = multi_execute(
+            json!({ "successful": true, "data": { "messages": [{ "subject": "Hi" }] } }),
+            None,
+        );
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts.len(), 1);
+        let parsed: Value = serde_json::from_str(&parts[0]).unwrap();
+        assert_eq!(parsed["messages"][0]["subject"], "Hi");
+    }
+
+    #[test]
+    fn unwrap_passes_a_preview_of_an_output_too_large_to_send_inline() {
+        let response = multi_execute(
+            json!({ "successful": true, "data_preview": {
+                "messages": [{ "subject": "One" }, { "subject": "Two" }, { "subject": "Three" }],
+                "resultSizeEstimate": 9
+            }}),
+            Some(large_output_info()),
+        );
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts.len(), 2, "{parts:?}");
+        let preview: Value = serde_json::from_str(&parts[0]).unwrap();
+        assert_eq!(preview["messages"].as_array().unwrap().len(), 3);
+        assert_eq!(parts[1], PARTIAL_RESULT_NOTE);
+        assert!(
+            parts.iter().all(|p| !p.contains("/mnt/files")),
+            "the sandbox file is not the agent's to open: {parts:?}"
+        );
+    }
+
+    #[test]
+    fn unwrap_says_so_when_an_output_was_too_large_and_came_without_a_preview() {
+        let response = multi_execute(json!({ "successful": true }), Some(large_output_info()));
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts, [TOO_LARGE_RESULT_NOTE]);
+    }
+
+    #[test]
+    fn unwrap_reports_success_for_a_tool_with_no_output() {
+        let response = multi_execute(json!({ "successful": true }), None);
+
+        let parts = texts(&unwrap_multi_execute_response(response));
+
+        assert_eq!(parts, [r#"{"success":true}"#]);
     }
 
     // ─── nasiko_call_tool: the executor for fixed-menu clients ─────────────────
@@ -3387,5 +4090,103 @@ mod initialize_tests {
                 .all(|s| !s.headers.contains_key(crate::identity::IDENTITY_HEADER)),
             "no backend is system, so nothing should be stamped: {servers:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod tool_search_bytes_tests {
+    use super::*;
+    use crate::search::{ToolMatch, ToolSearchIndex};
+    use std::collections::HashMap;
+
+    /// An index holding a fixed set of `(connector, tool)` pairs, so the test controls exactly what
+    /// the baseline is built from.
+    struct FixedIndex(Vec<(Uuid, &'static str)>);
+
+    #[async_trait::async_trait]
+    impl ToolSearchIndex for FixedIndex {
+        async fn search_tools(
+            &self,
+            _query: &str,
+            _accessible_connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+            _limit: usize,
+        ) -> Vec<ToolMatch> {
+            Vec::new()
+        }
+
+        fn granted_tools(
+            &self,
+            connector_ids: &[Uuid],
+            _perms: &PermissionContext,
+        ) -> Vec<ToolMatch> {
+            self.0
+                .iter()
+                .filter(|(c, _)| connector_ids.contains(c))
+                .map(|(c, name)| ToolMatch {
+                    connector_id: *c,
+                    tool_name: (*name).to_string(),
+                    description: Some(format!("{name} does one thing")),
+                    input_schema: Some(json!({"type": "object"})),
+                    score: 0.0,
+                })
+                .collect()
+        }
+
+        async fn rebuild(&self, _db: &sqlx::PgPool) -> crate::error::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn server(connector_id: Uuid, url: &str, system: bool, tool_names: &[&str]) -> MCPServerConfig {
+        MCPServerConfig {
+            connector_id,
+            kind: ServerType::Mcp,
+            name: "s".into(),
+            url: url.into(),
+            headers: HashMap::new(),
+            transport: "streamable_http".into(),
+            trusted: false,
+            system,
+            tool_names: tool_names.iter().map(|t| t.to_string()).collect(),
+            instructions: None,
+        }
+    }
+
+    /// The baseline drops what `aggregate_tools` drops with search off: a server with no URL, and
+    /// a system connector's tools its synced `tool_names` do not claim.
+    #[test]
+    fn the_baseline_leaves_out_what_a_search_off_listing_leaves_out() {
+        let (generic, system, urlless) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let resolved = ResolvedSession {
+            servers: vec![
+                server(generic, "http://g/mcp", false, &[]),
+                server(system, "http://s/mcp", true, &["save_file"]),
+                server(urlless, "", false, &[]),
+            ],
+            connected_toolkits: vec![],
+            toolkit_to_connector: HashMap::new(),
+            unusable_connectors: HashMap::new(),
+        };
+        let perms = PermissionContext {
+            agent_id: Uuid::nil(),
+            enabled_connectors: [generic, system, urlless].into_iter().collect(),
+            rules: vec![],
+            hash: "h".into(),
+        };
+        let ids = [generic, system, urlless];
+
+        let listable = FixedIndex(vec![(generic, "read_doc"), (system, "save_file")]);
+        let with_unlistable = FixedIndex(vec![
+            (generic, "read_doc"),
+            (system, "save_file"),
+            (system, "not_synced_yet"),
+            (urlless, "never_reachable"),
+        ]);
+
+        let (expected, _) = tool_search_bytes(&listable, &resolved, &perms, &ids, &[]);
+        let (baseline, _) = tool_search_bytes(&with_unlistable, &resolved, &perms, &ids, &[]);
+        assert!(expected > 0, "the listable tools are counted");
+        assert_eq!(baseline, expected);
     }
 }

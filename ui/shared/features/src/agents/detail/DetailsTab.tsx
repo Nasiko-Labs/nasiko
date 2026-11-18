@@ -13,13 +13,13 @@ import { cn } from '@nasiko/ui/lib/utils'
 import { Disclosure } from '@nasiko/ui/composites/disclosure'
 import { RoutingCard } from '@nasiko/features/router/components/RoutingCard'
 import { agentDetailQuery, isUnavailable, useDeployment, useLiveCard, useVersions } from '../api'
-import { CliCommand, LearnMore, Section } from '../components/bits'
+import { CliCommand, Description, LearnMore, Section } from '../components/bits'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
 import { relTime } from '../format'
 import { copy } from '../copy'
 import { exampleTexts, safeHttpUrl, type AgentView } from '../normalize'
 import type { DisplayStatus } from '../status'
-import { CLAMP_DESCRIPTION_CHARS, CLAMP_SKILL_CHARS, EXAMPLES_SHOWN, SKILLS_SHOWN } from '../tuning'
+import { CLAMP_SKILL_CHARS, EXAMPLES_SHOWN, SKILLS_SHOWN } from '../tuning'
 import { NotDeployedPrompt } from './NotDeployedPrompt'
 
 export function DetailsTab({
@@ -63,6 +63,7 @@ export function DetailsTab({
               name: agent.name,
               displayName: agent.displayName,
               ownerId: agent.ownerId,
+              integrationId: agent.integrationId,
             }}
           />
           <Card className="gap-0 p-0">
@@ -125,13 +126,13 @@ export function DetailsTab({
 
 /**
  * Description, skills and the call command. Long cards (an agent's own prose can run to paragraphs) start trimmed:
- * the description to a few lines, the first skills, each skill's first examples; one toggle shows it all.
+ * the description to four lines, with its own Show more; the first skills and each skill's first examples, with one
+ * toggle for them all.
  */
 function WhatItDoes({ agent }: { agent: AgentView }) {
   const [expanded, setExpanded] = useState(false)
   const long = (t: string | null | undefined, max: number) => (t?.length ?? 0) > max
   const trimmable =
-    long(agent.description, CLAMP_DESCRIPTION_CHARS) ||
     agent.skills.length > SKILLS_SHOWN ||
     agent.skills.some(
       (s) => long(s.description, CLAMP_SKILL_CHARS) || exampleTexts(s).length > EXAMPLES_SHOWN,
@@ -140,9 +141,7 @@ function WhatItDoes({ agent }: { agent: AgentView }) {
   const skills = trim ? agent.skills.slice(0, SKILLS_SHOWN) : agent.skills
   return (
     <Section title={copy.whatItDoes}>
-      <p className={cn('max-w-prose text-sm whitespace-pre-wrap', trim && 'line-clamp-4')}>
-        {agent.description || copy.noDescription}
-      </p>
+      <Description text={agent.description || copy.noDescription} lines={4} />
       <h3 className="pt-2 text-sm font-semibold">
         {copy.skills}
         {agent.skills.length ? (

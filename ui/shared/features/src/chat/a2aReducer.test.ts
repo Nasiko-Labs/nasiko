@@ -92,6 +92,29 @@ describe('classifyFrame shapes', () => {
     expect(ev).toHaveLength(2)
   })
 
+  it('keeps the cache counts of a usage summary', () => {
+    const ev = classifyFrame(
+      status('TASK_STATE_WORKING', [
+        dataPart({
+          type: 'usage_meta',
+          input_tokens: 66,
+          output_tokens: 10,
+          cache_read_tokens: 1536,
+          cache_creation_tokens: 0,
+        }),
+      ]),
+    )
+    expect(ev[0]).toEqual({
+      type: 'usage',
+      usage: {
+        input_tokens: 66,
+        output_tokens: 10,
+        cache_read_tokens: 1536,
+        cache_creation_tokens: 0,
+      },
+    })
+  })
+
   it('ignores a malformed hitl part', () => {
     expect(
       classifyFrame(status('TASK_STATE_WORKING', [dataPart({ type: 'hitl', kind: 'nope' })])),
@@ -176,6 +199,33 @@ describe('scenarios', () => {
       data: '{"error":"could not persist request"}',
     })
     expect(r.state.error).toEqual({ message: 'could not persist request', code: undefined })
+  })
+
+  it('saves the cache counts with the reply, so a reload shows the same total', () => {
+    let s = emptyTurn()
+    s = applyEvent(s, {
+      type: 'artifact',
+      artifactId: 'a',
+      text: 'hi!',
+      append: false,
+      lastChunk: true,
+    })
+    s = applyEvent(s, {
+      type: 'usage',
+      usage: {
+        input_tokens: 66,
+        output_tokens: 10,
+        cache_read_tokens: 1536,
+        cache_creation_tokens: 0,
+      },
+    })
+    const out = outcomeOf(s, false)
+    expect(out.kind).toBe('save')
+    expect((out as Extract<typeof out, { kind: 'save' }>).body.usage).toMatchObject({
+      input_tokens: 66,
+      cache_read_tokens: 1536,
+      cache_creation_tokens: 0,
+    })
   })
 
   it('never mutates its input', () => {

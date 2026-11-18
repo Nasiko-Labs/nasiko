@@ -328,13 +328,12 @@ describe('layout', () => {
     const panel = screen.getByTestId('login-showcase')
     expect(panel).toHaveAttribute('aria-hidden', 'true')
     expect(panel).toHaveClass('hidden', 'md:flex')
-    // The showcase leads the DOM (left column), the form follows; the form's lockup is the one named logo (the mark on
-    // the showcase's top plate is decorative).
+    // The showcase leads the DOM (left column), the form follows; the form's lockup is the one named logo (the
+    // showcase's sits under its aria-hidden).
     const form = screen.getByLabelText('Username').closest('form')!
     expect(panel.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    expect(panel.querySelector('svg[role="img"]')).toBeNull()
     expect(panel.querySelector('svg')).not.toBeNull()
-    expect(screen.getByRole('img', { name: 'Nasiko' })).toBeInTheDocument()
+    expect(screen.getAllByRole('img', { name: 'Nasiko' })).toHaveLength(1)
   })
 
   it('offers no password reset or remember-me the server cannot honour', async () => {

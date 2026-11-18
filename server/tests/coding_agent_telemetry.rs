@@ -1,3 +1,4 @@
+#![recursion_limit = "256"]
 mod common;
 
 use chrono::{TimeZone, Utc};
@@ -447,6 +448,126 @@ async fn accepts_content_and_metadata_and_handles_replays_independently() {
     .await
     .unwrap();
     assert_eq!(stored_agent, agent_id);
+    server.cleanup().await;
+}
+
+async fn privacy(server: &common::TestServer, user_id: Uuid) -> Value {
+    common::as_member(
+        server
+            .client
+            .get(server.url("/api/me/coding-agents/privacy")),
+        &user_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn a_local_server_says_it_keeps_chat_history() {
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    assert_eq!(
+        privacy(&server, user_id).await,
+        json!({"chat_history": true})
+    );
+    server.cleanup().await;
+}
+
+/// A hosted server (`accept_chat_history` off) keeps what prices a turn and nothing else, whatever
+/// the client sends — an older CLI may still send a turn's chat history.
+#[tokio::test]
+#[serial]
+async fn without_chat_history_only_what_prices_a_turn_is_kept() {
+    let server = common::TestServer::start_with(|config| {
+        config.coding_agent_ingest.accept_chat_history = false;
+    })
+    .await;
+    let (user_id, agent_id) = setup(&server).await;
+    assert_eq!(
+        privacy(&server, user_id).await,
+        json!({"chat_history": false})
+    );
+
+    let mut content = event("hosted-session", "turn-1", CapturePolicy::Content);
+    content.session.title = Some("Private session title".into());
+    content.turn.tool_calls.push(CodingAgentToolCall {
+        id: "native-tool".into(),
+        name: "read_file".into(),
+        kind: "tool".into(),
+        model_call_id: Some("call-turn-1".into()),
+        status: CodingAgentToolCallStatus::Failed,
+        arguments: Some(json!({"path": "secret.rs"})),
+        output: Some(json!("fn secret() {}")),
+        raw: None,
+        error: Some("permission denied: secret.rs".into()),
+        started_at: Some(content.turn.started_at),
+        ended_at: Some(content.turn.ended_at),
+        duration_ms: Some(2000),
+        association: CodingAgentToolAssociation::Exact,
+        timestamp_quality: CodingAgentTimestampQuality::Exact,
+    });
+    let first = post(&server, user_id, std::slice::from_ref(&content)).await;
+    assert_eq!(first["data"]["results"][0]["status"], "accepted");
+
+    // The receipt is the turn without its chat history.
+    let (session_id, payload): (String, Value) = sqlx::query_as(
+        "SELECT session_id, payload FROM coding_agent_telemetry_events \
+         WHERE user_id = $1 AND event_id = $2",
+    )
+    .bind(user_id)
+    .bind(&content.event_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(
+        payload,
+        serde_json::to_value(content.clone().without_content()).unwrap()
+    );
+
+    // No chat messages, no session title, no tool bodies or error text.
+    let messages: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages WHERE session_id = $1")
+            .bind(&session_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(messages, 0);
+    assert_eq!(session_title(&server, agent_id).await, "Coding session");
+    let tool: (String, Option<String>, Option<Value>, Option<Value>) = sqlx::query_as(
+        "SELECT status, error, arguments, output FROM tool_calls WHERE call_id = $1",
+    )
+    .bind("native-tool")
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(tool, ("failed".into(), None, None, None));
+
+    // What prices the turn is all there.
+    let usage: (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT input_tokens::bigint, output_tokens::bigint, cache_read_tokens::bigint, \
+                cache_creation_tokens::bigint FROM trace_usage WHERE session_id = $1",
+    )
+    .bind(&session_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(usage, (10, 5, 2, 3));
+
+    // Resent with other text — which is dropped — it is the same turn; other usage is not.
+    let mut other_text = content.clone();
+    other_text.turn.response = Some("changed".into());
+    let replay = post(&server, user_id, &[other_text]).await;
+    assert_eq!(replay["data"]["results"][0]["status"], "duplicate");
+    let mut other_usage = content;
+    other_usage.turn.llm_calls[0].output_tokens += 1;
+    let conflict = post(&server, user_id, &[other_usage]).await;
+    assert_eq!(conflict["data"]["results"][0]["status"], "rejected");
     server.cleanup().await;
 }
 
@@ -1191,6 +1312,10 @@ async fn session_list_totals_a_coding_session_from_its_turns() {
     assert_eq!(row["start_time"], "2023-11-14T22:13:20.000Z");
     assert_eq!(row["status"], "ok");
     assert_eq!(row["failed_flows"], 0);
+    assert_eq!(
+        row["flow_count"], 0,
+        "a coding-agent session never crossed the proxy"
+    );
 
     server.cleanup().await;
 }
@@ -1223,6 +1348,18 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
         ],
     )
     .await;
+    // An error the agent worked past is not a failed session: only the latest
+    // turn decides.
+    let recovered = ingest_session(
+        &server,
+        user_id,
+        "recovered-tool",
+        vec![
+            turn_at("recovered-tool", 0, vec![Failed]),
+            turn_at("recovered-tool", 1, vec![Succeeded]),
+        ],
+    )
+    .await;
     // An ordinary chat session beside them keeps its flow-derived status and
     // its absent trace count.
     sqlx::query(
@@ -1247,6 +1384,7 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
     assert_eq!(find(&body, &ok)["status"], "ok");
     assert_eq!(find(&body, &failed)["status"], "failed");
     assert_eq!(find(&body, &failed)["num_traces"], 2);
+    assert_eq!(find(&body, &recovered)["status"], "ok");
     let plain = find(&body, "plain-chat");
     assert_eq!(plain["status"], "ok");
     assert!(plain["num_traces"].is_null(), "{plain}");
@@ -1260,7 +1398,7 @@ async fn session_list_fails_a_coding_session_with_an_erroring_tool_call() {
     let mut ok_ids =
         session_ids(&list_sessions(&server, user_id, &format!("{LIST_SINCE}&status=ok")).await);
     ok_ids.sort();
-    let mut expected = vec![ok, "plain-chat".to_owned()];
+    let mut expected = vec![ok, recovered, "plain-chat".to_owned()];
     expected.sort();
     assert_eq!(ok_ids, expected);
     let running = list_sessions(&server, user_id, &format!("{LIST_SINCE}&status=running")).await;
@@ -1455,6 +1593,57 @@ async fn spend_is_written_at_ingest_and_every_usage_view_reflects_it_without_rea
     assert_eq!(totals["sessions"], 2, "{usage}");
     assert_eq!(totals["tokens"], tokens, "{usage}");
     assert!((totals["cost_usd"].as_f64().unwrap() - cost).abs() < 1e-9);
+    server.cleanup().await;
+}
+
+/// Per-tool calls come from the receipts, so a metadata-only turn's tools count
+/// too. Only `failed` and `timed_out` are failures: a denial is the user's call.
+#[tokio::test]
+#[serial]
+async fn usage_lists_each_harness_tools_by_calls_with_their_failures() {
+    use CodingAgentToolCallStatus::*;
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    let mut metadata_only = turn_at("tools", 1, vec![Succeeded, Denied, Failed]);
+    metadata_only.capture_policy = CapturePolicy::MetadataOnly;
+    metadata_only.turn.prompt = None;
+    metadata_only.turn.response = None;
+    metadata_only.turn.tool_calls[0].name = "read".into();
+    ingest_session(
+        &server,
+        user_id,
+        "tools",
+        vec![
+            turn_at("tools", 0, vec![Succeeded, TimedOut]),
+            metadata_only,
+        ],
+    )
+    .await;
+
+    let window = "start_time=2023-01-01T00%3A00%3A00Z&end_time=2024-01-01T00%3A00%3A00Z";
+    let usage: Value = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/observability/coding-agents/usage?{window}"))),
+        &user_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let claude = &usage["data"]["by_harness"][0];
+    assert_eq!(claude["harness"], "claude", "{usage}");
+    assert_eq!(
+        claude["tools"],
+        json!([
+            {"name": "bash", "calls": 4, "failed": 2},
+            {"name": "read", "calls": 1, "failed": 0},
+        ]),
+        "{usage}"
+    );
     server.cleanup().await;
 }
 
@@ -2086,4 +2275,239 @@ async fn member_finops_summary_counts_only_the_callers_agents() {
     assert_eq!(theirs["estimated_cost"].as_f64(), Some(1.5), "{theirs}");
     assert_eq!(theirs["unknown_confidence_calls"], 1, "{theirs}");
     server.cleanup().await;
+}
+
+async fn tool_calls_api(server: &common::TestServer, user_id: Uuid, session: &str) -> Value {
+    let resp = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/observability/session/{session}/tool-calls"))),
+        &user_id.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    serde_json::from_str(&body).unwrap_or_else(|_| panic!("{status}: {body}"))
+}
+
+/// ACP turn → `tool_calls` → tiering to Lance: the API answers the same before and after.
+#[tokio::test]
+#[serial]
+async fn tool_calls_survive_tiering_through_the_api() {
+    let cold = std::env::temp_dir().join(format!("nasiko-cold-{}", Uuid::new_v4()));
+    let cold_path = cold.to_string_lossy().to_string();
+    let cp = cold_path.clone();
+    let server = common::TestServer::start_with(move |c| c.cold_path = cp).await;
+    let (user_id, _agent_id) = setup(&server).await;
+    let mut ev = event("tiered-tools", "turn-1", CapturePolicy::Content);
+    ev.turn.tool_calls.push(CodingAgentToolCall {
+        id: "tool/1".into(),
+        name: "read_file".into(),
+        kind: "tool".into(),
+        model_call_id: Some("call-turn-1".into()),
+        status: CodingAgentToolCallStatus::Succeeded,
+        arguments: Some(json!({"path": "a.rs"})),
+        output: Some(json!("ok")),
+        raw: None,
+        error: None,
+        started_at: Some(ev.turn.started_at),
+        ended_at: Some(ev.turn.ended_at),
+        duration_ms: Some(2000),
+        association: CodingAgentToolAssociation::Exact,
+        timestamp_quality: CodingAgentTimestampQuality::Exact,
+    });
+    post(&server, user_id, &[ev]).await;
+    let session: String = sqlx::query_scalar("SELECT session_id FROM tool_calls LIMIT 1")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+
+    let count = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM tool_calls")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+    assert_eq!(count().await, 1);
+    let before = tool_calls_api(&server, user_id, &session).await;
+    let calls = before["tool_calls"].as_array().unwrap();
+    assert_eq!(calls.len(), 1, "{before}");
+    assert_eq!(calls[0]["tool_name"], "read_file");
+    assert_eq!(calls[0]["call_id"], "tool/1");
+    assert_eq!(calls[0]["status"], "succeeded");
+
+    sqlx::query(
+        "UPDATE tool_calls SET created_at = now() - interval '100 days', \
+         started_at = now() - interval '100 days'",
+    )
+    .execute(&server.db)
+    .await
+    .unwrap();
+    let after_age = tool_calls_api(&server, user_id, &session).await;
+    let store = nasiko_event_store::EventStore::new(
+        sqlx::postgres::PgPoolOptions::new()
+            .max_connections(4)
+            .connect_with((*server.db.connect_options()).clone())
+            .await
+            .unwrap(),
+        nasiko_event_store::TieringConfig {
+            cold_path,
+            ..Default::default()
+        },
+    );
+    store.run_once(Utc::now()).await.unwrap().unwrap();
+    assert_eq!(count().await, 0, "row left Postgres");
+
+    let after = tool_calls_api(&server, user_id, &session).await;
+    assert_eq!(after, after_age, "API answer unchanged by tiering");
+    let _ = std::fs::remove_dir_all(&cold);
+}
+
+/// A container ACP turn persists its telemetry once (replays are no-ops) and
+/// writes no spend: the router owns ACP spend in `trace_usage`.
+#[tokio::test]
+#[serial]
+async fn container_acp_turn_persists_telemetry_without_spend() {
+    let server = common::TestServer::start().await;
+    let (user_id, agent_id) = setup(&server).await;
+    let source = event("acp-session", "turn-1", CapturePolicy::MetadataOnly);
+    // The agent proxy writes the chat session before the turn persists.
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_url, title, session_type) \
+         VALUES ('acp-context', $1, '/api/agents/acp', 'acp chat', 'orchestrator')",
+    )
+    .bind(user_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        nasiko_server::coding_agent_telemetry::persist_coding_turn_telemetry(
+            &server.db,
+            user_id,
+            agent_id,
+            "acp-context",
+            &source,
+        )
+        .await
+        .unwrap();
+    }
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM coding_agent_telemetry_events WHERE agent_id = $1",
+    )
+    .bind(agent_id)
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(events, 1, "replay must not duplicate telemetry");
+    let spend: i64 = sqlx::query_scalar("SELECT count(*) FROM trace_usage WHERE agent_id = $1")
+        .bind(agent_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(spend, 0, "spend comes from the router, not telemetry");
+    server.cleanup().await;
+}
+
+/// A stored tool call is filed under whatever `session.id` its spans claimed,
+/// and any agent can claim a session its own owner controls. The endpoint must
+/// return only calls whose trace the server's records tie to the session, so a
+/// claim cannot surface another user's tool arguments and output.
+#[tokio::test]
+#[serial]
+async fn tool_calls_ignore_a_span_claim_the_server_records_contradict() {
+    let server = common::TestServer::start().await;
+    let (owner, agent_id) = setup(&server).await;
+    let victim = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO users (id, username, email) VALUES ($1, 'victim', 'victim@test.local')",
+    )
+    .bind(victim)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    for (session, user) in [("claimed", owner), ("victims", victim)] {
+        sqlx::query("INSERT INTO chat_sessions (session_id, user_id, title) VALUES ($1, $2, 't')")
+            .bind(session)
+            .bind(user)
+            .execute(&server.db)
+            .await
+            .unwrap();
+    }
+    // The server recorded each trace's real session (or, for the flow, its owner).
+    for (trace, session, user) in [
+        ("own-trace", "claimed", owner),
+        ("victim-trace", "victims", victim),
+    ] {
+        sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ($1, $2, $3)")
+            .bind(trace)
+            .bind(user)
+            .bind(session)
+            .execute(&server.db)
+            .await
+            .unwrap();
+    }
+    sqlx::query("INSERT INTO flows (flow_id, user_id, session_id) VALUES ('victim-flow', $1, 'victim-flow')")
+        .bind(victim)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    // Every row claims the owner's session, as a span-derived write would.
+    for trace in ["own-trace", "victim-trace", "victim-flow", "unrecorded"] {
+        sqlx::query(
+            "INSERT INTO tool_calls (trace_id, call_id, user_id, agent_id, agent_name, session_id, \
+                                     tool_name, status, arguments, output, started_at) \
+             VALUES ($1, 'c1', $2, $3, 'coding-agent', 'claimed', 'read', 'ok', \
+                     '{\"secret\": true}', '\"body\"', now())",
+        )
+        .bind(trace)
+        .bind(owner)
+        .bind(agent_id)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    }
+
+    let body = tool_calls_api(&server, owner, "claimed").await;
+    let mut traces: Vec<&str> = body["tool_calls"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{body}"))
+        .iter()
+        .map(|c| c["trace_id"].as_str().unwrap())
+        .collect();
+    traces.sort_unstable();
+    // Recorded for this session, or recorded nowhere (coding-agent turns): kept.
+    // Recorded for another session, or a flow of another user: refused.
+    assert_eq!(traces, vec!["own-trace", "unrecorded"], "{body}");
+    server.cleanup().await;
+}
+
+/// A turn may cost $100 or more: one costing $200 is stored with its cost, alongside the other turn in
+/// its batch. `chat_messages.cost_usd` held under $100, and the overflow failed the whole batch.
+#[tokio::test]
+#[serial]
+async fn a_turn_costing_over_a_hundred_dollars_is_stored_with_its_batch() {
+    let server = common::TestServer::start().await;
+    let (user_id, _) = setup(&server).await;
+    let mut costly = event("costly-session", "turn-1", CapturePolicy::Content);
+    let call = &mut costly.turn.llm_calls[0];
+    call.provider = "openai".into();
+    call.model = "gpt-4o".into();
+    // $10 per million output tokens.
+    call.output_tokens = 20_000_000;
+    let cheap = event("costly-session", "turn-2", CapturePolicy::Content);
+
+    let body = post(&server, user_id, &[costly, cheap]).await;
+
+    assert_eq!(body["data"]["results"][0]["status"], "accepted", "{body}");
+    assert_eq!(body["data"]["results"][1]["status"], "accepted", "{body}");
+    let cost: f64 = sqlx::query_scalar(
+        "SELECT MAX(cost_usd)::float8 FROM chat_messages WHERE external_turn_id = 'turn-1'",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(cost >= 200.0, "stored cost {cost}");
 }

@@ -1,6 +1,6 @@
 /**
  * Ship-audit gap tests, second pass: GitHub account switch, expired connection, repository and clone errors, the upload
- * form's pre-submit version suggestion, inbound format and Cancel, the slow-build hint, and the not-running toast.
+ * form's pre-submit version suggestion and Cancel, the slow-build hint, and the not-running toast.
  */
 import { act, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
@@ -8,7 +8,7 @@ import { strToU8, zipSync, type Zippable } from 'fflate'
 import { http, HttpResponse } from 'msw'
 import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
-import { buildId, readMultipart } from '@nasiko/mocks/deploy'
+import { buildId } from '@nasiko/mocks/deploy'
 import { FIXED, now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { server } from '@nasiko/testing/setup'
@@ -172,25 +172,6 @@ describe('Deploy: upload form, second pass', () => {
     expect(screen.getByRole('textbox', { name: copy.deploy.version })).toHaveValue(next)
     // The suggestion is now the version: the button goes away.
     expect(screen.queryByRole('button', { name: copy.deploy.use(next) })).toBeNull()
-  })
-
-  it('sends the chosen inbound format as inbound_format', async () => {
-    let sent: Map<string, string | Blob> | null = null
-    server.use(
-      http.post('*/api/agents/upload', async ({ request }) => {
-        sent = await readMultipart(request)
-        return text('docker daemon unavailable', 500)
-      }),
-    )
-    renderApp('/deploy')
-    await choose(zipFile(GOOD))
-    await waitFor(() => expect(itemState('dockerfile')).toBe('pass'), T)
-    await userEvent.click(screen.getByRole('button', { name: copy.deploy.advanced }))
-    await userEvent.click(screen.getByRole('combobox', { name: copy.deploy.inbound }))
-    await userEvent.click(await screen.findByRole('option', { name: 'anthropic' }))
-    await userEvent.click(screen.getByRole('button', { name: /^Deploy new-helper$/ }))
-    expect(await screen.findByText(copy.deploy.failed, {}, T)).toBeInTheDocument()
-    expect((sent as Map<string, string | Blob> | null)?.get('inbound_format')).toBe('anthropic')
   })
 
   it('Cancel stops an upload in flight and says it was cancelled', async () => {

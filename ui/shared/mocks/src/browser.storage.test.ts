@@ -32,3 +32,25 @@ describe('storage cleared in another tab (key null)', () => {
     expect((await fetch(url('/api/me'))).status).toBe(200)
   })
 })
+
+describe('a mocked sign-in round trip (?mock=signed-in)', () => {
+  it('ends a stored mock sign-out, as a real sign-in sets the cookie again', async () => {
+    localStorage.setItem(KEY, '1')
+    // The page this load landed on (setupPinnedSeed unstubs it after each test).
+    const { origin } = globalThis.location
+    vi.stubGlobal('location', {
+      origin,
+      href: `${origin}/?mock=billing-grace,signed-in`,
+      search: '?mock=billing-grace,signed-in',
+    })
+    await startMocks({ mode: 'mock', partialMocks: [] } as never)
+    expect((await fetch(url('/api/me'))).status).toBe(200)
+    expect(localStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('keeps a stored sign-out on an ordinary load', async () => {
+    localStorage.setItem(KEY, '1')
+    await startMocks({ mode: 'mock', partialMocks: [] } as never)
+    expect((await fetch(url('/api/me'))).status).toBe(401)
+  })
+})

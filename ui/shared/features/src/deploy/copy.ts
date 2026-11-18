@@ -1,11 +1,11 @@
-/** Every user-facing string on the deploy and build pages (plans/feat-deploy.md). OpenRuntime is the platform. */
+/** Every user-facing string on the deploy and build pages (plans/feat-deploy.md). Open Runtime is the platform. */
 import type { BuildStatus } from './types'
 
 export const copy = {
   deploy: {
     title: 'Deploy an agent',
     description:
-      'Bring your agent as a zip, a GitHub repo or a published image, and OpenRuntime gets it running.',
+      'Bring your agent as a zip, a GitHub repo or a published image, and Open Runtime gets it running.',
     drop: "Drop your agent's .zip here, or",
     choose: 'Choose file',
     limit: 'up to 100 MB',
@@ -17,6 +17,8 @@ export const copy = {
     name: 'Name',
     namePlaceholder: 'my-agent',
     nameHint: 'Lowercase letters, digits, dots, dashes and underscores work best.',
+    nameLocked: "The name can't change when you deploy a new version.",
+    deployOther: 'Deploy a new agent',
     version: 'Version',
     versionHint: 'x.y.z. Leave empty to use the version in the zip.',
     versionNeeded: 'Set a version (x.y.z): the zip has none.',
@@ -35,8 +37,6 @@ export const copy = {
     storage: 'Persistent storage',
     storagePath: 'Storage path',
     storagePathHint: 'Where the volume mounts, like /workspace.',
-    inbound: 'Inbound format',
-    inboundDefault: 'Server default',
     submit: (name: string) => (name ? `Deploy ${name}` : 'Deploy'),
     uploading: (done: string, total: string) => `Uploading ${done} of ${total}`,
     cancel: 'Cancel upload',
@@ -45,7 +45,7 @@ export const copy = {
     failed: "Couldn't deploy",
     needs: 'What your zip needs',
     needsCompact: 'Your zip needs: Dockerfile · start command · version · ≤ 100 MB',
-    advisory: "This zip couldn't be read here; OpenRuntime checks it when you deploy.",
+    advisory: "This zip couldn't be read here; Open Runtime checks it when you deploy.",
     items: {
       dockerfile: 'Dockerfile in the root, with a FROM line',
       entrypoint:
@@ -58,6 +58,13 @@ export const copy = {
     terminalHint: 'Run this command to upload from your machine.',
     copyCommand: 'Copy command',
   },
+  // The Deploy page's model-key notice (components/ModelKeyNotice.tsx); the setup guide's tabs leave it out, since the
+  // guide's next step takes the key.
+  keyNotice: {
+    title: 'Your agents need a model key',
+    body: 'Agents you deploy call their model with your own provider key: OpenAI, Anthropic, Gemini or a custom provider. Add one in the LLM router before their first run.',
+    link: 'Set up a model key',
+  },
   methods: {
     label: 'How to deploy',
     upload: 'Upload a zip',
@@ -66,11 +73,11 @@ export const copy = {
   },
   methodHints: {
     upload: "Your agent's folder as a .zip",
-    github: 'Pick a repo; OpenRuntime clones and builds it',
+    github: 'Pick a repo; Open Runtime clones and builds it',
     registry: 'Import a published agent image',
   },
   github: {
-    notConfigured: 'GitHub isn’t set up on this OpenRuntime server.',
+    notConfigured: 'GitHub isn’t set up on this Open Runtime server.',
     notConfiguredHint:
       'An admin needs to add a GitHub OAuth app (GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET). Until then, upload a zip.',
     useUpload: 'Use Upload instead',
@@ -78,7 +85,7 @@ export const copy = {
     switchAccount: 'Switch account',
     connect: 'Connect GitHub',
     reconnect: 'Reconnect GitHub',
-    connectHint: 'OpenRuntime needs access to your repositories, public ones too.',
+    connectHint: 'Open Runtime needs access to your repositories, public ones too.',
     invalid: 'Your GitHub connection expired.',
     waiting: 'Finish connecting in the GitHub window…',
     connectFailed: "Couldn't start connecting to GitHub. Try again.",
@@ -104,23 +111,23 @@ export const copy = {
     pickFirst: 'Pick a repository first.',
     submit: (repo: string) => (repo ? `Deploy ${repo}` : 'Deploy'),
     needs: 'What your repo needs',
-    needsNote: 'OpenRuntime checks these after cloning.',
+    needsNote: 'Open Runtime checks these after cloning.',
     shown: (n: number) => `Showing your ${n} most recently updated repositories.`,
   },
   registry: {
     reference: 'Image reference',
-    placeholder: 'registry.nasiko.dev/acme/support-bot:1.2.0',
+    placeholder: 'registry.nasiko.com/acme/support-bot:1.2.0',
     hint: (host: string) => `host/owner/name:tag. Allowed hosts: ${host} and any your admin added.`,
-    format: 'Use host/owner/name:tag, like registry.nasiko.dev/acme/support-bot:1.2.0.',
+    format: 'Use host/owner/name:tag, like registry.nasiko.com/acme/support-bot:1.2.0.',
     submit: 'Import and deploy',
     importing: 'Importing (pull or build, then deploy)',
     usual: 'usually 1–5 min',
-    keepUsing: 'You can keep using OpenRuntime; closing the tab stops watching.',
-    disabled: 'Registry import is turned off on this OpenRuntime server.',
+    keepUsing: 'You can keep using Open Runtime; closing the tab stops watching.',
+    disabled: 'Registry import is turned off on this Open Runtime server.',
     disabledHint: 'An admin can turn it on. Until then, upload a zip or deploy from GitHub.',
     needs: 'What the image needs',
     items: [
-      'An OpenRuntime agent package, or a runnable image',
+      'An Open Runtime agent package, or a runnable image',
       'From an allowed host',
       'Public over HTTPS: registry logins aren’t supported',
     ],
@@ -142,7 +149,7 @@ export const copy = {
   },
   agentBuilds: {
     what: 'builds',
-    empty: 'No builds from OpenRuntime yet',
+    empty: 'No builds from Open Runtime yet',
     emptyHint: 'Deployed with `nasiko deploy`? That path pushes an image without a build here.',
     deploy: 'Deploy a new version',
     label: 'Builds of this agent',
@@ -161,7 +168,7 @@ export const copy = {
     searchLabel: 'Search builds',
     searchPlaceholder: 'Agent name or version',
     filterLabel: 'Status',
-    newerServer: 'Builds need a newer OpenRuntime server.',
+    newerServer: 'Builds need a newer Open Runtime server.',
     noRights: "You don't have deploy rights on this server.",
     next: 'Next page',
     previous: 'Previous page',
@@ -198,7 +205,15 @@ export const copy = {
     uploaded: (file: string) => `Uploaded ${file}`,
     leave: 'You can leave this page. The build keeps going.',
     version: 'Version',
-    logsUnavailable: 'Build logs need a newer OpenRuntime server.',
+    logsUnavailable: 'Build logs need a newer Open Runtime server.',
+    /** The build-log viewer under the stages, once the build has finished. */
+    viewLogs: 'View build logs',
+    hideLogs: 'Hide build logs',
+    logsHeading: 'Build logs',
+    logsLoading: 'Loading build logs…',
+    logsEmpty: 'No build logs were recorded for this build.',
+    logsError: 'Couldn’t load the build logs.',
+    logsRetry: 'Try again',
     stepsLabel: 'Build progress',
     running: (name: string) => `${name} is running`,
     notRunning: 'Built, but not running',

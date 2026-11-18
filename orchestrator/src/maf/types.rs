@@ -112,6 +112,40 @@ pub struct ExecutionResult {
     pub cost_usd: f64,
 }
 
+/// Why a MAF run ended without a result. The worker decides whether to run it again from the
+/// variant: a run that failed for some other reason is retried up to its attempt limit, a run
+/// whose agent timed out is not.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RunError {
+    /// A step's agent did not answer within the agent-call budget (`AGENT_CALL_TIMEOUT_SECS`).
+    /// Not retried: running again would wait the whole budget once more, and would repeat the
+    /// steps before it, whose agents may already have acted.
+    #[error("{0}")]
+    TimedOut(String),
+    /// Any other failure.
+    #[error("{0}")]
+    Failed(String),
+}
+
+impl RunError {
+    /// Whether the worker may run the execution again.
+    pub fn is_retryable(&self) -> bool {
+        matches!(self, Self::Failed(_))
+    }
+}
+
+impl From<String> for RunError {
+    fn from(message: String) -> Self {
+        Self::Failed(message)
+    }
+}
+
+impl From<&str> for RunError {
+    fn from(message: &str) -> Self {
+        Self::Failed(message.to_string())
+    }
+}
+
 /// What a MAF run produced: either it ran to completion, or one step's agent asked for a human
 /// and the run stopped there, awaiting `POST /api/hitl/{id}/resolve`.
 pub enum StepOutcome {

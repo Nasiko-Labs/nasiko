@@ -19,6 +19,7 @@ import { LogDrawer } from '@nasiko/features/sessions/LogDrawer'
 import { fmtInt, fmtLatency, fmtMoney } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
 import { ApiError } from '@nasiko/data-access/client'
+import { isObservabilityUnconfigured } from '@nasiko/features/observability/unconfigured'
 import { useAgentLogs, useAgentResources, useAgentStats } from '../api'
 import { ErrorNote, LearnMore, Section } from '../components/bits'
 import { copy } from '../copy'
@@ -44,7 +45,7 @@ export function ActivityTab({
   const [term, setTerm] = useState('')
   const levelId = useId()
   const logs = useAgentLogs(agent.id, level, true)
-  const obsOff = (e: unknown) => e instanceof ApiError && e.status === 503
+  const obsOff = isObservabilityUnconfigured
   const lines = (logs.data ?? []).filter(
     (l) => !term || l.message.toLowerCase().includes(term.toLowerCase()),
   )

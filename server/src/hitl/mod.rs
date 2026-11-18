@@ -26,11 +26,13 @@ use nasiko_types::a2a::StreamDisposition;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
+use crate::agent_resolver::{Caller, ResolveError, resolve_target};
+use crate::agent_wake::AgentWake;
 use crate::hitl::continuation::ContinuationGuard;
 use crate::hitl::lost_task::is_task_not_found;
 use crate::router::a2a_dispatch::{
     OrchestratorTurn, build_hitl_stream_data, build_pause_question, normalize_agent_event,
-    orchestrator_stream, pause_kind, resolve_endpoint,
+    orchestrator_stream, pause_kind,
 };
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
@@ -363,14 +365,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     };
 
-    let target = match resolve_endpoint(&state, &row.agent_id.to_string(), &agent_name).await {
-        Ok(e) => e,
-        Err(e) => {
-            fail_resume(&state, &row, &e, RETRYABLE).await;
-            return;
-        }
-    };
-
     // Reuse the original flow if it was stashed in `resume_state` at pause time — the
     // agent's OTel auto-instrumentation already carries this trace_id on every outbound
     // call, so reopening the same flow means the agent's MCP and LLM-router calls pass
@@ -412,6 +406,50 @@ async fn deliver(state: AppState, row: HitlRequest) {
         return;
     }
 
+    // Woken, then resolved by kind, so resuming a pause on a parked agent wakes it first. After
+    // the flow guard, so a resume it rejects never wakes anything.
+    if let Err(msg) = state
+        .agent_wake
+        .before_forward(row.agent_id, Some(&flow_ctx.flow_id))
+        .await
+    {
+        fail_resume(
+            &state,
+            &row,
+            &format!("agent '{agent_name}' cannot be reached: {msg}"),
+            RETRYABLE,
+        )
+        .await;
+        return;
+    }
+    let caller = Caller {
+        flow_id: Some(flow_ctx.flow_id.clone()),
+    };
+    let target = match resolve_target(&state, row.agent_id, &caller).await {
+        Ok(resolved) => match resolved.into_forward_target() {
+            Some(target) => target,
+            None => {
+                fail_resume(
+                    &state,
+                    &row,
+                    "a harness agent has no endpoint to resume against",
+                    FailureKind::Permanent,
+                )
+                .await;
+                return;
+            }
+        },
+        // The agent is gone: no retry brings it back.
+        Err(e @ ResolveError::NotFound) => {
+            fail_resume(&state, &row, &e.client_message(), FailureKind::Permanent).await;
+            return;
+        }
+        Err(e) => {
+            fail_resume(&state, &row, &e.client_message(), RETRYABLE).await;
+            return;
+        }
+    };
+
     // Register this resume as a live flow in the MCP-gateway sense (Postgres `flows` +
     // `flow_participants`) — a completely separate bookkeeping system from the FlowGuard
     // cascade-limit check just above, which never touches these tables. Without this, the
@@ -423,41 +461,21 @@ async fn deliver(state: AppState, row: HitlRequest) {
     //
     // `metadata.context_id` carries `row.context_id` (the agent's OWN, private A2A context —
     // never a `chat_sessions` row) purely for observability/debugging, mirroring
-    // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`. It is NOT
-    // what makes retry-matching work — that's `session_traces` below, and `session_traces.session_id`
-    // has a hard FK to `chat_sessions(session_id)` (`0004_observability.sql`), which `context_id`
-    // can never satisfy for an `Orchestrator`-origin row: there, `context_id` is the sub-agent's
-    // own per-dispatch A2A context, minted fresh by `trigger_new_orchestrator_turn` on every
-    // resume — never a real chat session. `nasiko_mcp_gateway::session::resolve_context_id`
-    // resolves a tools/call's session by looking up `session_traces` for the CALLING trace_id,
-    // falling back to the trace_id itself only when no row exists. Every resume mints a brand-new
-    // `flow_ctx.flow_id`, so without a session_traces row mapping it to something STABLE,
-    // `resolve_tool_approval_retry`'s once/session-scope grant lookup keys on a trace_id that's
-    // different on every single resume, never matching the original ask's own resolved context —
-    // every resumed retry of a tool the human just approved gets asked again, forever (confirmed
-    // live: approving the same tool_approval repeatedly, every retry still comes back
-    // `ask_required`, and the earlier `session_id = context_id` version of this INSERT was
-    // silently failing its FK check on every single orchestrator resume).
+    // `agent_proxy.rs`'s convention of stamping the sticky key onto `flows.metadata`.
+    // Retry-matching works via `flows.session_id`. `nasiko_mcp_gateway::session::resolve_context_id`
+    // resolves a tools/call's session by looking up `flows.session_id` for the CALLING trace_id
+    // (flow_id), falling back to the trace_id itself only when no row exists.
     //
     // `row.chat_session_id` is the real, existing `chat_sessions` row every `Orchestrator`-origin
     // mirror in this chain carries forward (`NewHitlRequest::orchestrator`/
     // `persist_direct_chat_pause`) — mapping that resume's fresh flow_id to THAT is what lets
     // retries resolve to the SAME session the original ask did. `AgentProxy`/`DirectChat` rows
     // carry no separate `chat_session_id` at all: for those there's no distinct
-    // orchestrator-level session, so `context_id` already IS the stable id — confirmed live the
-    // hard way: an earlier version of this fix *skipped* the insert below whenever
-    // `chat_session_id` was absent (reasoning "no stable id to map to" for those origins), and a
-    // multi-round `agent_proxy` approval immediately showed why that's wrong: round 1's
-    // `context_id` was a real `ses_...` `chat_sessions` row, but with no session_traces row
-    // written for it, round 2's `resolve_context_id` couldn't find round 1's trace and fell back
-    // to a raw, unstable trace id instead — which is what round 2's own `context_id` then carried
-    // forward, drifting further from the real session on every subsequent round. Falling back to
-    // `context_id` here (rather than skipping the insert) is what keeps `AgentProxy`/`DirectChat`
-    // pinned to the same real session on every resume, exactly as it did before this fix existed.
+    // orchestrator-level session, so `context_id` already IS the stable id.
     let stable_session_id = stable_session_id(&row).unwrap_or(&context_id);
     if let Err(e) = sqlx::query(
-        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata)
-           VALUES ($1, $2, $3, $4, $5, 'running', $6)
+        r#"INSERT INTO flows (flow_id, user_id, root_agent_id, root_agent_name, title, status, metadata, session_id)
+           VALUES ($1, $2, $3, $4, $5, 'running', $6, $7)
            ON CONFLICT (flow_id) DO UPDATE
               SET status = 'running', completed_at = NULL"#,
     )
@@ -467,6 +485,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     .bind(&agent_name)
     .bind("HITL resume")
     .bind(serde_json::json!({ "context_id": context_id }))
+    .bind(stable_session_id)
     .execute(&state.db)
     .await
     {
@@ -483,23 +502,6 @@ async fn deliver(state: AppState, row: HitlRequest) {
         flow_id: flow_ctx.flow_id.clone(),
     };
     crate::flows::record_participant(&state.db, &flow_ctx.flow_id, row.agent_id).await;
-    if let Err(e) = sqlx::query(
-        "INSERT INTO session_traces (session_id, trace_id, agent_id, agent_name)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (session_id, trace_id) DO NOTHING",
-    )
-    .bind(stable_session_id)
-    .bind(&flow_ctx.flow_id)
-    .bind(row.agent_id)
-    .bind(&agent_name)
-    .execute(&state.db)
-    .await
-    {
-        tracing::warn!(
-            error = %e, %stable_session_id, flow_id = %flow_ctx.flow_id,
-            "hitl resume: session_traces record failed — tool-approval retry matching for this resume may re-ask"
-        );
-    }
 
     let answer = answer_text(&row);
     let req_body = nasiko_types::a2a::build_stream_request_for_task(&answer, &context_id, &task_id);
@@ -595,6 +597,8 @@ async fn deliver(state: AppState, row: HitlRequest) {
             return;
         }
         ResumeAttempt::TaskNotFound => {
+            // The agent no longer knows the task, so it is not open work for the reaper either.
+            crate::agents::open_tasks::clear(&state.db, row.agent_id, &task_id).await;
             return finish_agent_lost_task(&state, &row, &flow_ctx, &agent_name, posts).await;
         }
         ResumeAttempt::Unclassified(reason) => {
@@ -617,6 +621,15 @@ async fn deliver(state: AppState, row: HitlRequest) {
             return;
         }
     };
+
+    // The resumed task's last state: a finished one clears its open-task row, a follow-up pause
+    // keeps the agent from being parked while it waits.
+    if let Some(event) = last_data
+        .as_deref()
+        .and_then(|data| serde_json::from_str::<serde_json::Value>(data).ok())
+    {
+        crate::agents::open_tasks::note_response(&state.db, row.agent_id, &event).await;
+    }
 
     // Delivery succeeded — a response was received and classified — regardless of the agent's
     // own business outcome (§3.2: "peer confirmed receipt").
@@ -882,7 +895,7 @@ async fn deliver_maf(state: &AppState, row: HitlRequest) {
 
     let answer = answer_text(&row);
 
-    let mut conn = match state.redis.get_multiplexed_async_connection().await {
+    let mut conn = match state.redis.connection().await {
         Ok(c) => c,
         Err(e) => {
             fail_resume(
@@ -1262,9 +1275,9 @@ async fn consume_json_to_terminal(
 /// outcome. `failed` when the agent no longer held the task and the answer reached nothing. Only
 /// `orchestrator_stream` writes `awaiting_human` steps, hence the origin guard.
 ///
-/// Keyed through `session_traces`, not this resume's `flow_ctx`: the paused step belongs to the
+/// Keyed through `flows.session_id`, not this resume's `flow_ctx`: the paused step belongs to the
 /// turn that paused, and `deliver()` opens a fresh root flow, so the two ids never match.
-/// Owner-scoped for free — both columns reference `chat_sessions(session_id)`.
+/// Owner-scoped by the session id itself: only flows the server filed under this chat session match.
 async fn close_resumed_flow_step(
     state: &AppState,
     row: &HitlRequest,
@@ -1282,7 +1295,7 @@ async fn close_resumed_flow_step(
     // Narrowed to the single most recently paused row, matching `orchestrator_stream`'s own
     // `AwaitingHuman` close-out (`a2a_dispatch.rs`'s `ORDER BY step_order DESC LIMIT 1` subquery)
     // — `step_order` alone can't serve here since it only orders steps *within* one flow_id, and
-    // this session's `session_traces` mapping can span several. `created_at DESC` is the
+    // this session's `flows` can span several. `created_at DESC` is the
     // equivalent global ordering across flow_ids. Without this limit, an orchestrator session
     // that delegates twice to the same sub-agent with both calls paused had answering the first
     // one flip *both* `awaiting_human` rows to `resumed`, falsely reporting a still-paused step
@@ -1292,7 +1305,7 @@ async fn close_resumed_flow_step(
           WHERE id = (
               SELECT id FROM flow_steps
                WHERE status = 'awaiting_human' AND agent_name = $2
-                 AND flow_id IN (SELECT trace_id FROM session_traces WHERE session_id = $1)
+                 AND flow_id IN (SELECT flow_id FROM flows WHERE session_id = $1)
                ORDER BY created_at DESC
                LIMIT 1
           )",
@@ -1313,7 +1326,7 @@ async fn close_resumed_flow_step(
 
 /// Minimal observable trail for the resumed call — required by the plan's own Governing
 /// Principle (§1: a `hitl_requests` row is "associated with, never a replacement for" the owning
-/// subsystem's own durable state; for direct chat that's `flows`/`session_traces`. The agent's
+/// subsystem's own durable state; for direct chat that's `flows`. The agent's
 /// actual reply text is a separate concern, handled by `persist_resume_reply` below —
 /// deliberately not folded in here, since this function runs for every disposition and that one
 /// only makes sense for a real terminal reply. Still not duplicated here: OTel span content
@@ -1321,14 +1334,7 @@ async fn close_resumed_flow_step(
 ///
 /// Closes out `deliver()`'s own `flows` row (`flow_ctx.flow_id`, opened right before this resume's
 /// agent call) with the precise disposition-derived terminal status — it does not insert a second
-/// row. An earlier version minted its own separate `flows` row for this and a second,
-/// `context_id`-keyed `session_traces` row alongside it; both were dead weight once `deliver()`
-/// itself started registering `flow_ctx.flow_id` as the live flow up front (the only thing MCP
-/// retry-matching actually reads), and the `session_traces` insert additionally violated
-/// `session_traces.session_id`'s FK to `chat_sessions(session_id)` on every single call —
-/// `context_id` is never a real chat session, so it silently failed under its own `let _ =` every
-/// time (`deliver()`'s own `session_traces` insert above, keyed on `row.chat_session_id`, is the
-/// one that actually works).
+/// row.
 async fn record_resume_trail(
     state: &AppState,
     disposition: StreamDisposition,
@@ -1459,6 +1465,7 @@ async fn trigger_new_orchestrator_turn(
             // under a role the transcript does not render.
             transcript_role: crate::router::a2a_dispatch::INTERNAL_TRANSCRIPT_ROLE,
             file_parts: Vec::new(),
+            attached_files: Vec::new(),
             // `reasoning_query` above explicitly instructs the model NOT to call any
             // agent again, because the call this turn reports on already succeeded in
             // an earlier turn. A policy that demands an agent call per turn would see

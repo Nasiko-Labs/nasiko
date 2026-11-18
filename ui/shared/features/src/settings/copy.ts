@@ -22,8 +22,6 @@ export const copy = {
   saveFailed: (reason: string) => `Could not save settings: ${reason}`,
   loadWhat: 'settings',
   loading: 'Loading settings',
-  required: 'Enter a value.',
-  positiveInt: 'Enter a whole number of 1 or more.',
 
   // Account settings → Appearance (/account/appearance): every user, stored in this browser only (theme.ts).
   appearance: {
@@ -65,6 +63,8 @@ export const copy = {
           { action: 'Focus the message box', where: 'Chat', keys: [['/']] },
           { action: 'Send the message', where: 'Chat', keys: [['Enter']] },
           { action: 'New line', where: 'Chat', keys: [['Shift', 'Enter']] },
+          { action: 'Start or stop dictation', where: 'Chat', keys: [['F8'], ['Alt', 'R']] },
+          { action: 'Discard the recording', where: 'Chat, while dictating', keys: [['Esc']] },
           { action: 'Close the chat filter', where: 'Chat history, when empty', keys: [['Esc']] },
         ],
       },
@@ -139,22 +139,65 @@ export const copy = {
     general: { label: 'General', sub: 'Routing defaults and platform behavior.' },
     limits: { label: 'Flow limits', sub: 'Cascade guards applied to every inter-agent call.' },
     registry: { label: 'Registry', sub: 'External OCI registry used for agent images.' },
+    mcp: {
+      label: 'MCP toolkits',
+      sub: 'The Composio key and which toolkits people can connect to.',
+    },
   },
 
-  fields: {
+  // Settings → Workspace → MCP toolkits (`?section=mcp`): the Composio key and the toolkit picker.
+  composio: {
+    loadWhat: 'MCP toolkit settings',
+    loading: 'Loading MCP toolkit settings',
+    key: {
+      label: 'Composio API key',
+      placeholderSet: 'Type a new key to replace it',
+      placeholderUnset: 'ak_…',
+      status: {
+        ui: 'A key saved here is in use. It is encrypted and never shown again.',
+        env: 'The key from the server’s COMPOSIO_API_KEY setting is in use. Save one here to override it.',
+        none: 'No key yet. Add one to offer Composio toolkits.',
+      },
+      removeUi: 'Remove saved key',
+      keepUi: 'Keep saved key',
+      removing:
+        'The saved key will be removed on save. The server’s COMPOSIO_API_KEY, if set, applies again.',
+      unreadable:
+        'A key was saved here but can no longer be decrypted, so it is being ignored. Save it again, or remove it.',
+      differentProject:
+        'A key from a different Composio project moves the registered toolkits into that project, and people who connected them will need to connect again.',
+    },
+    toolkits: {
+      label: 'Toolkits',
+      hint: 'Tick the toolkits people can connect to. Unticking hides one without deleting it, so connections and permissions come back if you tick it again.',
+      searchLabel: 'Search toolkits',
+      searchPlaceholder: 'Search toolkits',
+      selectAll: 'Select all',
+      clear: 'Clear',
+      count: (on: number, total: number) => `${on} of ${total} on`,
+      none: 'No toolkit matches.',
+      needsKey: 'Add a Composio API key before switching toolkits on.',
+    },
+    saved: 'MCP toolkit settings saved',
+    savedPartly: (failed: number) =>
+      `Saved, but ${failed} toolkit${failed === 1 ? '' : 's'} could not be registered.`,
+    failedTitle: 'Could not register',
+    saveFailed: (reason: string) => `Could not save MCP toolkit settings: ${reason}`,
+  },
+
+  // Read-only: what the server runs, from its environment (OPENAI_MODEL, ROUTER_MODEL, DEFAULT_PROVIDER, NASIKO_FLOW_*).
+  running: {
+    orchestrator_model: {
+      label: 'Orchestrator model',
+      hint: 'Answers and picks agents in chat, and writes each workflow step’s prompt and the final output.',
+    },
     router_model: {
-      label: 'Router model',
-      hint: 'Model the routing engine uses to pick an agent for each query (ROUTER_MODEL).',
-      placeholder: 'e.g. gpt-4o',
+      label: 'Workflow routing model',
+      hint: 'Picks the agent for each workflow step.',
     },
     default_provider: {
       label: 'Default provider',
-      hint: 'Provider used when an agent has no LLM config of its own.',
-    },
-    catalog_tabs: {
-      label: 'Agent catalog tabs',
-      hint: "Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.",
-      placeholder: 'e.g. devops, finance, support',
+      hint: 'Used when an agent has no LLM config of its own and its request names no provider.',
     },
     max_flow_depth: {
       label: 'Max call depth',
@@ -172,6 +215,23 @@ export const copy = {
       label: 'Flow timeout (seconds)',
       hint: 'Wall-clock limit for a whole flow.',
     },
+    setByServer: 'Set by the server',
+    unknown: 'Not reported',
+    notReported: 'This server doesn’t report the limits it runs.',
+  },
+  // The models spend the caller's OpenAI key when they saved one.
+  models: {
+    keyBefore: 'Uses your OpenAI key from the ',
+    router: 'LLM router',
+    keyAfter: ', or the server’s own if you haven’t added one.',
+  },
+
+  fields: {
+    catalog_tabs: {
+      label: 'Agent catalog tabs',
+      hint: "Comma-separated agent tags pinned as the catalog's filter tabs. Leave empty to derive tabs from the most common tags across agents.",
+      placeholder: 'e.g. devops, finance, support',
+    },
     registry_url: {
       label: 'OCI registry URL',
       // Legacy: "Where imported agent images are pulled from." The server adds this URL's host to the registry
@@ -181,11 +241,6 @@ export const copy = {
       invalid: 'Enter a registry host or URL, like https://registry.example.com.',
     },
   },
-  providers: [
-    ['openai', 'OpenAI'],
-    ['anthropic', 'Anthropic'],
-    ['gemini', 'Gemini'],
-  ] as const,
   providerKeys: {
     label: 'Provider API keys',
     before:
@@ -202,9 +257,34 @@ export const copy = {
 
   secrets: {
     title: 'Secrets',
-    sub: 'API credentials stored in this workspace. Router configs and agents reference secrets by name.',
+    sub: 'Your own API keys and other credentials. Your agents and router configs use them at runtime.',
+    // NAS-1489: who uses them, how to change them, when a change applies.
+    howTitle: 'How secrets work',
+    howHint: 'Who uses them, how to change one, when a change applies',
+    how: {
+      // NAS-1458. agent_secrets.rs `resolve_secret_env`: these first, an agent's own secrets on top.
+      agents: {
+        title: 'Your agents get them',
+        detail:
+          'Every agent you own gets these as environment variables. A secret of the same name on an agent’s Settings tab overrides one here, for that agent only; that tab lists which of these the agent gets.',
+      },
+      // secrets/routes.rs `create_secret` upserts (ON CONFLICT … DO UPDATE).
+      change: {
+        title: 'Add, change or remove',
+        detail:
+          'Add a secret with the row below. To change a value, add it again under the same name. Show, Copy and Delete are on each row.',
+      },
+      // llm-router resolver: the config is TTL-cached, the key (`resolve_api_key`) is read on every call. An agent's env
+      // is built only on restart or deploy; a parked agent's wake is scale(1), which keeps the env it had.
+      apply: {
+        title: 'When a change applies',
+        detail:
+          'Router configs use it on their next model call. Agents read secrets when they start, so restart or redeploy an agent to apply a change.',
+      },
+    },
+    agentsLink: 'Your agents',
     // Legacy: "Keys are write only … never read back", beside a list that reveals them. The owner can read their own.
-    note: 'Values are encrypted at rest. Configs reference a secret by name; only you can read your own secrets back, one at a time.',
+    note: 'Values are encrypted at rest. Only you can read your own secrets back, one at a time.',
     empty: 'No secrets yet',
     emptyText: 'Add one below; agents and router configs reference secrets by name.',
     loadWhat: 'your secrets',

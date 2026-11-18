@@ -146,6 +146,26 @@ export const agentConnectorsSchema = z.looseObject({
 })
 export type AgentConnectors = z.infer<typeof agentConnectorsSchema>
 
+/**
+ * `GET /api/mcp/agents/{id}/my-connections` (`list_caller_connections_view`): the agent's enabled servers with where
+ * the viewer stands. Tools run on the chatting user's own connections, never the agent owner's.
+ */
+export const CALLER_CONNECTION = ['ready', 'connected', 'needs_connection', 'not_shared'] as const
+export type CallerConnection = (typeof CALLER_CONNECTION)[number]
+export const callerConnectionsSchema = z.looseObject({
+  connectors: z.array(
+    z.looseObject({
+      connector_id: z.string(),
+      provider_type: z.string().optional(),
+      name: z.string(),
+      display_name: nullableString,
+      logo_url: nullableString,
+      status: z.enum(CALLER_CONNECTION),
+    }),
+  ),
+})
+export type CallerConnections = z.infer<typeof callerConnectionsSchema>
+
 /** `…/connectors/{cid}/tools` (`list_connector_tools_view`): each tool with this agent's effective stance. */
 export const agentToolsSchema = z.looseObject({
   tools: z.array(
@@ -217,3 +237,31 @@ export type BuildLogs = z.infer<typeof buildLogsSchema>
 /** `upload` / `upload-github`: 202 `{connector_id, build_id}`. */
 export const uploadResultSchema = z.looseObject({ connector_id: z.string(), build_id: z.string() })
 export type UploadResult = z.infer<typeof uploadResultSchema>
+
+/**
+ * `GET /api/mcp/connectors/my-uploads` (`list_my_uploads`): every upload attempt the caller made,
+ * from `mcp_upload_status` — unlike `connectorListSchema`, still includes one whose connector was
+ * deleted after a first-time build failure (`connector_id` is then `null`). This is the durable
+ * tracking the catalog page's "Recent uploads" panel reads (`oss/migrations/0101_mcp_upload_status.sql`).
+ */
+const uploadedConnectorSchema = z.looseObject({
+  upload_id: z.string(),
+  connector_id: z.string().nullable(),
+  connector_name: z.string(),
+  icon_url: nullableString,
+  upload_info: z.looseObject({
+    upload_type: z.string(),
+    upload_status: z.string(),
+    status_message: nullableString,
+    error_detail: nullableString,
+  }),
+  url: nullableString,
+  description: nullableString,
+  source: z.enum(['zip', 'github']),
+  created_at: z.string(),
+  updated_at: z.string(),
+})
+export type UploadedConnector = z.infer<typeof uploadedConnectorSchema>
+
+export const myUploadsSchema = z.array(uploadedConnectorSchema)
+export type MyUploads = z.infer<typeof myUploadsSchema>

@@ -50,6 +50,109 @@ const FETCH_HISTORY_SQL: &str = "SELECT role, content FROM chat_messages \
        AND (metadata->'turn_error') IS NULL \
      ORDER BY timestamp DESC LIMIT $2";
 
+/// One tiered message as the cold-history hook returns it: `(role, content, metadata JSON)`.
+pub struct ColdHistoryRow {
+    pub role: String,
+    pub content: String,
+    pub metadata: Option<String>,
+}
+
+/// Future returned by a [`ColdHistoryLoader`]: whole conversation, oldest first.
+pub type ColdHistoryFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Option<Vec<ColdHistoryRow>>> + Send>>;
+
+/// Loads a tiered session (`chat_sessions.cold_since` set) merged hot+cold.
+///
+/// This crate cannot build an `EventStore` (it only receives a `PgPool`, not the Lance
+/// location/tiering config), so the server registers one via [`set_cold_history_loader`]
+/// backed by `EventStore::load_session`. Unset → hot rows only (old behaviour).
+pub type ColdHistoryLoader = std::sync::Arc<dyn Fn(String) -> ColdHistoryFuture + Send + Sync>;
+
+static COLD_HISTORY: std::sync::OnceLock<ColdHistoryLoader> = std::sync::OnceLock::new();
+
+/// Register the cold-history loader once at startup. Later calls are ignored.
+pub fn set_cold_history_loader(loader: ColdHistoryLoader) {
+    let _ = COLD_HISTORY.set(loader);
+}
+
+/// Which rows a history read keeps; each variant's SQL and its cold-row filter must agree.
+#[derive(Clone, Copy)]
+enum HistoryFilter {
+    /// [`FETCH_HISTORY_SQL`]: drops refusals and failed turns.
+    Context,
+    /// [`FETCH_PAIRS_SQL`]: drops failed turns only.
+    Pairs,
+}
+
+impl HistoryFilter {
+    fn sql(self) -> &'static str {
+        match self {
+            HistoryFilter::Context => FETCH_HISTORY_SQL,
+            HistoryFilter::Pairs => FETCH_PAIRS_SQL,
+        }
+    }
+}
+
+/// Apply `filter`'s SQL conditions to an oldest-first merged conversation and return the
+/// newest `limit` as `(role, content)`, newest first — the same shape the SQL path yields.
+fn select_cold_history(
+    rows: Vec<ColdHistoryRow>,
+    limit: usize,
+    filter: HistoryFilter,
+) -> Vec<(String, String)> {
+    let kept: Vec<(String, String)> = rows
+        .into_iter()
+        .filter(|r| {
+            let meta: serde_json::Value = r
+                .metadata
+                .as_deref()
+                .and_then(|m| serde_json::from_str(m).ok())
+                .unwrap_or(serde_json::Value::Null);
+            let refusal = matches!(filter, HistoryFilter::Context)
+                && match &meta[REFUSAL_METADATA_KEY] {
+                    serde_json::Value::Bool(b) => *b,
+                    serde_json::Value::String(s) => s == "true",
+                    _ => false,
+                };
+            !refusal
+                && meta
+                    .get(TURN_ERROR_METADATA_KEY)
+                    .is_none_or(|v| v.is_null())
+        })
+        .map(|r| (r.role, r.content))
+        .collect();
+    kept.into_iter().rev().take(limit).collect()
+}
+
+/// Hot rows, or the merged conversation when the session is tiered and a loader is set.
+async fn history_rows(
+    session_id: &str,
+    pool: &PgPool,
+    limit: usize,
+    filter: HistoryFilter,
+) -> Vec<(String, String)> {
+    if let Some(loader) = COLD_HISTORY.get() {
+        let cold: bool = sqlx::query_scalar::<_, bool>(
+            "SELECT cold_since IS NOT NULL FROM chat_sessions WHERE session_id = $1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(false);
+        if cold && let Some(rows) = loader(session_id.to_string()).await {
+            return select_cold_history(rows, limit, filter);
+        }
+    }
+    sqlx::query_as::<_, (String, String)>(filter.sql())
+        .bind(session_id)
+        .bind(limit as i64)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+}
+
 /// The pair pool's query, with the same failed-turn filter.
 const FETCH_PAIRS_SQL: &str = "SELECT role, content FROM chat_messages \
      WHERE session_id = $1 AND (metadata->'turn_error') IS NULL \
@@ -193,12 +296,8 @@ impl SessionHistory {
         // refusal, and with no policy configured no row ever carries it.
         let (mut bytes_in, mut bytes_out, mut touched) = (0usize, 0usize, 0usize);
         let mut messages: Vec<ChatMessage> =
-            sqlx::query_as::<_, (String, String)>(FETCH_HISTORY_SQL)
-                .bind(session_id)
-                .bind(limit as i64)
-                .fetch_all(pool)
+            history_rows(session_id, pool, limit, HistoryFilter::Context)
                 .await
-                .unwrap_or_default()
                 .into_iter()
                 .map(|(role, content)| {
                     let before = content.len();
@@ -554,13 +653,10 @@ impl SessionHistory {
         // adjacency — `ORDER BY timestamp ASC LIMIT n` would pin the window to
         // the oldest messages and never advance, the same trap `fetch_raw`
         // documents.
+        // Same hot+cold source as `fetch_raw`: a resumed tiered session must not lose its
+        // archived turns the moment it gains one new hot pair.
         let mut messages: Vec<(String, String)> =
-            sqlx::query_as::<_, (String, String)>(FETCH_PAIRS_SQL)
-                .bind(session_id)
-                .bind(pool_size as i64)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default();
+            history_rows(session_id, pool, pool_size, HistoryFilter::Pairs).await;
         messages.reverse();
 
         // The baseline is the whole window read, not only the rows that paired up: an unpaired
@@ -936,5 +1032,56 @@ mod current_query_dedupe_tests {
     fn history_of_only_the_duplicate_returns_the_bare_query() {
         let h = history(vec![msg("user", "hello")]);
         assert_eq!(h.with_current_query("hello"), "hello");
+    }
+}
+
+#[cfg(test)]
+mod cold_history_tests {
+    use super::*;
+
+    fn row(role: &str, content: &str, meta: Option<&str>) -> ColdHistoryRow {
+        ColdHistoryRow {
+            role: role.into(),
+            content: content.into(),
+            metadata: meta.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn filters_refusals_and_turn_errors_newest_first() {
+        let rows: Vec<ColdHistoryRow> = vec![
+            row("user", "a", None),
+            row("assistant", "no", Some(r#"{"orchestrator_refusal":true}"#)),
+            row("assistant", "err", Some(r#"{"turn_error":{"x":1}}"#)),
+            row("assistant", "b", Some("{}")),
+            row("user", "c", None),
+        ];
+        let got: Vec<(String, String)> = select_cold_history(rows, 2, HistoryFilter::Context);
+        assert_eq!(
+            got,
+            vec![
+                ("user".into(), "c".into()),
+                ("assistant".into(), "b".into())
+            ]
+        );
+    }
+
+    #[test]
+    fn pairs_keep_refusals_but_drop_turn_errors() {
+        let rows: Vec<ColdHistoryRow> = vec![
+            row("user", "a", None),
+            row("assistant", "no", Some(r#"{"orchestrator_refusal":true}"#)),
+            row("user", "b", None),
+            row("assistant", "err", Some(r#"{"turn_error":{"x":1}}"#)),
+        ];
+        let got: Vec<(String, String)> = select_cold_history(rows, 10, HistoryFilter::Pairs);
+        assert_eq!(
+            got,
+            vec![
+                ("user".into(), "b".into()),
+                ("assistant".into(), "no".into()),
+                ("user".into(), "a".into()),
+            ]
+        );
     }
 }

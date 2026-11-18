@@ -20,13 +20,6 @@ import { Card } from '@nasiko/ui/primitives/card'
 import { Field, FieldDescription, FieldLabel } from '@nasiko/ui/primitives/field'
 import { Input } from '@nasiko/ui/primitives/input'
 import { Progress } from '@nasiko/ui/primitives/progress'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@nasiko/ui/primitives/select'
 import { Switch } from '@nasiko/ui/primitives/switch'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
 import { fmtBytes } from '@nasiko/ui/lib/format'
@@ -50,9 +43,9 @@ import {
   type ZipCheck,
 } from './zipcheck'
 import { DropZone } from './components/DropZone'
+import { LockedNameHint } from './components/LockedNameHint'
+import { ModelKeyNotice } from './components/ModelKeyNotice'
 import { Requirements, RequirementsCompact } from './components/Requirements'
-
-const INBOUND = ['openai', 'anthropic', 'gemini'] as const
 
 const schema = z.object({
   name: z.string().superRefine((v, ctx) => {
@@ -78,7 +71,6 @@ const schema = z.object({
   storageTouched: z.boolean(),
   writable: z.boolean(),
   writablePath: z.string().trim(),
-  inbound: z.enum(['default', ...INBOUND]),
 })
 type Form = z.infer<typeof schema>
 
@@ -97,12 +89,17 @@ export function UploadTab({
   userId,
   prefill,
   onStarted,
+  keyNotice = false,
 }: {
   userId: string
-  prefill: { name?: string; version?: string }
+  /** `locked`: a new version of the agent `name` names, so the name can't change (`search.ts` `newVersion`). */
+  prefill: { name?: string; version?: string; locked?: boolean }
   onStarted?: (to: DeployStarted) => void
+  /** The Deploy page's model-key notice atop the side column (above the compact checklist on phones). */
+  keyNotice?: boolean
 }) {
   const ids = useId()
+  const locked = prefill.locked && prefill.name ? prefill.name : null
   const qc = useQueryClient()
   const navigate = useNavigate()
   const upload = useSyncExternalStore(subscribeUploads, () => uploadFor(userId))
@@ -137,7 +134,6 @@ export function UploadTab({
       storageTouched: false,
       writable: false,
       writablePath: '',
-      inbound: 'default',
     },
     mode: 'onTouched',
   })
@@ -209,8 +205,8 @@ export function UploadTab({
     if (latestFile.current !== f) return
     setCheck(r)
     setChecking(false)
-    // Never overwrite what the user typed.
-    if (!getFieldState('name').isDirty)
+    // Never overwrite what the user typed, nor a locked name: the zip's own name would deploy a second agent.
+    if (locked === null && !getFieldState('name').isDirty)
       setValue('name', nameFromFile(r.cardName ?? '') || nameFromFile(f.name), {
         shouldValidate: true,
       })
@@ -243,7 +239,6 @@ export function UploadTab({
       // Tri-state on the server: sent only when touched.
       writable: v.storageTouched ? v.writable : undefined,
       writablePath: v.storageTouched && v.writable ? v.writablePath || undefined : undefined,
-      inboundFormat: v.inbound === 'default' ? undefined : v.inbound,
     }
     void startUpload(qc, userId, file, file.name, fields)
   }
@@ -273,7 +268,8 @@ export function UploadTab({
         }}
         className="@container/deploy grid grid-cols-1 gap-4 @[768px]/deploy:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @[768px]/deploy:items-start"
       >
-        <div className="@[768px]/deploy:hidden">
+        <div className="flex flex-col gap-4 @[768px]/deploy:hidden">
+          {keyNotice ? <ModelKeyNotice /> : null}
           <RequirementsCompact
             items={items}
             advisory={!!check && !check.readable}
@@ -306,7 +302,7 @@ export function UploadTab({
             <FieldLabel htmlFor={`${ids}-name`}>{copy.deploy.name}</FieldLabel>
             <Input
               id={`${ids}-name`}
-              readOnly={busy}
+              readOnly={busy || locked !== null}
               placeholder={copy.deploy.namePlaceholder}
               autoComplete="off"
               spellCheck={false}
@@ -318,6 +314,8 @@ export function UploadTab({
               <p id={`${ids}-name-err`} className="text-xs text-destructive">
                 {err('name')}
               </p>
+            ) : locked ? (
+              <LockedNameHint id={`${ids}-name-hint`} />
             ) : (
               <FieldDescription id={`${ids}-name-hint`} className="text-xs">
                 {copy.deploy.nameHint}
@@ -465,26 +463,6 @@ export function UploadTab({
                 </FieldDescription>
               </Field>
             ) : null}
-            <Field className="gap-1">
-              <FieldLabel htmlFor={`${ids}-inbound`}>{copy.deploy.inbound}</FieldLabel>
-              <Select
-                defaultValue="default"
-                disabled={busy}
-                onValueChange={(v) => setValue('inbound', v as Form['inbound'])}
-              >
-                <SelectTrigger id={`${ids}-inbound`} className="w-full pointer-coarse:min-h-11">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="default">{copy.deploy.inboundDefault}</SelectItem>
-                  {INBOUND.map((f) => (
-                    <SelectItem key={f} value={f}>
-                      {f}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
           </Disclosure>
 
           {blocked ? (
@@ -547,11 +525,11 @@ export function UploadTab({
           )}
         </Card>
         {/* Stays in view under the Deploy page's sticky method row while the form scrolls. */}
-        <div
-          data-tour="deploy-requirements"
-          className="sticky top-[calc(var(--topbar-h)+4rem)] @max-[768px]/deploy:hidden"
-        >
-          <Requirements items={items} advisory={!!check && !check.readable} />
+        <div className="sticky top-[calc(var(--topbar-h)+4rem)] flex flex-col gap-4 @max-[768px]/deploy:hidden">
+          {keyNotice ? <ModelKeyNotice /> : null}
+          <div data-tour="deploy-requirements">
+            <Requirements items={items} advisory={!!check && !check.readable} />
+          </div>
         </div>
       </form>
       {/* The CLI equivalent for the name being deployed; hidden on phones (design review 15). */}

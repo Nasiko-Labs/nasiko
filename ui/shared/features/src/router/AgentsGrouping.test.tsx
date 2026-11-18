@@ -132,7 +132,7 @@ describe('Your agents folding', () => {
     const name = `${copy.changeRouting}: Doc Writer`
     await userEvent.click(within(agentsTable()).getByRole('button', { name }))
     const sheet = await screen.findByRole('dialog', { name: copy.routingTitle('Doc Writer') })
-    await userEvent.type(await within(sheet).findByLabelText(copy.overrideModel), 'gpt-4o')
+    await userEvent.type(await within(sheet).findByLabelText(copy.overrideModel), 'gpt-4o{Tab}')
     await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
     await within(sheet).findByText(copy.savedPlan('Doc Writer'))
     await userEvent.click(within(sheet).getByRole('button', { name: copy.done }))

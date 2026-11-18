@@ -16,6 +16,7 @@ export const STATUS_LABEL: Record<Status, string> = {
   failed: '✕ failed',
   ok: '✓ ok',
   running: '• running',
+  timed_out: '⏱ timed out',
   unchecked: '— unchecked',
   unknown: '? unknown',
   checking: '… checking',
@@ -31,7 +32,7 @@ export const copy = {
   // Sessions → Open chat (Chat v1c §5.10; never "session" for a chat, ND-12).
   openChat: 'Open chat',
   probeFailed: "Couldn't check chat availability",
-  probeFailedCause: 'OpenRuntime did not answer whether this is one of your chats.',
+  probeFailedCause: 'Open Runtime did not answer whether this is one of your chats.',
   retryProbe: 'Retry',
   copyProbeDetails: 'Copy details',
   failingChip: (n: number, checked: number) => `${n} failing · ${checked} checked`,
@@ -74,9 +75,9 @@ export const copy = {
   sparseLive:
     'Sessions come from chat traffic: run `nasiko chat <agent>` against a deployed agent, or use mock data with `npm run dev`.',
   noTraceData:
-    'No trace data found for these sessions: the agents may not export traces yet, or nasiko-server has no trace store configured.',
+    'No trace data found for these sessions: their agents may not export traces yet, or the sessions were moved here from another workspace, which brings their history but not their trace spans.',
   noTraceDataFix:
-    'Set TEMPO_URL and LOKI_URL on nasiko-server (README › Live data), then reload. Each session still opens on its own page.',
+    'Each session still opens on its own page. On a self-hosted server, also check that TEMPO_URL and LOKI_URL are set on nasiko-server (README › Live data).',
   noTraceDataLongWindow:
     'Trace details are missing for this window, most likely because the server searches Tempo across all of it and Tempo refuses searches of 7 days or more.',
   noTraceDataLongWindowFix:
@@ -84,6 +85,8 @@ export const copy = {
   notConfigured: "Observability isn't configured on this server.",
   notConfiguredFix:
     'Set TEMPO_URL and LOKI_URL on nasiko-server (README › Live data) and restart it.',
+  /** A 503 that is not the missing trace store (StateCard.tsx `ErrorState`). */
+  unavailable: "This isn't available right now.",
   traceStoreError: 'The trace store returned an error.',
   notFound: 'Not found, or not visible to you.',
   noAccess: "You don't have access to this.",
@@ -94,6 +97,8 @@ export const copy = {
     `Is nasiko-server running at ${apiUrl}? Run \`just run-stack\` in nasiko-cloud-rs.`,
 
   traceNotFound: 'Trace not found, or not visible to you.',
+  traceExpiredTools: 'The full trace has expired. Its tool calls are kept and listed below.',
+  traceExpiredNoTools: 'The full trace has expired and no tool calls were stored for it.',
   noTraces: 'No traces recorded for this session',
   noTracesBody:
     'The agent may not export traces, or they are still on their way: check back in a minute.',
@@ -114,6 +119,13 @@ export const copy = {
   spanCount: (shown: number, total: number, filtered: boolean) =>
     filtered ? `${shown} of ${total} spans` : `${total} spans`,
   noSpansMatch: 'No spans match this filter.',
+  // The session page's figures (NAS-1453): the traces' figures add up to the session total. The server leaves a trace
+  // out of both only when it couldn't read it, and then marks the session incomplete (`metrics_complete`).
+  sessionTotal: 'Session total:',
+  acrossTraces: (n: number) => `across ${n} trace${n === 1 ? '' : 's'}`,
+  traceTotal: (n: number) => `Trace ${n}:`,
+  totalsPartial:
+    "Some of this session's traces couldn't be read, so the session total covers only the traces listed.",
   rollup: (c: { spans: number; llm: number; tool: number; agent: number }) =>
     [
       `${c.spans} spans`,

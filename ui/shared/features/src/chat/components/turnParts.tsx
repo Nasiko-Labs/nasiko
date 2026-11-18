@@ -80,7 +80,10 @@ export function ErrorNotice({
   refusal?: ChatRefusal | null
 }) {
   const c = refusal ?? errorCopy[error.key]
+  // The server's reason is the notice's second line (NAS-1624): it says what went wrong when the key's words can't.
+  // A layer's refusal words already say it, so its detail stays under Details.
   const said = refusal ? refusal.detail : error.serverDetail
+  const inline = refusal ? null : error.serverDetail
   const detail = [
     said ? copy.serverSaid(said) : null,
     error.status ? `HTTP ${error.status}` : null,
@@ -97,6 +100,11 @@ export function ErrorNotice({
         <CircleAlert className="mt-0.5 size-4 text-destructive" aria-hidden />
         <div>
           <div className="font-medium">{c.problem}</div>
+          {inline ? (
+            <div className="break-words" data-testid="error-notice-reason">
+              {copy.serverSaid(inline)}
+            </div>
+          ) : null}
           <div className="text-muted-foreground">
             {c.cause} {c.action}
           </div>

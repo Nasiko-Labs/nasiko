@@ -36,6 +36,7 @@ const row = (id: string, o: Partial<SessionSummary> = {}): SessionSummary => ({
   agent_id: 'seed-a',
   status: 'ok',
   failed_flows: 0,
+  flow_count: 0,
   error_count: 0,
   num_traces: 1,
   start_time: '2026-03-11T10:00:00.000Z',
@@ -379,6 +380,87 @@ describe('spans', () => {
     // Collapsing the root hides everything below it.
     expect(treeRows(flat, new Set(), new Set([root.id]))).toHaveLength(1)
   })
+
+  it('marks retries by failure, and labels every non-retry member by its own operation', () => {
+    const root = node('aaaaaaaaaaaaaaaa', { name: 'planner' })
+    const expand = (siblings: ReturnType<typeof node>[]) => {
+      const flat = flattenSpans(trace([root, ...siblings]))
+      const key = groupKeyOf(flat, siblings[1].id)!
+      return treeRows(flat, new Set([key]), new Set()).flatMap((r) =>
+        r.kind === 'span' && r.attempt ? [r.attempt] : [],
+      )
+    }
+    // First attempt errors, second succeeds: a real retry loop → "attempt N of M".
+    const retried = expand(
+      [0, 1].map((i) =>
+        node(`c${i}cccccccccccccc`, {
+          name: 'tool.search',
+          parent_id: root.id,
+          status_code: i ? 'OK' : 'ERROR',
+          start_time: at(i * 100),
+        }),
+      ),
+    )
+    expect(retried.map((a) => a.retry)).toEqual([true, true])
+
+    // Inbound `request` spans hitting different routes: not a retry, and each shows its route.
+    const mixed = expand([
+      node('d0dddddddddddddd', {
+        name: 'request',
+        operation: 'POST /api/mcp',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(0),
+      }),
+      node('d1dddddddddddddd', {
+        name: 'request',
+        operation: 'POST /v1/chat/completions',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(100),
+      }),
+    ])
+    expect(mixed.map((a) => a.retry)).toEqual([false, false])
+    expect(mixed.map((a) => a.route)).toEqual(['POST /api/mcp', 'POST /v1/chat/completions'])
+
+    // One operation repeated (e.g. ChatCompletion ×N): each member still carries its operation,
+    // so the viewer names what happened instead of a bare "attempt".
+    const same = expand([
+      node('e0eeeeeeeeeeeeee', {
+        name: 'ChatCompletion',
+        operation: 'chat',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(0),
+      }),
+      node('e1eeeeeeeeeeeeee', {
+        name: 'ChatCompletion',
+        operation: 'chat',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(100),
+      }),
+    ])
+    expect(same.map((a) => a.retry)).toEqual([false, false])
+    expect(same.map((a) => a.route)).toEqual(['chat', 'chat'])
+
+    // A member with no operation at all falls back to a bare index (route undefined).
+    const bare = expand([
+      node('f0ffffffffffffff', {
+        name: 'request',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(0),
+      }),
+      node('f1ffffffffffffff', {
+        name: 'request',
+        parent_id: root.id,
+        status_code: 'OK',
+        start_time: at(100),
+      }),
+    ])
+    expect(bare.map((a) => a.route)).toEqual([undefined, undefined])
+  })
 })
 
 describe('flattenAttributes', () => {
@@ -595,6 +677,25 @@ describe('recovery needs a retry that starts after the failure ended', () => {
       latency_ms: 500,
     })
     expect(isTraceFailing(trace([r, failed, retry]))).toBe(false)
+  })
+})
+
+describe("the a2a SDK's end of stream", () => {
+  const root = node('aa', { name: 'request', latency_ms: 3000, end_time: at(3000) })
+  const dequeue = (id: string, status_message: string) =>
+    node(id, {
+      name: 'a2a.server.events.event_queue_v2.EventQueueSource.dequeue_event',
+      parent_id: root.id,
+      status_code: 'ERROR',
+      status_message,
+      start_time: at(0),
+      latency_ms: 3,
+    })
+  it('a QueueShutDown on dequeue is how a reply ends, not a failure', () => {
+    expect(isTraceFailing(trace([root, dequeue('b1', 'QueueShutDown: ')]))).toBe(false)
+  })
+  it('any other dequeue failure still fails the trace', () => {
+    expect(isTraceFailing(trace([root, dequeue('b1', 'RuntimeError: boom')]))).toBe(true)
   })
 })
 

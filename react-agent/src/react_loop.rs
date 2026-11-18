@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::completion::{CompletionEvent, UsageModel};
+use nasiko_types::agent_clock::AgentClock;
+
+use crate::completion::{CompletionEvent, UsageModel, failure_text};
 use futures::StreamExt;
 use rig::completion::message::ToolCall;
 use rig::completion::{AssistantContent, CompletionModel as _, Message, ToolDefinition};
@@ -15,6 +17,7 @@ use crate::events::{OrchestratorEvent, PolicyRejectionKind};
 use crate::guard::CallGuard;
 use crate::policy::DelegationPolicy;
 use crate::registry::{AgentInfo, AgentRegistry, RegistrySource};
+use crate::tool::with_call_target;
 use crate::tool::{A2aTool, A2aToolError};
 use nasiko_types::agent_call::AgentCallHandle;
 
@@ -121,7 +124,34 @@ fn blocked_note(tool_name: &str, reason: &str) -> String {
     )
 }
 
-/// How often one agent may fail in a single request before the loop stops
+/// What the model is told when the operator's policy refuses a call. The policy may supply its
+/// own guidance for the refusal (see [`DelegationPolicy::refusal_guidance`]); without any, the
+/// default no-retry wording applies.
+fn policy_blocked_note(
+    config: &OrchestratorConfig,
+    tool_name: &str,
+    reason: &str,
+    prior_refusals: usize,
+) -> String {
+    config
+        .policy
+        .as_ref()
+        .and_then(|p| p.refusal_guidance(prior_refusals))
+        .map(|guidance| format!("[{tool_name}] BLOCKED: {reason}. {guidance}"))
+        .unwrap_or_else(|| blocked_note(tool_name, reason))
+}
+
+/// Counts a policy refusal against the agent's attempts in this request, and returns how many it
+/// had already used. A refused call spends no agent call, but each retry is another paid
+/// completion, so refusals share the failure limit below.
+fn record_refusal(failures: &mut HashMap<String, usize>, tool_name: &str) -> usize {
+    let attempts = failures.entry(tool_name.to_string()).or_default();
+    let prior = *attempts;
+    *attempts += 1;
+    prior
+}
+
+/// How often one agent may fail or be refused in a single request before the loop stops
 /// calling it. Left alone, the model re-calls a failing agent until it runs out
 /// of turns, and every retry is another paid completion.
 const MAX_AGENT_FAILURES: usize = 2;
@@ -177,6 +207,7 @@ async fn retry_limit_reached(
 /// `CallAdmission::Blocked` means the call was blocked (already reported on `tx`
 /// and already pushed onto `results_for_context`), so the caller should
 /// `continue` its loop rather than call the tool.
+#[allow(clippy::too_many_arguments)]
 async fn admit_call(
     tc: &ToolCall,
     agent_display: &str,
@@ -184,6 +215,7 @@ async fn admit_call(
     guard: Option<&dyn CallGuard>,
     tx: &mpsc::Sender<OrchestratorEvent>,
     turn_idx: usize,
+    failures: &mut HashMap<String, usize>,
     results_for_context: &mut Vec<String>,
 ) -> CallAdmission {
     let name = &tc.function.name;
@@ -200,7 +232,8 @@ async fn admit_call(
                 kind: PolicyRejectionKind::Delegation,
             })
             .await;
-        results_for_context.push(blocked_note(name, &reason));
+        let prior = record_refusal(failures, name);
+        results_for_context.push(policy_blocked_note(config, name, &reason, prior));
         return CallAdmission::Blocked;
     }
 
@@ -353,6 +386,16 @@ fn finalize_answer(
     }
 }
 
+/// Whose key pays for the orchestrator's own model calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApiKeySource {
+    /// The user's own key, saved with an OpenAI config in LLM router.
+    Saved,
+    /// The server's `OPENAI_API_KEY`.
+    #[default]
+    Server,
+}
+
 /// Configuration for the orchestrator.
 #[derive(Debug, Clone)]
 pub struct OrchestratorConfig {
@@ -363,8 +406,10 @@ pub struct OrchestratorConfig {
     pub temperature: Option<f64>,
     /// OpenAI-compatible base URL. If None, uses OPENAI_BASE_URL env var.
     pub base_url: Option<String>,
-    /// API key. If None, uses OPENAI_API_KEY env var.
+    /// The user's saved OpenAI key. If None, the router's platform provider is used.
     pub api_key: Option<String>,
+    /// Whose key `api_key` is, which decides what a refused key tells the user to do.
+    pub api_key_source: ApiKeySource,
     /// Operator policy governing what this orchestration is allowed to do —
     /// see [`DelegationPolicy`]. `None` imposes nothing, which is what an
     /// unconfigured deployment runs with.
@@ -385,6 +430,10 @@ pub struct OrchestratorConfig {
     /// the same for every leg — resolving it once per turn is what keeps a
     /// fan-out from paying for it N times.
     pub outbound_prefix: Option<String>,
+    pub attachment_note: Option<String>,
+    /// Whether each agent call carries the current date and time as its own part, after
+    /// `outbound_prefix` (`nasiko_types::agent_clock`). Off by default: the server switches it on.
+    pub clock: AgentClock,
 }
 
 impl Default for OrchestratorConfig {
@@ -397,8 +446,11 @@ impl Default for OrchestratorConfig {
             temperature: Some(0.2),
             base_url: None,
             api_key: None,
+            api_key_source: ApiKeySource::Server,
             policy: None,
             outbound_prefix: None,
+            attachment_note: None,
+            clock: AgentClock::OFF,
         }
     }
 }
@@ -562,7 +614,7 @@ impl Orchestrator {
             let response = req
                 .send()
                 .await
-                .map_err(|e| OrchestratorError::Completion(e.to_string()))?;
+                .map_err(|e| OrchestratorError::Completion(failure_text(&e)))?;
 
             // This completion's total token cost, attributed evenly across
             // however many tool calls it produced (best available granularity
@@ -629,7 +681,13 @@ impl Orchestrator {
                             arguments: tc.function.arguments.clone(),
                             result: Err(reason.clone()),
                         });
-                        results_for_context.push(blocked_note(name, &reason));
+                        let prior = record_refusal(&mut failures, name);
+                        results_for_context.push(policy_blocked_note(
+                            &self.config,
+                            name,
+                            &reason,
+                            prior,
+                        ));
                         continue;
                     }
 
@@ -653,7 +711,8 @@ impl Orchestrator {
 
                     tracing::info!(turn = turn_idx + 1, tool = %name, "executing tool");
 
-                    let result = toolset.call(name, args_str).await;
+                    let target = call_handle.as_ref().and_then(|h| h.target());
+                    let result = with_call_target(target, toolset.call(name, args_str)).await;
                     finish_agent_call(call_handle, &result);
 
                     // A pause is not a tool outcome to trace or reason over — stop the whole run
@@ -795,7 +854,7 @@ impl Orchestrator {
         file_parts: Vec<nasiko_types::a2a::Part>,
     ) -> mpsc::Receiver<OrchestratorEvent> {
         let (tx, rx) = mpsc::channel(64);
-        let query = user_query.to_string();
+        let query = query_with_attachment_note(user_query, &file_parts);
 
         // Pre-serialize file parts to JSON once; the A2aTool will include them
         // in every agent call's message.parts alongside the text part.
@@ -851,7 +910,9 @@ impl Orchestrator {
         for agent in agents {
             let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
                 .with_policy(self.config.policy.clone())
-                .with_outbound_prefix(self.config.outbound_prefix.clone());
+                .with_outbound_prefix(self.config.outbound_prefix.clone())
+                .with_clock(self.config.clock)
+                .with_attachment_note(self.config.attachment_note.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
         }
@@ -917,7 +978,9 @@ async fn run_stream_inner(
             .with_progress(tx.clone())
             .with_file_parts(file_parts.to_vec())
             .with_policy(config.policy.clone())
-            .with_outbound_prefix(config.outbound_prefix.clone());
+            .with_outbound_prefix(config.outbound_prefix.clone())
+            .with_clock(config.clock)
+            .with_attachment_note(config.attachment_note.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);
     }
@@ -1013,10 +1076,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: e.to_string(),
+                            message: failure_text(&e),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(e.to_string()));
+                    return Err(OrchestratorError::Completion(failure_text(&e)));
                 }
             };
 
@@ -1111,6 +1174,7 @@ async fn run_stream_inner(
                         guard,
                         tx,
                         turn_idx,
+                        &mut failures,
                         &mut results_for_context,
                     )
                     .await
@@ -1140,7 +1204,8 @@ async fn run_stream_inner(
                         .await;
 
                     let started = std::time::Instant::now();
-                    let result = toolset.call(name, args_str).await;
+                    let target = call_handle.as_ref().and_then(|h| h.target());
+                    let result = with_call_target(target, toolset.call(name, args_str)).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
                     finish_agent_call(call_handle, &result);
 
@@ -1274,10 +1339,10 @@ async fn run_stream_inner(
                 Err(e) => {
                     let _ = tx
                         .send(OrchestratorEvent::Error {
-                            message: e.to_string(),
+                            message: failure_text(&e),
                         })
                         .await;
-                    return Err(OrchestratorError::Completion(e.to_string()));
+                    return Err(OrchestratorError::Completion(failure_text(&e)));
                 }
             };
 
@@ -1299,10 +1364,10 @@ async fn run_stream_inner(
                     Err(e) => {
                         let _ = tx
                             .send(OrchestratorEvent::Error {
-                                message: e.to_string(),
+                                message: failure_text(&e),
                             })
                             .await;
-                        return Err(OrchestratorError::Completion(e.to_string()));
+                        return Err(OrchestratorError::Completion(failure_text(&e)));
                     }
                 }
             }
@@ -1370,6 +1435,7 @@ async fn run_stream_inner(
                         guard,
                         tx,
                         turn_idx,
+                        &mut failures,
                         &mut results_for_context,
                     )
                     .await
@@ -1399,7 +1465,8 @@ async fn run_stream_inner(
                         .await;
 
                     let started = std::time::Instant::now();
-                    let result = toolset.call(name, args_str).await;
+                    let target = call_handle.as_ref().and_then(|h| h.target());
+                    let result = with_call_target(target, toolset.call(name, args_str)).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
                     finish_agent_call(call_handle, &result);
 
@@ -1535,6 +1602,51 @@ fn estimate_tokens_from_chars(chars: usize) -> u64 {
     (chars as u64).div_ceil(4)
 }
 
+/// The query an upload turn reasons over: the user's words plus one line naming the attached
+/// files. The model never sees the file parts themselves (they ride along on every agent call), so
+/// without the note it asks the user for a file it already has (Q2-2). Lives only in this turn's
+/// in-memory context; stored chat history keeps the user's words as sent.
+fn query_with_attachment_note(user_query: &str, file_parts: &[nasiko_types::a2a::Part]) -> String {
+    if file_parts.is_empty() {
+        return user_query.to_string();
+    }
+    let names: Vec<&str> = file_parts
+        .iter()
+        .map(|part| part.filename.as_deref().unwrap_or("unnamed"))
+        .collect();
+    format!(
+        "{user_query}\n\n[Attached files ({}): {}. They are passed automatically to any agent you call.]",
+        file_parts.len(),
+        names.join(", ")
+    )
+}
+
+#[cfg(test)]
+mod attachment_note_tests {
+    use super::query_with_attachment_note;
+    use nasiko_types::a2a::file_part;
+
+    #[test]
+    fn a_turn_without_files_keeps_the_query_unchanged() {
+        assert_eq!(
+            query_with_attachment_note("summarise it", &[]),
+            "summarise it"
+        );
+    }
+
+    #[test]
+    fn a_turn_with_files_names_each_one() {
+        let parts = [
+            file_part(b"a".to_vec(), Some("report.pdf".into()), None),
+            file_part(b"b".to_vec(), None, None),
+        ];
+        let query = query_with_attachment_note("summarise it", &parts);
+        assert!(query.starts_with("summarise it\n\n"));
+        assert!(query.contains("Attached files (2): report.pdf, unnamed."));
+        assert!(query.contains("passed automatically to any agent you call"));
+    }
+}
+
 #[cfg(test)]
 mod tokens_per_tool_call_tests {
     use super::tokens_per_tool_call;
@@ -1628,6 +1740,95 @@ mod spend_tests {
         assert!(
             matches!(&result, Err(OrchestratorError::Refused(r)) if r == "budget used up"),
             "{result:?}"
+        );
+    }
+
+    /// Refuses every call, and invites one re-assessment on the first refusal.
+    #[derive(Debug)]
+    struct RefusesEverything;
+
+    impl DelegationPolicy for RefusesEverything {
+        fn check_tool_call(&self, _arguments: &serde_json::Value) -> Result<(), String> {
+            Err("confidence 70% is below the 80% required".to_string())
+        }
+        fn refusal_guidance(&self, prior_refusals: usize) -> Option<String> {
+            (prior_refusals == 0).then(|| "Call it once more if it fits.".to_string())
+        }
+    }
+
+    /// The model keeps asking for an agent the bar refuses. It is told, once, that it may
+    /// re-assess; then not to retry; and the third ask is cut off by the retry limit. The agent
+    /// is never called.
+    #[tokio::test]
+    async fn a_refused_agent_gets_one_reassessment_then_is_closed() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let guided = Arc::new(AtomicBool::new(false));
+        let told_not_to_retry = Arc::new(AtomicBool::new(false));
+        let cut_off = Arc::new(AtomicBool::new(false));
+        let seen = (guided.clone(), told_not_to_retry.clone(), cut_off.clone());
+
+        let mut llm = mockito::Server::new_async().await;
+        llm.mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(mock_tool_call_completion())
+            .match_request(move |request| {
+                let body = request.utf8_lossy_body().unwrap_or_default();
+                if body.contains("Call it once more if it fits.") {
+                    seen.0.store(true, Ordering::SeqCst);
+                }
+                if body.contains("Do NOT retry this agent") {
+                    seen.1.store(true, Ordering::SeqCst);
+                }
+                if body.contains("already failed 2 times") {
+                    seen.2.store(true, Ordering::SeqCst);
+                }
+                true
+            })
+            .expect(5)
+            .create_async()
+            .await;
+        let mut agent = mockito::Server::new_async().await;
+        let agent_mock = agent
+            .mock("POST", "/")
+            .with_status(200)
+            .expect(0)
+            .create_async()
+            .await;
+
+        let config = OrchestratorConfig {
+            base_url: Some(llm.url()),
+            api_key: Some("test-key".into()),
+            max_turns: 5,
+            policy: Some(Arc::new(RefusesEverything)),
+            ..Default::default()
+        };
+        let mut o = Orchestrator::new(
+            config,
+            RegistrySource::Static(vec![test_agent(&agent.url())]),
+        )
+        .with_a2a_client(A2aClient::new());
+        o.init()
+            .await
+            .expect("a static registry always initialises");
+        let result = o.run("please help").await;
+
+        agent_mock.assert_async().await;
+        assert!(
+            matches!(result, Err(OrchestratorError::MaxTurnsExceeded(5))),
+            "{result:?}"
+        );
+        assert!(
+            guided.load(Ordering::SeqCst),
+            "first refusal should invite a re-assessment"
+        );
+        assert!(
+            told_not_to_retry.load(Ordering::SeqCst),
+            "second refusal should say not to retry"
+        );
+        assert!(
+            cut_off.load(Ordering::SeqCst),
+            "third ask should hit the retry limit"
         );
     }
 
@@ -1982,6 +2183,23 @@ mod policy_seam_tests {
         }
     }
 
+    /// A policy that guides only the first refusal, like a confidence bar does.
+    #[derive(Debug)]
+    struct GuidingPolicy;
+
+    impl DelegationPolicy for GuidingPolicy {
+        fn refusal_guidance(&self, prior_refusals: usize) -> Option<String> {
+            (prior_refusals == 0).then(|| "Call it once more if it fits.".to_string())
+        }
+    }
+
+    fn with_guiding_policy() -> OrchestratorConfig {
+        OrchestratorConfig {
+            policy: Some(Arc::new(GuidingPolicy)),
+            ..Default::default()
+        }
+    }
+
     fn with_policy() -> OrchestratorConfig {
         OrchestratorConfig {
             policy: Some(Arc::new(StubPolicy)),
@@ -2091,6 +2309,40 @@ mod policy_seam_tests {
             0,
         );
         assert_eq!(out, "stub replaced the answer");
+    }
+
+    #[test]
+    fn a_policys_guidance_replaces_the_no_retry_note_on_the_first_refusal() {
+        let note = policy_blocked_note(&with_guiding_policy(), "call_agent_x", "too low", 0);
+        assert_eq!(
+            note,
+            "[call_agent_x] BLOCKED: too low. Call it once more if it fits."
+        );
+        assert!(!note.contains("Do NOT retry"));
+    }
+
+    #[test]
+    fn later_refusals_and_policies_without_guidance_keep_the_no_retry_note() {
+        for note in [
+            policy_blocked_note(&with_guiding_policy(), "call_agent_x", "too low", 1),
+            policy_blocked_note(&with_policy(), "call_agent_x", "too low", 0),
+            policy_blocked_note(&OrchestratorConfig::default(), "call_agent_x", "too low", 0),
+        ] {
+            assert_eq!(note, blocked_note("call_agent_x", "too low"));
+        }
+    }
+
+    /// One re-assessment, then the agent is closed to this request: refusals count toward the same
+    /// limit as failures, so a model that keeps retrying is stopped rather than looping to the
+    /// turn cap.
+    #[test]
+    fn two_refusals_close_the_agent_to_the_request() {
+        let mut failures = HashMap::new();
+        assert_eq!(record_refusal(&mut failures, "call_agent_x"), 0);
+        assert!(!gave_up_on(&failures, "call_agent_x"));
+        assert_eq!(record_refusal(&mut failures, "call_agent_x"), 1);
+        assert!(gave_up_on(&failures, "call_agent_x"));
+        assert!(!gave_up_on(&failures, "call_agent_y"));
     }
 
     /// The gate reads raw arguments, before deserialization, so a rejection is

@@ -31,9 +31,12 @@ struct ClaimedEvent {
     otlp_log_delivered_at: Option<DateTime<Utc>>,
 }
 
-pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String) {
+/// Exports pending receipts forever. `accept_chat_history` is the server's
+/// `CodingAgentIngestConfig::accept_chat_history`: off, a receipt stored before it was
+/// turned off is exported without its chat history.
+pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String, accept_chat_history: bool) {
     loop {
-        match export_once(&db, &http, &endpoint).await {
+        match export_batch(&db, &http, &endpoint, accept_chat_history).await {
             Ok(0) => tokio::time::sleep(POLL_INTERVAL).await,
             Ok(_) => {}
             Err(error) => {
@@ -44,12 +47,23 @@ pub async fn run(db: PgPool, http: reqwest::Client, endpoint: String) {
     }
 }
 
-/// Claims and exports one bounded batch. Claims are committed before any HTTP
-/// call; the claim UUID prevents a stale worker from finalizing a reclaimed row.
+/// [`export_batch`] on a server that keeps chat history (the open-source default).
 pub async fn export_once(
     db: &PgPool,
     http: &reqwest::Client,
     endpoint: &str,
+) -> anyhow::Result<usize> {
+    export_batch(db, http, endpoint, true).await
+}
+
+/// Claims and exports one bounded batch. Claims are committed before any HTTP
+/// call; the claim UUID prevents a stale worker from finalizing a reclaimed row.
+/// Without `accept_chat_history`, each receipt is exported without its chat history.
+pub async fn export_batch(
+    db: &PgPool,
+    http: &reqwest::Client,
+    endpoint: &str,
+    accept_chat_history: bool,
 ) -> anyhow::Result<usize> {
     let claimed = claim_batch(db).await?;
     let count = claimed.len();
@@ -61,7 +75,11 @@ pub async fn export_once(
                 return Ok::<(), anyhow::Error>(());
             }
         };
-        let mut event = event;
+        let mut event = if accept_chat_history {
+            event
+        } else {
+            event.without_content()
+        };
         event.session.id = row.session_id.clone();
         relabel_from_router(db, row.agent_id, &mut event).await;
         let delivery = async {
@@ -195,7 +213,7 @@ async fn claim_batch(db: &PgPool) -> Result<Vec<ClaimedEvent>, sqlx::Error> {
 /// developer's machine, while `token_usage` is stamped by the server, so the two clocks
 /// can disagree slightly. Kept far below the gap between consecutive turns, so a
 /// neighbouring turn's calls are never pulled in.
-const ROUTER_MATCH_TOLERANCE: chrono::Duration = chrono::Duration::seconds(5);
+pub(crate) const ROUTER_MATCH_TOLERANCE: chrono::Duration = chrono::Duration::seconds(5);
 
 /// Replace each reported LLM call's `provider`/`model` with what the router actually
 /// used, when the control plane served this turn.
@@ -262,12 +280,12 @@ async fn routed_labels(
 ) -> Result<Option<(String, String)>, sqlx::Error> {
     sqlx::query_as(
         r#"SELECT tu.provider, tu.model
-           FROM token_usage tu
+           FROM trace_usage tu
            WHERE tu.agent_id = $1
-             AND tu.created_at >= $2
-             AND tu.created_at <= $3
+             AND tu.started_at >= $2
+             AND tu.started_at <= $3
            GROUP BY tu.provider, tu.model
-           ORDER BY count(*) DESC, max(tu.created_at) DESC
+           ORDER BY count(*) DESC, max(tu.started_at) DESC
            LIMIT 1"#,
     )
     .bind(agent_id)
@@ -689,6 +707,52 @@ pub(crate) fn bounded_json(value: &Value) -> String {
         &serde_json::to_string(value).unwrap_or_else(|_| "null".into()),
         MAX_CONTENT_CHARS,
     )
+}
+
+/// Upsert one `tool_calls` row per turn tool call, inside the ingest transaction.
+/// Bodies (`arguments`, `output`) only under the content capture policy.
+pub(crate) async fn write_tool_calls(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    event: &CodingAgentEventV1,
+    session_id: &str,
+    agent_id: uuid::Uuid,
+    user_id: uuid::Uuid,
+    with_bodies: bool,
+) -> Result<(), sqlx::Error> {
+    let trace_id = trace_id_for_event(event);
+    for tool in &event.turn.tool_calls {
+        let (started_at, ended_at) = tool_span_window(event, tool);
+        let duration = tool
+            .duration_ms
+            .map(|d| d as i64)
+            .unwrap_or_else(|| (ended_at - started_at).num_milliseconds().max(0));
+        sqlx::query(
+            "INSERT INTO tool_calls (trace_id, call_id, user_id, agent_id, agent_name, session_id,
+                 tool_name, tool_kind, status, error, arguments, output, duration_ms, started_at)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+             ON CONFLICT (trace_id, call_id) DO UPDATE SET
+                 status = EXCLUDED.status, error = EXCLUDED.error,
+                 arguments = EXCLUDED.arguments, output = EXCLUDED.output,
+                 duration_ms = EXCLUDED.duration_ms, started_at = EXCLUDED.started_at",
+        )
+        .bind(&trace_id)
+        .bind(&tool.id)
+        .bind(user_id)
+        .bind(agent_id)
+        .bind(&event.source.agent_name)
+        .bind(session_id)
+        .bind(&tool.name)
+        .bind(&tool.kind)
+        .bind(tool_status(tool.status))
+        .bind(&tool.error)
+        .bind(with_bodies.then(|| tool.arguments.clone()).flatten())
+        .bind(with_bodies.then(|| tool.output.clone()).flatten())
+        .bind(duration)
+        .bind(started_at)
+        .execute(&mut **tx)
+        .await?;
+    }
+    Ok(())
 }
 
 pub(crate) fn trace_id_for_event(event: &CodingAgentEventV1) -> String {

@@ -6,10 +6,24 @@
  *   refresh (someone may have rewritten it) and when the page closes.
  * - Delete asks inline, and says which of your router configs lose their key (the server doesn't check, ST-7).
  * - Add is an inline row: `POST` upserts, so an existing name gets the new value.
+ * - Every agent the user owns is deployed with these; an agent's own secret of the same name wins (NAS-1458).
+ * - "How secrets work" says who uses them, how to change one and when a change applies (NAS-1489).
  */
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useQuery } from '@tanstack/react-query'
-import { Copy, Eye, EyeOff, KeyRound, Lock, Plus, Trash2 } from 'lucide-react'
+import { Link } from '@tanstack/react-router'
+import {
+  Bot,
+  Copy,
+  Eye,
+  EyeOff,
+  KeyRound,
+  Lock,
+  PencilLine,
+  Plus,
+  RefreshCw,
+  Trash2,
+} from 'lucide-react'
 import { useEffect, useId, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { toast } from 'sonner'
@@ -18,6 +32,12 @@ import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { PanelError } from '@nasiko/ui/composites/panel'
 import { EmptyState } from '@nasiko/ui/composites/state-card'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@nasiko/ui/primitives/accordion'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Card } from '@nasiko/ui/primitives/card'
 import { Field, FieldError, FieldLabel } from '@nasiko/ui/primitives/field'
@@ -111,6 +131,7 @@ export function SecretsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title={copy.title} description={copy.sub} />
+      <HowSecretsWork />
       {secrets.isPending ? (
         <PageLoader label={copy.loading} />
       ) : secrets.isError ? (
@@ -224,6 +245,61 @@ export function SecretsPage() {
         {copy.note}
       </p>
     </div>
+  )
+}
+
+const HOW = [
+  ['agents', Bot],
+  ['change', PencilLine],
+  ['apply', RefreshCw],
+] as const
+
+/** Guidance in one accordion, open by default: the same hairline card as the list below and the router's "How routing works". */
+function HowSecretsWork() {
+  return (
+    <Accordion defaultValue={['how']} className="rounded-lg border border-border bg-card">
+      <AccordionItem value="how">
+        <AccordionTrigger className="group items-center rounded-lg px-4 py-3 hover:no-underline [&>svg]:translate-y-0">
+          <span className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5">
+            <span>{copy.howTitle}</span>
+            <span className="text-xs font-normal text-muted-foreground group-data-panel-open:hidden">
+              {copy.howHint}
+            </span>
+          </span>
+        </AccordionTrigger>
+        <AccordionContent className="@container border-t border-border px-4 py-4">
+          <ul className="grid gap-4 @2xl:grid-cols-3 @2xl:gap-6">
+            {HOW.map(([key, Icon]) => (
+              <li key={key} className="flex gap-3 @2xl:flex-col @2xl:gap-2.5">
+                <span
+                  aria-hidden
+                  className="flex size-8 shrink-0 items-center justify-center rounded-lg border border-border bg-muted text-foreground"
+                >
+                  <Icon className="size-4" />
+                </span>
+                <div className="min-w-0 space-y-1">
+                  <p className="font-medium">{copy.how[key].title}</p>
+                  <p className="text-xs text-pretty text-muted-foreground">
+                    {copy.how[key].detail}
+                    {key === 'agents' ? (
+                      <>
+                        {' '}
+                        <Link
+                          to="/agents/mine"
+                          className="font-medium text-foreground underline underline-offset-4"
+                        >
+                          {copy.agentsLink}
+                        </Link>
+                      </>
+                    ) : null}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </AccordionContent>
+      </AccordionItem>
+    </Accordion>
   )
 }
 

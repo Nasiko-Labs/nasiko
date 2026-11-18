@@ -38,6 +38,7 @@ import {
   useDashboard,
   useCalendar,
   useDay,
+  useModelRouting,
   useProviders,
   useSavings,
   useTimeseries,
@@ -65,6 +66,7 @@ import { scrollToSection, sectionDomId } from './sections'
 import { useSavingsTrend } from '@nasiko/features/optimization/api'
 import { MonthHero } from './components/MonthHero'
 import { copy as optimizationCopy } from '@nasiko/features/optimization/copy'
+import { ModelRoutingCard } from './components/ModelRoutingCard'
 import { OptimisationPanel } from './components/OptimisationPanel'
 import { SavingsHighlight } from './components/SavingsHighlight'
 import { summarizeOptimisation } from './optimisation'
@@ -146,10 +148,19 @@ export function TokenopsPage({
   const lastMonth = utcMonthStart(now, -1)
   const calThis = useCalendar(monthKey(thisMonth), filters, ready)
   const calLast = useCalendar(monthKey(lastMonth), filters, ready)
+  // The month card follows the window: the month it ends in (user report 2026-11-05: picking Last month left the card
+  // on this month). On this month the keys are the same as above, so nothing is read twice.
+  const heroMonth = utcMonthStart(new Date(Math.min(now.getTime(), win.end.getTime() - 1)))
+  const heroCurrent = monthKey(heroMonth) === monthKey(thisMonth)
+  const calHero = useCalendar(monthKey(heroMonth), filters, ready)
+  const calHeroPrev = useCalendar(monthKey(utcMonthStart(heroMonth, -1)), filters, ready)
   const day = useDay(search.day, filters, ready)
   const providers = useProviders(ready)
   // CX-V3 (proposed): history selection's savings, the /optimization lead's read under the same key.
   const history = useSavingsTrend(win, ready)
+  // NAS-1263: which precedence level and tier the LLM router served each call by. `null` on a
+  // server without the endpoint, which the card renders as nothing.
+  const routing = useModelRouting(win, filters, ready)
   const traces = useTopTraces(tracesWin, filters, ready && !!search.traces)
 
   // Agent filter options: the unfiltered dashboard (same cache entry when no filter is set).
@@ -200,6 +211,17 @@ export function TokenopsPage({
         : null,
     [calPending, calThis.data, calLast.data, now],
   )
+  const heroPending =
+    calHero.isPending ||
+    calHeroPrev.isPending ||
+    otherMonth(calHero, monthKey(heroMonth)) ||
+    otherMonth(calHeroPrev, monthKey(utcMonthStart(heroMonth, -1)))
+  // A past month is summarised as of its last instant: all of it elapsed, nothing left to forecast.
+  const heroAsOf = heroCurrent ? now.getTime() : utcMonthStart(heroMonth, 1).getTime()
+  const heroSummary =
+    !heroPending && calHero.data && calHeroPrev.data
+      ? summarizeMonth(calHero.data.days, calHeroPrev.data.days, new Date(heroAsOf))
+      : null
   // One page loader until the first paint's reads settle (data or error: a failed read renders its panel's error), in
   // place of the panels' skeletons. Latched: a later window or filter change keeps the panels' own loading states.
   const coldPending =
@@ -569,22 +591,23 @@ export function TokenopsPage({
               {/* `layout`: when the day panel opens above, the month glides down instead of jumping. */}
               <m.div layout="position" transition={transitions.disclosure}>
                 <MonthHero
-                  summary={summary}
+                  summary={heroSummary}
+                  current={heroCurrent}
                   unpricedCalls={
                     win.preset === 'mtd' && noFilters && dash.data && !dash.isPlaceholderData
                       ? unpriced
                       : null
                   }
-                  days={calPending ? undefined : calThis.data?.days}
-                  monthStart={thisMonth}
+                  days={heroPending ? undefined : calHero.data?.days}
+                  monthStart={heroMonth}
                   today={today}
                   selectedDay={search.day}
                   onSelectDay={openDay}
-                  loading={calPending}
-                  error={calThis.error ?? calLast.error}
+                  loading={heroPending}
+                  error={calHero.error ?? calHeroPrev.error}
                   onRetry={() => {
-                    void calThis.refetch()
-                    void calLast.refetch()
+                    void calHero.refetch()
+                    void calHeroPrev.refetch()
                   }}
                 />
               </m.div>
@@ -681,6 +704,11 @@ export function TokenopsPage({
                         search={search}
                       />
                     }
+                  />
+                  <ModelRoutingCard
+                    data={routing.data}
+                    loading={routing.isPending}
+                    filtered={!noFilters}
                   />
                   {/* P3 (plans/feat-optimization-page.md): the trend, the agents and the fixes live on Optimization,
                       opened on this window (R7A: the two pages share the window keys). */}
@@ -879,11 +907,6 @@ function FirstRun() {
           action={
             <div className="flex w-full flex-col gap-3 rounded-md border bg-muted/40 p-4 text-left text-sm text-muted-foreground">
               <ol className="flex list-decimal flex-col gap-1.5 pl-5">
-                <li>
-                  Set <code className="font-mono text-foreground">TEMPO_URL</code> and{' '}
-                  <code className="font-mono text-foreground">LOKI_URL</code> on nasiko-server and
-                  run the OTel collector.
-                </li>
                 <li>Deploy an agent and send it a few requests.</li>
                 <li>
                   Spend appears within a couple of minutes (the trace materializer runs every 120
@@ -891,14 +914,17 @@ function FirstRun() {
                 </li>
               </ol>
               <p className="border-t pt-3 text-xs text-pretty">
-                Developing locally? Run <code className="font-mono">npm run seed:live</code> against
-                your OSS stack, or use mock mode.
+                Self-hosting? Set <code className="font-mono">TEMPO_URL</code> and{' '}
+                <code className="font-mono">LOKI_URL</code> on nasiko-server and run the OTel
+                collector. Developing locally? Run{' '}
+                <code className="font-mono">npm run seed:live</code> against your OSS stack, or use
+                mock mode.
               </p>
             </div>
           }
         >
-          TokenOps reads spend from agent traces. Nothing has arrived in the last two months, which
-          usually means the telemetry pipeline isn't connected yet.
+          TokenOps reads spend from agent traces. Nothing has arrived in the last two months: no
+          agent has served a request here yet, or the telemetry pipeline isn't connected.
         </EmptyState>
       </ImportingOr>
     </div>

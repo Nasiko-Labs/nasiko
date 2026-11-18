@@ -3,12 +3,14 @@
  * chip, the key hint and Send inside it. Locked means Send is disabled; the textarea stays editable and
  * Enter keeps the draft. IME composition Enter is ignored. While a turn streams, Stop receiving takes
  * Send's slot (direct chats only). While a request is pending, Go to request and Start a new chat show
- * inside the card. `/` focuses the box when nothing else takes typing.
+ * inside the card. `/` focuses the box when nothing else takes typing. Where the browser can record, a mic dictates
+ * into the box at the cursor (DictateButton).
  */
 import { ArrowUp, Paperclip, Square } from 'lucide-react'
 import {
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   type ClipboardEvent,
@@ -23,9 +25,11 @@ import { Textarea } from '@nasiko/ui/primitives/textarea'
 import { fmtBytes } from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
 import type { PendingFile } from '../attachments'
-import { copy } from '../copy'
+import { copy, type ErrorKey } from '../copy'
+import { dictationErrorText, insertAt } from '../dictation'
 import { tuning } from '../tuning'
 import { AttachmentStrip } from './Attachments'
+import { DictateButton } from './DictateButton'
 import { CHAT_COLUMN } from './turnStyles'
 
 export type ComposerMode =
@@ -163,6 +167,25 @@ export function Composer({
     take(files)
   }
 
+  // Dictation goes in at the cursor; the caret is placed once the parent has rendered the new value.
+  const canDictate = typeof MediaRecorder !== 'undefined'
+  const [dictationError, setDictationError] = useState<ErrorKey | null>(null)
+  const caret = useRef<number | null>(null)
+  const dictated = (text: string) => {
+    const el = box.current
+    if (!el) return
+    const next = insertAt(el.value, el.selectionStart, el.selectionEnd, text)
+    caret.current = next.caret
+    onChange(next.value)
+  }
+  useLayoutEffect(() => {
+    const at = caret.current
+    if (at === null) return
+    caret.current = null
+    box.current?.focus()
+    box.current?.setSelectionRange(at, at)
+  }, [value])
+
   return (
     <form
       className={
@@ -275,7 +298,9 @@ export function Composer({
                   aria-label={copy.attach}
                   title={copy.attachHint(
                     tuning.MAX_ATTACHMENTS,
-                    fmtBytes(tuning.ATTACHMENT_MAX_BYTES),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.image),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.text),
+                    fmtBytes(tuning.ATTACHMENT_LIMITS.other),
                   )}
                   onClick={() => picker.current?.click()}
                 >
@@ -283,6 +308,7 @@ export function Composer({
                 </Button>
               </>
             ) : null}
+            {canDictate ? <DictateButton onText={dictated} onError={setDictationError} /> : null}
             {targetSlot}
             <span
               id="chat-composer-keys"
@@ -320,6 +346,11 @@ export function Composer({
         {reason ? (
           <p id="chat-composer-hint" className="mt-1.5 px-1 text-xs text-muted-foreground">
             {reason}
+          </p>
+        ) : null}
+        {dictationError ? (
+          <p className="mt-1.5 px-1 text-xs text-destructive" data-testid="dictation-error">
+            {dictationErrorText(dictationError)}
           </p>
         ) : null}
         {note ? (

@@ -514,24 +514,14 @@ export function mockRepos(agents: AgentsState, now: number) {
 // ── Registry import (catalog/import.rs import_registry) ───────────────────────────────────────
 
 /**
- * A finished synchronous import: the agent row (new, or the existing one updated) and, for an OpenRuntime agent package
- * (anything under `<host>/nasiko/`), a successful build; a plain image is pulled and has no build. `running: false` is the
- * server's 201 with `container_name: null` (the deploy failed, D-7).
+ * The agent row an import writes first, seconds in and minutes before it answers: new, or the existing one, `deploying`
+ * either way, as `catalog/import.rs` writes it (NAS-1450).
  */
-export function completeImport(
-  state: DeployState,
+export function registerImport(
   agents: AgentsState,
-  opts: {
-    name: string
-    version: string
-    image: string
-    ownerId: string
-    now: number
-    built: boolean
-    running: boolean
-  },
+  opts: { name: string; version: string; ownerId: string; now: number },
+  n = seq++,
 ) {
-  const n = seq++
   let agent = agents.agents.find((a) => a.name === opts.name && !a.deleted)
   if (!agent) {
     agent = {
@@ -564,6 +554,30 @@ export function completeImport(
     }
     agents.agents.push(agent)
   }
+  agent.status = 'deploying'
+  return agent
+}
+
+/**
+ * A finished synchronous import: the agent row (new, or the existing one updated) and, for an Open Runtime agent package
+ * (anything under `<host>/nasiko/`), a successful build; a plain image is pulled and has no build. `running: false` is the
+ * server's 201 with `container_name: null` (the deploy failed, D-7).
+ */
+export function completeImport(
+  state: DeployState,
+  agents: AgentsState,
+  opts: {
+    name: string
+    version: string
+    image: string
+    ownerId: string
+    now: number
+    built: boolean
+    running: boolean
+  },
+) {
+  const n = seq++
+  const agent = registerImport(agents, opts, n)
   const id = opts.built ? buildId(n) : null
   if (id) {
     state.builds.push({

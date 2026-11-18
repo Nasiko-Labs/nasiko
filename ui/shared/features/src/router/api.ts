@@ -7,6 +7,7 @@
  *   can't abandon step 2. Results are always re-read, never written into the cache optimistically.
  * - Key-bearing mutations keep nothing: gcTime 0 and reset after settle (eng #5).
  */
+import { productEvent } from '@nasiko/app-core/analytics'
 import {
   useMutation,
   useQueries,
@@ -37,6 +38,7 @@ import type {
   CustomProvider,
   LlmConfig,
   ModelMapping,
+  MyLlmConfig,
   SecretEntry,
   TestCustomProviderBody,
   TestCustomProviderResult,
@@ -48,6 +50,8 @@ export const routerKeys = {
   configs: ['router', 'configs'] as const,
   agent: (id: string) => ['router', 'agent', id] as const,
   agents: ['router', 'agent'] as const,
+  // Not under `agents`: those keys' predicates read their data as `AgentRouting`.
+  mine: (id: string) => ['router', 'mine', id] as const,
   secrets: ['router', 'secrets'] as const,
   registry: ['router', 'registry'] as const,
   custom: ['router', 'custom'] as const,
@@ -163,6 +167,35 @@ export const routingQuery = (id: string) => ({
   refetchOnWindowFocus: false,
 })
 
+/** The viewer's own config choice on an agent they do not own (the owner gets 400). */
+export const mineQuery = (id: string) => ({
+  queryKey: routerKeys.mine(id),
+  queryFn: ({ signal }: { signal: AbortSignal }) =>
+    routerLimiter(signal, () =>
+      apiData<MyLlmConfig>(`/api/agents/${id}/my-llm-config`, { signal }),
+    ),
+  staleTime: ROUTING_STALE_MS,
+  refetchOnWindowFocus: false,
+})
+
+/** PUT a config for a shared agent, or DELETE with `null`; pending until the row's re-read lands (no flicker back). */
+export function useSetMyConfig(agentId: string) {
+  const qc = useQueryClient()
+  const path = `/api/agents/${agentId}/my-llm-config`
+  return useMutation({
+    mutationFn: (configId: string | null) =>
+      configId
+        ? apiData<MyLlmConfig>(path, {
+            method: 'PUT',
+            headers: json,
+            body: JSON.stringify({ llm_config_id: configId }),
+          })
+        : // DELETE answers `data: null`, which apiData rejects: read it with apiFetch.
+          apiFetch<unknown>(path, { method: 'DELETE' }),
+    onSettled: () => qc.invalidateQueries({ queryKey: routerKeys.mine(agentId) }),
+  })
+}
+
 /**
  * The routing sheet's read: always re-fetched when the sheet opens, since row reads don't refetch on focus and a
  * plan built on a stale `current` could undo a change made in another tab or the CLI.
@@ -239,6 +272,9 @@ export function useSaveConfig() {
             body: JSON.stringify(v.body),
           }),
     gcTime: 0,
+    onSuccess: (_data, v) => {
+      if (v.body.secret_value) productEvent('llm_key_saved', { mode: v.mode })
+    },
     onSettled: (data, _err, v) => {
       const hadKey = !!v.body.secret_value
       afterConfigWrite(

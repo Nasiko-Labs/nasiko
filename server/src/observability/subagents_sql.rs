@@ -48,7 +48,7 @@ pub(crate) fn coding_totals(session: &str) -> String {
                      AND m.external_turn_id IS NOT NULL) priced
             CROSS JOIN LATERAL (
                   SELECT sum(u.cost_usd)::float8 AS cost
-                    FROM trace_usage u
+                    FROM (SELECT trace_id, session_id, input_tokens::bigint AS input_tokens, output_tokens::bigint AS output_tokens, cache_read_tokens::bigint AS cache_read_tokens, cache_creation_tokens::bigint AS cache_creation_tokens, cost_usd, started_at, latency_ms::bigint AS latency_ms, error_count FROM trace_usage UNION ALL SELECT trace_id, session_id, tokens, 0::bigint, 0::bigint, 0::bigint, cost_usd, first_at, max_latency_ms, errors::int FROM trace_totals) u
                    WHERE u.session_id = {session}) traced"#
     )
 }
@@ -98,6 +98,8 @@ impl SubagentTotals {
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
 pub struct SubagentRun {
     pub session_id: String,
+    /// What the harness called the run, from its `agent-<id>.meta.json` description.
+    pub title: Option<String>,
     /// The subagent's kind as the coding agent names it (e.g. "Explore").
     pub subagent_type: Option<String>,
     /// The parent's tool call that spawned it.
@@ -121,6 +123,7 @@ pub struct SessionLineage {
 #[derive(sqlx::FromRow)]
 struct ChildRow {
     session_id: String,
+    title: Option<String>,
     subagent_type: Option<String>,
     spawn_tool_call_id: Option<String>,
     created_at: DateTime<Utc>,
@@ -136,6 +139,10 @@ impl ChildRow {
         let started = self.started.unwrap_or(self.created_at);
         SubagentRun {
             session_id: self.session_id,
+            // The ingest placeholder for an untitled run is not a title.
+            title: self
+                .title
+                .filter(|t| t != crate::coding_agent_telemetry::CODING_SESSION_PLACEHOLDER),
             subagent_type: self.subagent_type,
             spawn_tool_call_id: self.spawn_tool_call_id,
             turns: clamp_u32(self.turns),
@@ -167,7 +174,7 @@ pub async fn session_lineage(
         return Ok(SessionLineage::default());
     };
     let sql = format!(
-        r#"SELECT c.session_id, c.subagent_type, c.spawn_tool_call_id, c.created_at,
+        r#"SELECT c.session_id, c.title, c.subagent_type, c.spawn_tool_call_id, c.created_at,
                   k.turns, k.tokens, k.cost, k.started, k.ended
              FROM chat_sessions parent
              JOIN chat_sessions c
@@ -227,6 +234,7 @@ mod tests {
         let created_at = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let run = ChildRow {
             session_id: "child".into(),
+            title: Some("Map the auth flow".into()),
             subagent_type: Some("Explore".into()),
             spawn_tool_call_id: None,
             created_at,
@@ -243,6 +251,25 @@ mod tests {
             Some(super::super::service::fmt_ts(created_at).as_str())
         );
         assert_eq!((run.turns, run.tokens), (2, Some(40)));
+        assert_eq!(run.title.as_deref(), Some("Map the auth flow"));
+    }
+
+    #[test]
+    fn the_untitled_placeholder_is_not_a_title() {
+        let run = ChildRow {
+            session_id: "child".into(),
+            title: Some("Coding session".into()),
+            subagent_type: None,
+            spawn_tool_call_id: None,
+            created_at: DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            turns: None,
+            tokens: None,
+            cost: None,
+            started: None,
+            ended: None,
+        }
+        .into_run();
+        assert_eq!(run.title, None);
     }
 
     #[test]

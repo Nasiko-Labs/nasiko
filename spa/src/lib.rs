@@ -53,7 +53,7 @@ const ENCODINGS: &[(&str, &str)] = &[("br", ".br"), ("gzip", ".gz")];
 #[derive(Clone, Copy, Debug)]
 pub struct Precompressed;
 
-/// A 404 must never be cacheable — demo.nasiko.dev sits behind Cloudflare,
+/// A 404 must never be cacheable — demo.app.nasiko.com sits behind Cloudflare,
 /// which edge-cached an uncached 404 for an observed 20 minutes, outliving its
 /// own fix.
 const NO_STORE: &str = "no-store";
@@ -68,7 +68,7 @@ const HARDENING: [(&str, &str); 5] = [
     ("x-frame-options", "DENY"),
     (
         "permissions-policy",
-        "camera=(), microphone=(), geolocation=(), payment=(), usb=()",
+        "camera=(), microphone=(self), geolocation=(), payment=(), usb=()",
     ),
     ("cross-origin-opener-policy", "same-origin-allow-popups"),
 ];
@@ -112,6 +112,8 @@ pub struct CspExtras {
     pub script_src: &'static [&'static str],
     pub connect_src: &'static [&'static str],
     pub img_src: &'static [&'static str],
+    /// Pages the app may embed in an iframe (app.nasiko.com's Contact sales embeds Calendly).
+    pub frame_src: &'static [&'static str],
 }
 
 impl Spa {
@@ -201,9 +203,10 @@ impl Spa {
             "default-src 'self'".to_owned(),
             format!("script-src {script}"),
             "style-src 'self' 'unsafe-inline'".to_owned(),
-            join("img-src 'self' data:", extras.img_src),
+            join("img-src 'self' data: blob:", extras.img_src),
             "font-src 'self'".to_owned(),
             join("connect-src 'self'", extras.connect_src),
+            join("frame-src 'self'", extras.frame_src),
             "frame-ancestors 'none'".to_owned(),
             "base-uri 'self'".to_owned(),
             "form-action 'self'".to_owned(),
@@ -735,6 +738,13 @@ mod tests {
             for (name, value) in HARDENING {
                 assert_eq!(res.headers()[name], value, "{name} on {path}");
             }
+            // Chat dictation records from the page itself, so only `self` may use the microphone.
+            let policy: &str = res.headers()["permissions-policy"].to_str().expect("ascii");
+            assert!(
+                policy.contains("microphone=(self)"),
+                "microphone on {path}: {policy}"
+            );
+            assert!(policy.contains("camera=()"), "camera on {path}: {policy}");
         }
     }
 
@@ -753,5 +763,34 @@ mod tests {
         assert!(csp.contains("frame-ancestors 'none'"));
         // Scripts stay hash-pinned even though styles are relaxed.
         assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
+    }
+
+    #[test]
+    fn frames_are_the_apps_own_unless_an_edition_names_more() {
+        let directive = |extras: &CspExtras| {
+            Spa::build_csp(&[], extras)
+                .split("; ")
+                .find(|d| d.starts_with("frame-src "))
+                .expect("frame-src directive")
+                .to_owned()
+        };
+        assert_eq!(directive(&CspExtras::default()), "frame-src 'self'");
+        assert_eq!(
+            directive(&CspExtras {
+                frame_src: &["https://calendly.com"],
+                ..Default::default()
+            }),
+            "frame-src 'self' https://calendly.com"
+        );
+    }
+
+    #[test]
+    fn images_allow_the_pages_own_object_urls_and_nothing_remote() {
+        let csp = Spa::build_csp(&[], &CspExtras::default());
+        let img_src = csp
+            .split("; ")
+            .find(|d| d.starts_with("img-src "))
+            .expect("img-src directive");
+        assert_eq!(img_src, "img-src 'self' data: blob:");
     }
 }

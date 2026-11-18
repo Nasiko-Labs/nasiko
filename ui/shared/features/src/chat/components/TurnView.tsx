@@ -1,6 +1,7 @@
 /**
- * One turn, top to bottom (plan §7.4, DS1): user message → pending request → reply → file chips
- * → activity → footer (Copy · usage · View trace) → notices. Each notice has one primary action.
+ * One turn, top to bottom (plan §7.4, DS1): user message → saved replies and answered requests →
+ * pending request → reply → file chips → activity → footer (Copy · usage · View trace) → notices.
+ * Each notice has one primary action.
  * The transcript is a plain region: nothing here is a live region; StatusAnnouncer speaks (§8.1).
  */
 import { ChevronDown, ChevronUp, FileDown, Loader2, Wrench } from 'lucide-react'
@@ -28,6 +29,7 @@ import { LINK, LINK_BUTTON, STEP_CHIP, TOUCH } from './turnStyles'
 import { RecordedCallsFor } from './RecordedCalls'
 import { StepIcon } from './StepIcon'
 import { RequestCard, type RequestActions } from './RequestCard'
+import { ReplyConnect } from './AgentApps'
 import { useNow } from '../hooks'
 
 export interface TurnHandlers {
@@ -361,7 +363,7 @@ function TurnViewBody({
     !saved.length &&
     !!turn.user &&
     routed.endFor(turn.user.id)?.kind === 'empty'
-  // A routed request is asked by the agent OpenRuntime called (its execution's agent), not OpenRuntime.
+  // A routed request is asked by the agent Open Runtime called (its execution's agent), not Open Runtime.
   const requestAgent = (r: HitlDto) => {
     const a =
       routed && r.execution.agent_id
@@ -391,10 +393,16 @@ function TurnViewBody({
     key?: string,
   ) => {
     const refusal = refusalOf(error, chatRefusal)
-    // Run again would be refused the same way and the agent did nothing wrong: there is only the why to read.
-    const { actions, links } = refusal
-      ? { actions: [], links: undefined }
-      : errorActions(error, text, agentId, handlers)
+    // Run again would be refused the same way and the agent did nothing wrong: there is only the why to read, unless
+    // the refusal says the agent just wasn't ready yet.
+    const { actions, links } = refusal?.retry
+      ? {
+          actions: [{ label: copy.retry, onClick: handlers.runAgain, primary: true }],
+          links: undefined,
+        }
+      : refusal
+        ? { actions: [], links: undefined }
+        : errorActions(error, text, agentId, handlers)
     return (
       <ErrorNotice
         key={key}
@@ -456,22 +464,6 @@ function TurnViewBody({
         </div>
       ) : null}
 
-      <PendingRequests
-        requests={pending}
-        agentName={requestAgent}
-        actions={handlers.requests}
-        focusRequestId={focusRequestId}
-      />
-      {/* A request history doesn't have yet; Go to request targets the first card only. */}
-      {liveFrame ? (
-        <RequestCard
-          id={`request-${liveFrame.id}`}
-          frame={liveFrame}
-          agentName={frameAgent}
-          actions={handlers.requests}
-        />
-      ) : null}
-
       {/* Replies and answered requests in the order they happened: a receipt sits where its
           question was asked, before the reply it unlocked (§6.8). */}
       {timeline(
@@ -522,6 +514,9 @@ function TurnViewBody({
               <p className="text-xs text-muted-foreground">{copy.receivingStopped}</p>
             ) : null}
             <FileChips files={Array.isArray(m.file_parts) ? m.file_parts : []} />
+            {latest && agentId && m.role === 'assistant' ? (
+              <ReplyConnect agentId={agentId} text={text} />
+            ) : null}
             {(() => {
               const steps = handlers.stepsFor?.(m.id)
               return steps?.length ? <StepChips steps={steps} live={false} /> : null
@@ -555,6 +550,23 @@ function TurnViewBody({
           </div>
         )
       })}
+
+      {/* After what was already answered: an agent that asks again asks after its last answer. */}
+      <PendingRequests
+        requests={pending}
+        agentName={requestAgent}
+        actions={handlers.requests}
+        focusRequestId={focusRequestId}
+      />
+      {/* A request history doesn't have yet; Go to request targets the first card only. */}
+      {liveFrame ? (
+        <RequestCard
+          id={`request-${liveFrame.id}`}
+          frame={liveFrame}
+          agentName={frameAgent}
+          actions={handlers.requests}
+        />
+      ) : null}
 
       {showLive && live ? (
         <div className="space-y-2">

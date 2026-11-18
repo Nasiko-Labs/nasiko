@@ -3,12 +3,17 @@
  * 2026-10-17). Four moods: calm (nothing needs you), a raised hand (a decision is waiting), a sign (a warning), a flare
  * (something is broken). The badge counts what is broken plus what waits on you. The bubble opens to Kiko's right and
  * walks through everything broken, every request, then the top three warnings, one at a time, each with Take me there
- * and its one action; it ends on the Control center, where the same items stay. It opens by itself once per visit, a
- * moment after the village loads, when anything is broken.
+ * and its one action; it ends on the Control center, where the same items stay. With nothing to walk through it holds
+ * the setup checklist (the canvases' setup steps): in full while nothing in the range has run, else the steps left
+ * under All quiet. It opens by itself once per visit, a moment after the village loads, when anything is broken or
+ * nothing has run yet.
  */
-import { Crosshair, X } from 'lucide-react'
-import { Button } from '@nasiko/ui/primitives/button'
+import { Link } from '@tanstack/react-router'
+import { Circle, CircleCheck, Crosshair, X } from 'lucide-react'
+import { Button, asButton } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
+import { copy as overviewCopy } from '../copy'
+import type { Step } from '../estate/setup'
 import type { Estate } from '../estate/types'
 import { KikoArt } from './art'
 import { villageCopy as copy } from './copy'
@@ -25,6 +30,8 @@ export function Kiko({
   onClose,
   onTake,
   estate,
+  steps,
+  fresh,
 }: {
   log: Village['log']
   open: boolean
@@ -34,6 +41,10 @@ export function Kiko({
   onClose(): void
   onTake(item: LogItem): void
   estate: Estate
+  /** The canvases' setup steps, in order. */
+  steps: readonly Step[]
+  /** Nothing in the range has run: the checklist is the whole message. */
+  fresh: boolean
 }) {
   const items = guideItems(log)
   const count = log.fix.length + log.approve.length
@@ -43,7 +54,7 @@ export function Kiko({
     <div className="flex items-end gap-2.5">
       <Button
         variant="ghost"
-        className="relative h-24 w-20 shrink-0 rounded-2xl border border-black/5 bg-white p-1.5 shadow-md hover:bg-white"
+        className="relative h-24 w-20 shrink-0 rounded-2xl border bg-card p-1.5 shadow-md hover:bg-card"
         aria-label={copy.kiko.label(count)}
         aria-expanded={open}
         onClick={onToggle}
@@ -94,6 +105,8 @@ export function Kiko({
               </div>
               <p className="mt-3 border-t pt-2 text-xs text-muted-foreground">{copy.kiko.foot}</p>
             </>
+          ) : fresh || steps.some((x) => !x.done) ? (
+            <Setup steps={steps} fresh={fresh} />
           ) : (
             <>
               <p className="pr-5 font-semibold">{copy.kiko.quietTitle}</p>
@@ -103,5 +116,61 @@ export function Kiko({
         </div>
       ) : null}
     </div>
+  )
+}
+
+/**
+ * The setup checklist in Kiko's bubble: every step while nothing has run (the done ones checked), else All quiet over
+ * the steps left. The next step says what it brings to life in the village and is the filled button; done is a check
+ * and a word, never colour alone.
+ */
+function Setup({ steps, fresh }: { steps: readonly Step[]; fresh: boolean }) {
+  const c = copy.kiko.setup
+  const next = steps.find((x) => !x.done)
+  const done = steps.filter((x) => x.done).length
+  return (
+    <>
+      <div className="flex items-baseline gap-3 pr-6">
+        <p className="font-semibold">{fresh ? c.title : copy.kiko.quietTitle}</p>
+        <p className="ml-auto shrink-0 text-xs text-muted-foreground tabular-nums">
+          {c.progress(done, steps.length)}
+        </p>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">{fresh ? c.intro : c.left}</p>
+      <ol className="mt-2 flex flex-col">
+        {(fresh ? steps : steps.filter((x) => !x.done)).map((x) => {
+          const s = overviewCopy.needs.setup[x.id]
+          const isNext = x === next
+          return (
+            <li key={x.id} className="flex items-start gap-2.5 border-t py-2 first:border-t-0">
+              {x.done ? (
+                <CircleCheck aria-hidden className="mt-0.5 size-4 shrink-0 text-success" />
+              ) : (
+                <Circle aria-hidden className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+              )}
+              <div className="min-w-0 flex-1">
+                <p className={cn('text-sm', x.done ? 'text-muted-foreground' : 'font-medium')}>
+                  {s.title}
+                  {x.done ? <span className="sr-only">, {c.done}</span> : null}
+                </p>
+                {isNext ? (
+                  <p className="mt-0.5 text-xs text-muted-foreground">{c.place[x.id]}</p>
+                ) : null}
+              </div>
+              {x.done ? null : (
+                <Link
+                  to={x.to}
+                  search={{} as never}
+                  aria-label={s.title}
+                  {...asButton({ size: 'xs', variant: isNext ? 'default' : 'outline' })}
+                >
+                  {s.action}
+                </Link>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+    </>
   )
 }

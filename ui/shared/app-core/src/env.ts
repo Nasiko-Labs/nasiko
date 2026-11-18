@@ -7,6 +7,8 @@
  * VITE_NASIKO_LEGACY_UI_URL     http(s) URL    where trace links open (the existing nasiko UI)
  * VITE_NASIKO_WAITLIST_URL      http(s) URL    the Nasiko waitlist page the OSS app links to (default https://nasiko-waitlist.vercel.app);
  *                                              `off` (any non-URL) hides every waitlist link, as the desktop app's build does
+ * VITE_NASIKO_RELEASE           string         this bundle's release name for error reports (vite.shared.ts sets it at build time)
+ * VITE_NASIKO_CLIENT            desktop        the shell this bundle ships in, tagged on error reports (default: web)
  * NASIKO_API_URL                (vite.config.ts) proxy target for /api — server-side only
  */
 type ApiMode = 'mock' | 'live'
@@ -62,6 +64,16 @@ export interface EnvConfig {
 
 type RawEnv = Record<string, string | boolean | undefined>
 
+/**
+ * Whether this bundle can mock at all, fixed at build time: dev servers and tests, or a production build made with
+ * VITE_NASIKO_ALLOW_MOCK_BUILD=true (a deliberate demo build). vite.shared.ts defines NASIKO_MOCKS_COMPILED_IN as a
+ * boolean literal, so in a live production build this is `false` and the bundler drops every mock-only path: the
+ * partial-mock rules below, and MSW's loader in mount.tsx, which writes the same expression out (Rolldown folds a
+ * literal only within its module before it makes chunks, so an imported constant would leave the loader's chunk in).
+ */
+export const MOCKS_COMPILED_IN: boolean =
+  import.meta.env.DEV || import.meta.env.NASIKO_MOCKS_COMPILED_IN === true
+
 export function readEnv(
   env: RawEnv = import.meta.env,
   origin: string | undefined = globalThis.location?.origin,
@@ -70,16 +82,95 @@ export function readEnv(
   let mode: ApiMode = rawMode === 'live' || rawMode === 'mock' ? rawMode : env.DEV ? 'mock' : 'live'
   // A production build never serves fabricated data by accident: mock mode there needs an explicit opt-in.
   const mockAllowed = !env.PROD || String(env.VITE_NASIKO_ALLOW_MOCK_BUILD ?? '') === 'true'
-  if (mode === 'mock' && !mockAllowed) mode = 'live'
+  if (mode === 'mock' && (!mockAllowed || !MOCKS_COMPILED_IN)) mode = 'live'
 
-  let partialMocks: Mockable[] =
-    !mockAllowed || mode === 'mock'
-      ? []
-      : String(env.VITE_NASIKO_MOCK ?? '')
-          .split(',')
-          .map((s) => s.trim())
-          // `auth` is never partially mocked: a fake session against a real server loops on 401s.
-          .filter((s): s is Mockable => s !== 'auth' && (MOCKABLE as readonly string[]).includes(s))
+  const partialMocks: Mockable[] =
+    !MOCKS_COMPILED_IN || !mockAllowed || mode === 'mock' ? [] : resolvePartialMocks(env)
+
+  // Dev defaults to the local OSS server; a production build defaults to its own origin
+  // (the nasiko server serves both the API and the legacy UI).
+  const fallbackUi = env.DEV ? 'http://localhost:8080' : (origin ?? '')
+  return {
+    mode,
+    partialMocks,
+    legacyUiUrl: validHttpUrl(String(env.VITE_NASIKO_LEGACY_UI_URL || fallbackUi)),
+    waitlistUrl: waitlistHref(String(env.VITE_NASIKO_WAITLIST_URL || WAITLIST_URL)),
+  }
+}
+
+/** The Nasiko waitlist page, in dev servers and builds alike, unless VITE_NASIKO_WAITLIST_URL names another. */
+const WAITLIST_URL = 'https://nasiko-waitlist.vercel.app'
+
+/** An absolute http(s) URL with `ref=oss-app` added (its own query and hash kept), so the page can count sign-ups. */
+function waitlistHref(value: string): string | null {
+  const v = value.trim()
+  if (!/^https?:\/\//i.test(v)) return null
+  try {
+    const u = new URL(v)
+    u.searchParams.set('ref', 'oss-app')
+    return u.href
+  } catch {
+    return null
+  }
+}
+
+/** Accept only absolute http(s) URLs; anything else disables trace links rather than risk a bad href. */
+export function validHttpUrl(value: string): string | null {
+  const v = value.trim()
+  if (!/^https?:\/\//i.test(v)) return null
+  try {
+    const u = new URL(v)
+    return u.origin + u.pathname.replace(/\/$/, '')
+  } catch {
+    return null
+  }
+}
+
+export const env = readEnv()
+
+/**
+ * The release error reports name, which their stack traces are matched against (the source maps uploaded for this
+ * build carry the same name, scripts/sentry-sourcemaps.ts). Null in the dev server, which reports nothing.
+ */
+function readRelease(env: RawEnv = import.meta.env): string | null {
+  return String(env.VITE_NASIKO_RELEASE ?? '').trim() || null
+}
+
+export const uiRelease = readRelease()
+
+/** Where this bundle runs, for error reports: `desktop` in the desktop app's build (web-build.env), else `web`. */
+export function readClient(env: RawEnv = import.meta.env): 'desktop' | 'web' {
+  return String(env.VITE_NASIKO_CLIENT ?? '').trim() === 'desktop' ? 'desktop' : 'web'
+}
+
+export const uiClient = readClient()
+
+/**
+ * A preview section may render (plans/feat-agent-centric.md eng, preview policy): true only in full mock mode or when
+ * the feature's MOCKABLE group is mocked. It gates the section's queries and rendering, whatever the server answers,
+ * so a preview never draws from an unexpected live response.
+ */
+export function isPreview(group: Mockable, config: Pick<EnvConfig, 'mode' | 'partialMocks'> = env) {
+  // `router` implies `budgets` (eng D2), also for a config built by hand; `budgets-fill` previews budgets too.
+  return (
+    config.mode === 'mock' ||
+    config.partialMocks.includes(group) ||
+    (group === 'budgets' &&
+      (config.partialMocks.includes('router') || config.partialMocks.includes('budgets-fill')))
+  )
+}
+
+/**
+ * The endpoints a live-mode build still mocks (VITE_NASIKO_MOCK), with the combinations that only work together
+ * enforced. Reached only where mocks are compiled in (`MOCKS_COMPILED_IN`), so a live production bundle carries none
+ * of this.
+ */
+function resolvePartialMocks(env: RawEnv): Mockable[] {
+  let partialMocks: Mockable[] = String(env.VITE_NASIKO_MOCK ?? '')
+    .split(',')
+    .map((s) => s.trim())
+    // `auth` is never partially mocked: a fake session against a real server loops on 401s.
+    .filter((s): s is Mockable => s !== 'auth' && (MOCKABLE as readonly string[]).includes(s))
   // Chat mocks read agent names and write sessions the observability pages list: mocking
   // chat alone would mix seed agents and chats with the live server's (plan §11, DX-M2).
   if (
@@ -180,58 +271,5 @@ export function readEnv(
     partialMocks = partialMocks.filter((s) => s !== 'events')
   }
 
-  // Dev defaults to the local OSS server; a production build defaults to its own origin
-  // (the nasiko server serves both the API and the legacy UI).
-  const fallbackUi = env.DEV ? 'http://localhost:8080' : (origin ?? '')
-  return {
-    mode,
-    partialMocks,
-    legacyUiUrl: validHttpUrl(String(env.VITE_NASIKO_LEGACY_UI_URL || fallbackUi)),
-    waitlistUrl: waitlistHref(String(env.VITE_NASIKO_WAITLIST_URL || WAITLIST_URL)),
-  }
-}
-
-/** The Nasiko waitlist page, in dev servers and builds alike, unless VITE_NASIKO_WAITLIST_URL names another. */
-const WAITLIST_URL = 'https://nasiko-waitlist.vercel.app'
-
-/** An absolute http(s) URL with `ref=oss-app` added (its own query and hash kept), so the page can count sign-ups. */
-function waitlistHref(value: string): string | null {
-  const v = value.trim()
-  if (!/^https?:\/\//i.test(v)) return null
-  try {
-    const u = new URL(v)
-    u.searchParams.set('ref', 'oss-app')
-    return u.href
-  } catch {
-    return null
-  }
-}
-
-/** Accept only absolute http(s) URLs; anything else disables trace links rather than risk a bad href. */
-export function validHttpUrl(value: string): string | null {
-  const v = value.trim()
-  if (!/^https?:\/\//i.test(v)) return null
-  try {
-    const u = new URL(v)
-    return u.origin + u.pathname.replace(/\/$/, '')
-  } catch {
-    return null
-  }
-}
-
-export const env = readEnv()
-
-/**
- * A preview section may render (plans/feat-agent-centric.md eng, preview policy): true only in full mock mode or when
- * the feature's MOCKABLE group is mocked. It gates the section's queries and rendering, whatever the server answers,
- * so a preview never draws from an unexpected live response.
- */
-export function isPreview(group: Mockable, config: Pick<EnvConfig, 'mode' | 'partialMocks'> = env) {
-  // `router` implies `budgets` (eng D2), also for a config built by hand; `budgets-fill` previews budgets too.
-  return (
-    config.mode === 'mock' ||
-    config.partialMocks.includes(group) ||
-    (group === 'budgets' &&
-      (config.partialMocks.includes('router') || config.partialMocks.includes('budgets-fill')))
-  )
+  return partialMocks
 }

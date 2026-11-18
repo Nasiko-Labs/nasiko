@@ -117,7 +117,16 @@ export function traceDurationMs(spans: FlatSpan[]): number {
   return spans.reduce((m, s) => Math.max(m, s.startMs + s.durationMs), 0)
 }
 
-export const isError = (s: Pick<SpanNode, 'status_code'>) => s.status_code === 'ERROR'
+/**
+ * The a2a Python SDK ends every stream by shutting its event queue down, and its own tracing
+ * records the waiting consumer's `QueueShutDown` as an ERROR span, once per completed reply.
+ * That is how a stream finishes, not a failure. Mirrors the server's `is_a2a_queue_shutdown`.
+ */
+const isA2aQueueShutdown = (s: Pick<SpanNode, 'name' | 'status_message'>) =>
+  s.name.endsWith('.dequeue_event') && (s.status_message ?? '').startsWith('QueueShutDown')
+
+export const isError = (s: Pick<SpanNode, 'status_code' | 'name' | 'status_message'>) =>
+  s.status_code === 'ERROR' && !isA2aQueueShutdown(s)
 
 /** The span status as the UI prints it. */
 export const statusText = (s: Pick<SpanNode, 'status_code'>) =>
@@ -243,7 +252,18 @@ export function defaultSpan(spans: FlatSpan[]): FlatSpan | undefined {
 
 /** Rows for the tree: consecutive same-name siblings collapse into one "×N" group row. */
 export type TreeRow =
-  | { kind: 'span'; span: FlatSpan; attempt?: { index: number; of: number } }
+  | {
+      kind: 'span'
+      span: FlatSpan
+      // `retry` is true only when a member before the last errored (mirrors `findRetryLoops`), so
+      // the viewer says "attempt N of M" for a real retry loop and labels an ordinary repeated
+      // operation (sequential LLM turns, several inbound `request` hops) by what it did instead —
+      // those aren't retries. `route` is the member's own `operation` label (the normalized route
+      // for an inbound `request`, `chat` for an LLM turn, the tool for a tool call): it says what
+      // each occurrence actually was, so a generic `request ×N` group shows `POST /v1/chat/completions`
+      // vs `POST /api/mcp` rather than an opaque `attempt N`.
+      attempt?: { index: number; of: number; retry: boolean; route?: string }
+    }
   | {
       kind: 'group'
       key: string
@@ -302,11 +322,19 @@ export function treeRows(
         durationMs: end - s.startMs,
       })
       if (expanded.has(key)) {
+        const retry = members.slice(0, -1).some((m) => isError(m.node))
         members.forEach((m, i) => {
           rows.push({
             kind: 'span',
             span: { ...m, depth: m.depth + 1 },
-            attempt: { index: i + 1, of: members.length },
+            // Always carry the member's own operation so each occurrence is labelled by what it did
+            // (route / `chat` / tool), not a bare index; absent, the viewer falls back to `#N of M`.
+            attempt: {
+              index: i + 1,
+              of: members.length,
+              retry,
+              route: m.node.operation ?? undefined,
+            },
           })
           // Each attempt keeps its own subtree (e.g. the LLM call inside a tool call).
           if (m.childCount && !collapsed.has(m.node.id)) {

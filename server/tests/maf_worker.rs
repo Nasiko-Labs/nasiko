@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
+use nasiko_orchestrator::maf::stop::{self, StopScope};
 use nasiko_orchestrator::maf::types::{ExecutionResult, MafDefinition, StepOutcome};
 use nasiko_orchestrator::maf::{
     AgentCalls, LlmConfig, MafExecutor, MafResume, MafRunContext, STREAM_KEY, WorkerConfig,
@@ -74,7 +75,7 @@ impl CountingExecutor {
         }
     }
 
-    async fn hold_a_slot(&self) -> Result<StepOutcome, String> {
+    async fn hold_a_slot(&self) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         let now = self.running.fetch_add(1, Ordering::SeqCst) + 1;
         self.most_at_once.fetch_max(now, Ordering::SeqCst);
         let mut counter = StopCounter {
@@ -101,7 +102,7 @@ impl MafExecutor for CountingExecutor {
         _ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _content: Option<&str>,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         self.runs.fetch_add(1, Ordering::SeqCst);
         self.hold_a_slot().await
     }
@@ -111,7 +112,7 @@ impl MafExecutor for CountingExecutor {
         _ctx: &MafRunContext<'_>,
         _maf_def: &MafDefinition,
         _resume: MafResume,
-    ) -> Result<StepOutcome, String> {
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
         self.resumes.fetch_add(1, Ordering::SeqCst);
         self.hold_a_slot().await
     }
@@ -219,6 +220,12 @@ fn agent_calls() -> AgentCalls {
         client: reqwest::Client::new(),
         meter: Arc::new(Unmetered),
         outbound: Arc::new(nasiko_orchestrator::outbound::NoOutboundPrefix),
+        clock: nasiko_types::agent_clock::AgentClock::OFF,
+        // Never asked: `CountingExecutor` never calls an agent, so the pool is never dialled.
+        targets: Arc::new(nasiko_orchestrator::DirectAddress::new(
+            sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")
+                .expect("connect_lazy never actually connects"),
+        )),
     }
 }
 
@@ -226,15 +233,15 @@ fn start(db: &sqlx::PgPool, redis: redis::Client, concurrency: usize) -> Arc<Cou
     start_with(db, redis, concurrency, CountingExecutor::taking(RUN_TIME))
 }
 
-fn start_with(
+fn start_with<E: MafExecutor + 'static>(
     db: &sqlx::PgPool,
     redis: redis::Client,
     concurrency: usize,
-    executor: CountingExecutor,
-) -> Arc<CountingExecutor> {
+    executor: E,
+) -> Arc<E> {
     let executor = Arc::new(executor);
     let flow_guard = Arc::new(nasiko_flow::FlowGuard::new(
-        redis.clone(),
+        nasiko_redis::SharedRedis::new(redis.clone()),
         nasiko_flow::FlowConfig::default(),
     ));
     start_worker(
@@ -249,6 +256,8 @@ fn start_with(
                 base_url: None,
                 model: "unused".into(),
             },
+            ledger: Arc::new(nasiko_pricing::NoUsageLedger),
+            backend: None,
             concurrency,
             heartbeat: HEARTBEAT,
         },
@@ -264,6 +273,15 @@ async fn status_of(db: &sqlx::PgPool, execution_id: Uuid) -> String {
         .fetch_one(db)
         .await
         .expect("read status")
+}
+
+/// Entries left in the stream.
+async fn stream_len(conn: &mut redis::aio::MultiplexedConnection) -> i64 {
+    redis::cmd("XLEN")
+        .arg(STREAM_KEY)
+        .query_async(conn)
+        .await
+        .expect("XLEN")
 }
 
 /// Messages delivered to the group and not yet acknowledged.
@@ -699,4 +717,589 @@ async fn a_message_whose_worker_kept_stopping_fails_its_execution_instead_of_run
         "the message is acknowledged"
     );
     server.cleanup().await;
+}
+
+// ─── Stopping ──────────────────────────────────────────────────────────────
+
+/// A workflow of `user_id`'s: a stop is its owner's to make.
+async fn insert_workflow(db: &sqlx::PgPool, user_id: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO mafs (user_id, name, maf_json) VALUES ($1, $2, '{\"steps\":[]}'::jsonb) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(format!("maf-stop-{}", Uuid::new_v4().simple()))
+    .fetch_one(db)
+    .await
+    .expect("insert workflow")
+}
+
+/// A run of `maf_id` in `status`.
+async fn insert_run(db: &sqlx::PgPool, user_id: Uuid, maf_id: Uuid, status: &str) -> Uuid {
+    sqlx::query_scalar(
+        "INSERT INTO maf_executions (user_id, maf_id, status, step_results) \
+         VALUES ($1, $2, $3, '[]'::jsonb) RETURNING id",
+    )
+    .bind(user_id)
+    .bind(maf_id)
+    .bind(status)
+    .fetch_one(db)
+    .await
+    .expect("insert run")
+}
+
+/// A queued run of a new workflow of a new user: `(user, run)`.
+async fn queue_owned_run(
+    db: &sqlx::PgPool,
+    conn: &mut redis::aio::MultiplexedConnection,
+) -> (Uuid, Uuid) {
+    let user_id = insert_user(db).await;
+    let maf_id = insert_workflow(db, user_id).await;
+    let run = insert_run(db, user_id, maf_id, "pending").await;
+    queue(conn, run, user_id, false).await;
+    (user_id, run)
+}
+
+/// Runs `steps` steps of `step_time` each, writing its progress after each one as the real
+/// executors do; counts the steps done and whether it was cut short.
+struct SteppingExecutor {
+    steps: usize,
+    step_time: Duration,
+    done: AtomicUsize,
+    cut_short: AtomicUsize,
+}
+
+#[async_trait]
+impl MafExecutor for SteppingExecutor {
+    async fn run(
+        &self,
+        ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _content: Option<&str>,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        let mut counter = StopCounter {
+            stopped: &self.cut_short,
+            finished: false,
+        };
+        for _ in 0..self.steps {
+            tokio::time::sleep(self.step_time).await;
+            nasiko_orchestrator::maf::executor::persist_progress(
+                ctx.db,
+                ctx.execution_id,
+                &[],
+                0,
+                0.0,
+            )
+            .await;
+            self.done.fetch_add(1, Ordering::SeqCst);
+        }
+        counter.finished = true;
+        Ok(StepOutcome::Completed(ExecutionResult {
+            output: "done".into(),
+            step_results: vec![],
+            tokens_used: 0,
+            cost_usd: 0.0,
+        }))
+    }
+
+    async fn resume(
+        &self,
+        _ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _resume: MafResume,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        Err("not resumable".into())
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn a_stopped_queued_run_is_discarded_without_running() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let (user_id, run) = queue_owned_run(&server.db, &mut conn).await;
+
+    let report = stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
+        .await
+        .expect("stop");
+    assert_eq!(report.stopped, [(run, "pending".to_string())]);
+    assert_eq!(
+        stop::notify_owners(&mut conn, &[run])
+            .await
+            .expect("lookup"),
+        0,
+        "no worker holds a run that is still queued"
+    );
+
+    let after = queue_executions(&server.db, &mut conn, 1).await;
+    let executor = start(&server.db, redis, 1);
+    wait_for_success(&server.db, &after).await;
+
+    assert_eq!(
+        executor.runs.load(Ordering::SeqCst),
+        1,
+        "only the run queued behind it ran"
+    );
+    assert_eq!(status_of(&server.db, run).await, "stopped");
+    assert_eq!(
+        pending_count(&mut conn).await,
+        0,
+        "its message was acknowledged"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stopping_a_running_execution_cuts_it_short_on_its_worker() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let (user_id, run) = queue_owned_run(&server.db, &mut conn).await;
+    let executor = start_with(
+        &server.db,
+        redis.clone(),
+        1,
+        CountingExecutor::taking(Duration::from_secs(30)),
+    );
+    let started = wait_until(Duration::from_secs(5), async || {
+        executor.runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(started, "the run started");
+
+    let report = stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
+        .await
+        .expect("stop");
+    assert_eq!(report.were_running(), [run]);
+    let workers = stop::notify_owners(&mut conn, &report.were_running())
+        .await
+        .expect("notify");
+    assert_eq!(workers, 1, "the one worker holding the run was found");
+
+    let cut_short = wait_until(Duration::from_secs(3), async || {
+        executor.stopped.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(cut_short, "the run was dropped mid-way, not left to finish");
+    assert_eq!(executor.finished.load(Ordering::SeqCst), 0);
+    assert_eq!(status_of(&server.db, run).await, "stopped");
+    let acknowledged = wait_until(Duration::from_secs(3), async || {
+        pending_count(&mut conn).await == 0
+    })
+    .await;
+    assert!(
+        acknowledged,
+        "the worker acknowledged the stopped run's message"
+    );
+    assert_eq!(
+        stream_len(&mut conn).await,
+        0,
+        "and deleted it from the stream"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_run_whose_stop_message_is_lost_ends_at_its_next_progress_write() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let (user_id, run) = queue_owned_run(&server.db, &mut conn).await;
+    let executor = start_with(
+        &server.db,
+        redis,
+        1,
+        SteppingExecutor {
+            steps: 50,
+            step_time: Duration::from_millis(200),
+            done: AtomicUsize::new(0),
+            cut_short: AtomicUsize::new(0),
+        },
+    );
+    let stepping = wait_until(Duration::from_secs(5), async || {
+        executor.done.load(Ordering::SeqCst) >= 1
+    })
+    .await;
+    assert!(stepping, "the run is taking steps");
+
+    // Stopped in the database only: no message reaches the worker.
+    stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
+        .await
+        .expect("stop");
+
+    let ended = wait_until(Duration::from_secs(3), async || {
+        executor.cut_short.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(
+        ended,
+        "the next progress write found the run stopped and ended it"
+    );
+    assert!(
+        executor.done.load(Ordering::SeqCst) < 50,
+        "it did not run to completion"
+    );
+    assert_eq!(status_of(&server.db, run).await, "stopped");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_run_that_finishes_after_its_stop_stays_stopped() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let (user_id, run) = queue_owned_run(&server.db, &mut conn).await;
+    // Writes no progress and gets no message, so nothing cuts it short: it finishes.
+    let executor = start_with(
+        &server.db,
+        redis,
+        1,
+        CountingExecutor::taking(Duration::from_secs(1)),
+    );
+    let started = wait_until(Duration::from_secs(5), async || {
+        executor.runs.load(Ordering::SeqCst) == 1
+    })
+    .await;
+    assert!(started, "the run started");
+    stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
+        .await
+        .expect("stop");
+
+    let finished = wait_until(Duration::from_secs(3), async || {
+        executor.finished.load(Ordering::SeqCst) == 1 && pending_count(&mut conn).await == 0
+    })
+    .await;
+    assert!(
+        finished,
+        "the run finished and its message was acknowledged"
+    );
+    assert_eq!(
+        status_of(&server.db, run).await,
+        "stopped",
+        "its success was not written over the stop"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stopping_a_paused_run_withdraws_its_question_and_its_waiting_step() {
+    let server = common::TestServer::start().await;
+    let user_id = insert_user(&server.db).await;
+    let maf_id = insert_workflow(&server.db, user_id).await;
+    let run = insert_run(&server.db, user_id, maf_id, "awaiting_human").await;
+    sqlx::query(
+        "UPDATE maf_executions SET step_results = \
+         '[{\"step_index\":0,\"status\":\"success\"},{\"step_index\":1,\"status\":\"awaiting_human\"},{\"step_index\":2,\"status\":\"pending\"}]'::jsonb \
+         WHERE id = $1",
+    )
+    .bind(run)
+    .execute(&server.db)
+    .await
+    .expect("set steps");
+    let agent: Uuid =
+        sqlx::query_scalar("INSERT INTO agents (name, owner_id) VALUES ($1, $2) RETURNING id")
+            .bind(format!("maf-stop-agent-{}", Uuid::new_v4().simple()))
+            .bind(user_id)
+            .fetch_one(&server.db)
+            .await
+            .expect("insert agent");
+    let question: Uuid = sqlx::query_scalar(
+        "INSERT INTO hitl_requests (kind, origin, agent_id, owner_user_id, task_id, context_id, \
+                                    maf_execution_id, maf_step_index, question) \
+         VALUES ('input_required', 'maf', $1, $2, 'task-1', $3, $3, 1, '{\"message\":\"which one?\"}') \
+         RETURNING id",
+    )
+    .bind(agent)
+    .bind(user_id)
+    .bind(run)
+    .fetch_one(&server.db)
+    .await
+    .expect("insert hitl request");
+
+    // What the run spent before it paused: MAF's own calls, and an agent's call under the same
+    // trace that is not MAF's spend. The row itself says 0, as a paused run's row does.
+    for (agent_name, input, output, cached, cost) in [
+        ("maf", 100, 20, 0, 0.01),
+        ("maf:step0", 50, 5, 5, 0.002),
+        ("some-agent", 1000, 1000, 0, 1.0),
+    ] {
+        sqlx::query(
+            "INSERT INTO trace_usage (trace_id, agent_name, started_at, input_tokens, output_tokens, \
+                                      cache_read_tokens, cost_usd) \
+             VALUES ($1, $2, now(), $3, $4, $5, $6)",
+        )
+        .bind(run.to_string())
+        .bind(agent_name)
+        .bind(input as i64)
+        .bind(output as i64)
+        .bind(cached as i64)
+        .bind(cost)
+        .execute(&server.db)
+        .await
+        .expect("insert usage");
+    }
+
+    let report = stop::stop_in_db(&server.db, user_id, StopScope::Executions(&[run]))
+        .await
+        .expect("stop");
+
+    assert_eq!(report.stopped, [(run, "awaiting_human".to_string())]);
+    let (tokens, cost): (i64, f64) =
+        sqlx::query_as("SELECT tokens_used, cost_usd FROM maf_executions WHERE id = $1")
+            .bind(run)
+            .fetch_one(&server.db)
+            .await
+            .expect("read spend");
+    assert_eq!(
+        tokens, 180,
+        "MAF's own calls, as the platform recorded them"
+    );
+    assert!((cost - 0.012).abs() < 1e-9, "MAF's own cost, got {cost}");
+    assert!(report.were_running().is_empty(), "no worker to tell");
+    assert_eq!(status_of(&server.db, run).await, "stopped");
+    let question_status: String =
+        sqlx::query_scalar("SELECT status FROM hitl_requests WHERE id = $1")
+            .bind(question)
+            .fetch_one(&server.db)
+            .await
+            .expect("read hitl status");
+    assert_eq!(question_status, "canceled");
+    let steps: Vec<String> = sqlx::query_scalar(
+        "SELECT s->>'status' FROM maf_executions, jsonb_array_elements(step_results) s WHERE id = $1",
+    )
+    .bind(run)
+    .fetch_all(&server.db)
+    .await
+    .expect("read steps");
+    assert_eq!(
+        steps,
+        ["success", "stopped", "stopped"],
+        "finished steps keep their outcome; the rest are stopped"
+    );
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn only_the_callers_unfinished_runs_are_stopped() {
+    let server = common::TestServer::start().await;
+    let owner = insert_user(&server.db).await;
+    let workflow = insert_workflow(&server.db, owner).await;
+    let queued = insert_run(&server.db, owner, workflow, "pending").await;
+    let done = insert_run(&server.db, owner, workflow, "success").await;
+    let someone = insert_user(&server.db).await;
+    let theirs_workflow = insert_workflow(&server.db, someone).await;
+    let theirs = insert_run(&server.db, someone, theirs_workflow, "pending").await;
+    let unknown = Uuid::new_v4();
+    // A run whose workflow row is gone (`maf_id` NULL): still the owner's run.
+    let orphan = insert_execution(&server.db, owner, "pending").await;
+
+    let report = stop::stop_in_db(
+        &server.db,
+        owner,
+        StopScope::Executions(&[queued, done, theirs, unknown, orphan]),
+    )
+    .await
+    .expect("stop");
+
+    let mut stopped = report.stopped.clone();
+    stopped.sort();
+    let mut expected = vec![
+        (queued, "pending".to_string()),
+        (orphan, "pending".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(stopped, expected);
+    assert_eq!(report.already_finished, [(done, "success".to_string())]);
+    let mut not_found = report.not_found.clone();
+    not_found.sort();
+    let mut expected = vec![theirs, unknown];
+    expected.sort();
+    assert_eq!(not_found, expected, "another user's run reads as not found");
+    assert_eq!(status_of(&server.db, theirs).await, "pending");
+    assert_eq!(status_of(&server.db, done).await, "success");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_workflow_stop_stops_every_unfinished_run_of_that_workflow_only() {
+    let server = common::TestServer::start().await;
+    let owner = insert_user(&server.db).await;
+    let workflow = insert_workflow(&server.db, owner).await;
+    let queued = insert_run(&server.db, owner, workflow, "pending").await;
+    let paused = insert_run(&server.db, owner, workflow, "awaiting_human").await;
+    let done = insert_run(&server.db, owner, workflow, "failed").await;
+    let other_workflow = insert_workflow(&server.db, owner).await;
+    let elsewhere = insert_run(&server.db, owner, other_workflow, "pending").await;
+
+    let report = stop::stop_in_db(&server.db, owner, StopScope::Workflow(workflow))
+        .await
+        .expect("stop");
+
+    let mut stopped: Vec<Uuid> = report.stopped.iter().map(|(id, _)| *id).collect();
+    stopped.sort();
+    let mut expected = vec![queued, paused];
+    expected.sort();
+    assert_eq!(stopped, expected);
+    assert_eq!(status_of(&server.db, done).await, "failed");
+    assert_eq!(status_of(&server.db, elsewhere).await, "pending");
+    server.cleanup().await;
+}
+
+// ─── Stream cleanup ────────────────────────────────────────────────────────
+
+#[tokio::test]
+#[serial]
+async fn acknowledged_messages_are_deleted_from_the_stream() {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+
+    // A stale message (discarded) and a run (finished) behind it.
+    let (_execution_id, executor, mut conn) =
+        handle_then_drain(&server.db, redis, "failed", false).await;
+    assert_eq!(executor.runs.load(Ordering::SeqCst), 1);
+
+    let emptied = wait_until(Duration::from_secs(3), async || {
+        stream_len(&mut conn).await == 0
+    })
+    .await;
+    assert!(
+        emptied,
+        "neither the finished run's entry nor the discarded one is left in the stream"
+    );
+    assert_eq!(pending_count(&mut conn).await, 0);
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn overlapping_stops_of_the_same_runs_never_deadlock() {
+    let server = common::TestServer::start().await;
+    let owner = insert_user(&server.db).await;
+    let workflow = insert_workflow(&server.db, owner).await;
+    for round in 0..5 {
+        let mut runs = Vec::new();
+        for _ in 0..40 {
+            runs.push(insert_run(&server.db, owner, workflow, "pending").await);
+        }
+        let mut reversed = runs.clone();
+        reversed.reverse();
+        // The same runs, asked for in opposite orders and by workflow, all at once.
+        let (by_ids, by_reversed_ids, by_workflow) = tokio::join!(
+            stop::stop_in_db(&server.db, owner, StopScope::Executions(&runs)),
+            stop::stop_in_db(&server.db, owner, StopScope::Executions(&reversed)),
+            stop::stop_in_db(&server.db, owner, StopScope::Workflow(workflow)),
+        );
+        let stopped = by_ids.expect("stop by ids").stopped.len()
+            + by_reversed_ids.expect("stop by reversed ids").stopped.len()
+            + by_workflow.expect("stop by workflow").stopped.len();
+        assert_eq!(
+            stopped,
+            runs.len(),
+            "round {round}: each run stopped exactly once"
+        );
+    }
+    server.cleanup().await;
+}
+
+/// Ends every run it is given with `error`, counting how often it was asked.
+struct FailingExecutor {
+    error: nasiko_orchestrator::maf::types::RunError,
+    runs: AtomicUsize,
+}
+
+#[async_trait]
+impl MafExecutor for FailingExecutor {
+    async fn run(
+        &self,
+        _ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _content: Option<&str>,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        self.runs.fetch_add(1, Ordering::SeqCst);
+        Err(self.error.clone())
+    }
+
+    async fn resume(
+        &self,
+        _ctx: &MafRunContext<'_>,
+        _maf_def: &MafDefinition,
+        _resume: MafResume,
+    ) -> Result<StepOutcome, nasiko_orchestrator::maf::types::RunError> {
+        Err(self.error.clone())
+    }
+}
+
+/// Runs one execution through a worker whose executor always ends it with `error`, and returns
+/// how many times it ran, its final status, its error and its attempt count.
+async fn run_to_failure(
+    error: nasiko_orchestrator::maf::types::RunError,
+) -> (usize, String, Option<String>, i32) {
+    let server = common::TestServer::start().await;
+    let redis = redis::Client::open(test_redis_url()).expect("redis url");
+    let mut conn = fresh_stream(&redis).await;
+    let ids = queue_executions(&server.db, &mut conn, 1).await;
+
+    let executor = start_with(
+        &server.db,
+        redis,
+        1,
+        FailingExecutor {
+            error,
+            runs: AtomicUsize::new(0),
+        },
+    );
+    assert!(
+        wait_until(Duration::from_secs(20), async || {
+            status_of(&server.db, ids[0]).await == "failed"
+        })
+        .await,
+        "the execution ends failed"
+    );
+    // A retry, were one coming, would already be queued: give it the time to show.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let (status, error, attempts): (String, Option<String>, i32) =
+        sqlx::query_as("SELECT status, error, attempt_count FROM maf_executions WHERE id = $1")
+            .bind(ids[0])
+            .fetch_one(&server.db)
+            .await
+            .expect("read execution");
+    let runs = executor.runs.load(Ordering::SeqCst);
+    server.cleanup().await;
+    (runs, status, error, attempts)
+}
+
+/// An agent that timed out would only time out again, after the steps before it ran a second
+/// time: a timed-out run ends on its first attempt, with its reason.
+#[tokio::test]
+#[serial]
+async fn a_timed_out_run_fails_without_a_retry() {
+    let reason = "step 1 (agent 'task-breakdown') timed out after 600s";
+    let (runs, status, error, attempts) = run_to_failure(
+        nasiko_orchestrator::maf::types::RunError::TimedOut(reason.into()),
+    )
+    .await;
+
+    assert_eq!(runs, 1, "run once, not retried");
+    assert_eq!(attempts, 1);
+    assert_eq!(status, "failed");
+    assert_eq!(error.as_deref(), Some(reason));
+}
+
+#[tokio::test]
+#[serial]
+async fn any_other_failure_is_still_retried_up_to_its_attempt_limit() {
+    let (runs, status, _, attempts) = run_to_failure(
+        nasiko_orchestrator::maf::types::RunError::Failed("HTTP 502 Bad Gateway".into()),
+    )
+    .await;
+
+    assert_eq!(runs, 3, "the default MAF_MAX_ATTEMPTS");
+    assert_eq!(attempts, 3);
+    assert_eq!(status, "failed");
 }

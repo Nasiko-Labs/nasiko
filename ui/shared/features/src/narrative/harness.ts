@@ -1,7 +1,7 @@
 /**
  * Harnesses summary: at most 2 sentences (plan §6, G10, V2, V7), templated, never LLM.
- *   1. Adoption: "{active} of {scope_devs} developers used a harness connected to OpenRuntime".
- *   2. Idle seats, then estimated cost (API list price). The cost clause is dropped when
+ *   1. Adoption: "{active} of {scope_devs} developers used a harness connected to Open Runtime".
+ *   2. Idle seats, then the usage's value at API prices. The cost clause is dropped when
  *      every harness is mostly unpriced; no share is claimed for a mostly-unpriced harness.
  * The Individual level speaks to one account ("You used 2 of your 3 connected harnesses").
  */
@@ -31,7 +31,7 @@ export function harnessNarrative(i: HarnessNarrativeInput): string[] {
   const partial = ran.some((h) => h.unpriced_calls > 0)
   const known = ran.reduce((n, h) => n + h.cost_usd, 0)
   const costClause = ran.some((h) => !mostlyUnpriced(h))
-    ? `estimated cost ${partial ? 'at least ' : ''}${fmtMoney(known)} (API list price${partial ? '; some turns unpriced' : ''})`
+    ? `usage worth ${partial ? 'at least ' : ''}${fmtMoney(known)} at API prices${partial ? ' (some turns unpriced)' : ''}`
     : ''
 
   if (i.individual) {
@@ -44,8 +44,8 @@ export function harnessNarrative(i: HarnessNarrativeInput): string[] {
     if (registered === 0 && used === 0)
       return [
         i.individual.self
-          ? 'You have no harness connected to OpenRuntime yet.'
-          : `${subject} has no harness connected to OpenRuntime yet.`,
+          ? 'You have no harness connected to Open Runtime yet.'
+          : `${subject} has no harness connected to Open Runtime yet.`,
       ]
     const first =
       used === registered
@@ -66,7 +66,7 @@ export function harnessNarrative(i: HarnessNarrativeInput): string[] {
     by_harness.length > 1 && top && top.active_devs > 0
       ? `; ${harnessStyle(top.harness).name} leads with ${plural(top.active_devs, 'active developer')}`
       : ''
-  const first = `${w}, ${totals.active_devs} of ${plural(totals.scope_devs, 'developer')} used a harness connected to OpenRuntime${lead}.`
+  const first = `${w}, ${totals.active_devs} of ${plural(totals.scope_devs, 'developer')} used a harness connected to Open Runtime${lead}.`
   const idle =
     totals.idle_seats > 0 ? `${plural(totals.idle_seats, 'registered seat')} had no activity` : ''
   const second = [idle, costClause].filter(Boolean).join('; ')

@@ -68,6 +68,11 @@ export function normalizeGrants(body: GrantsBody, agentId: string): AccessGrants
   }
 }
 
+/** Whether people other than the owner can use the agent: public, or granted to a user, a unit or the organization. */
+export function isSharedWithOthers(g: AccessGrants): boolean {
+  return g.is_public || g.user_grants.length > 0 || g.units > 0 || g.organization
+}
+
 /** Where a grant write goes: OSS takes the id in the body, EE in the path. */
 export function grantWrite(
   edition: 'oss' | 'ee' | undefined,

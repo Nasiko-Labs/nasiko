@@ -7,14 +7,14 @@
 import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { http, HttpResponse } from 'msw'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chatRegistry } from '@nasiko/features/chat/registry'
 import { readDraft, writeDraft } from '@nasiko/features/chat/drafts'
 import { apiFetch } from '@nasiko/data-access/client'
 import { configureMocks } from '@nasiko/mocks/handlers'
 import { ADMIN_ID } from '@nasiko/mocks/seed-harness'
 import { setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
-import { renderApp } from '@nasiko/testing/renderApp'
+import { renderApp, warmRoutes, WARM_ROUTES_TIMEOUT_MS } from '@nasiko/testing/renderApp'
 import { recordRequests, server } from '@nasiko/testing/setup'
 import { SIGNED_OUT_KEY } from '@nasiko/app-core/session'
 import { copy } from '@nasiko/app-core/shell/copy'
@@ -24,14 +24,24 @@ import { readPrefs, resetThemeState, setAccent, setTheme } from '@nasiko/app-cor
 
 setupPinnedSeed()
 
+// The pages this file renders most, loaded once up front: otherwise the first test pays every module's first import
+// inside its findBy wait, and timed out there in a busy parallel run (13 Nov 2026).
+beforeAll(
+  () => warmRoutes(['/tokenops', '/agents', '/chat', '/settings', '/status', '/sessions']),
+  WARM_ROUTES_TIMEOUT_MS,
+)
+
 const nav = () => screen.getByRole('navigation', { name: 'Main' })
 const navLink = (name: string) => within(nav()).getByRole('link', { name })
 const sidebarState = () =>
   document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state')
 const sidebar = () => document.querySelector<HTMLElement>('[data-slot="sidebar"]')!
 /** The open sidebar's brand link (the phone top bar has one too; the rail's mark is the Expand button). */
-const sidebarBrand = () => within(sidebar()).getByRole('link', { name: copy.brand })
-const wide = () => Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
+const sidebarBrand = () => within(sidebar()).getByRole('link', { name: 'Nasiko' })
+/** The sidebar starts as the rail; a stored choice opens it. */
+const expanded = () => {
+  document.cookie = 'sidebar_state=true; path=/'
+}
 const clearCookie = () => {
   document.cookie = 'sidebar_state=; path=/; max-age=0'
 }
@@ -163,7 +173,7 @@ describe('sidebar items', () => {
 
 describe('header brand link', () => {
   it('goes Home through the router without marking itself current', async () => {
-    wide()
+    expanded()
     const { router } = renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
     const brand = sidebarBrand()
@@ -175,7 +185,7 @@ describe('header brand link', () => {
   })
 
   it('leaves a modified click (new tab) to the browser', async () => {
-    wide()
+    expanded()
     const { router } = renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
     const brand = sidebarBrand()
@@ -227,11 +237,14 @@ describe('layout', () => {
 })
 
 describe('collapse', () => {
-  it('opens on a wide first visit, then remembers the choice in one cookie, on Chat too (eng D2)', async () => {
+  it('starts as the rail even on a wide screen, then remembers the choice in one cookie, on Chat too (eng D2)', async () => {
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
     renderApp('/tokenops')
     await screen.findByRole('navigation', { name: 'Main' })
+    expect(sidebarState()).toBe('collapsed')
+    await userEvent.click(screen.getByRole('button', { name: 'Expand' }))
     expect(sidebarState()).toBe('expanded')
+    expect(document.cookie).toContain('sidebar_state=true')
     await userEvent.click(screen.getByRole('button', { name: 'Collapse' }))
     expect(sidebarState()).toBe('collapsed')
     expect(document.cookie).toContain('sidebar_state=false')
@@ -242,12 +255,11 @@ describe('collapse', () => {
     expect(sidebarState()).toBe('collapsed')
   })
 
-  it('a stored choice wins over the width default, on every page', async () => {
-    Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1440 })
-    document.cookie = 'sidebar_state=false; path=/'
-    renderApp('/chat')
+  it('a stored choice wins over the default', async () => {
+    expanded()
+    renderApp('/agents')
     await screen.findByRole('navigation', { name: 'Main' })
-    expect(sidebarState()).toBe('collapsed')
+    expect(sidebarState()).toBe('expanded')
   })
 
   it('toggles with Ctrl+B / ⌘B', async () => {
@@ -490,7 +502,7 @@ describe('footer', () => {
 
 describe('drill-in panel (one sidebar on Chat and Settings)', () => {
   it('shows Settings sections in the expanded sidebar instead of the app nav, and none beside the page', async () => {
-    wide()
+    expanded()
     renderApp('/settings')
     const sections = await screen.findByRole('navigation', { name: 'Settings sections' })
     expect(sidebar()).toContainElement(sections)
@@ -511,7 +523,7 @@ describe('drill-in panel (one sidebar on Chat and Settings)', () => {
   })
 
   it('Main menu shows the app nav over the panel, focused on the current item; that item brings the panel back', async () => {
-    wide()
+    expanded()
     renderApp('/chat')
     await userEvent.click(await screen.findByRole('button', { name: 'Back to main menu' }))
     // Gone from the sidebar, and not back beside the page either: the sidebar still holds the panel (hidden).
@@ -528,7 +540,7 @@ describe('drill-in panel (one sidebar on Chat and Settings)', () => {
   })
 
   it('shows no Settings sections beside the page under Main menu; the Settings nav item brings them back', async () => {
-    wide()
+    expanded()
     renderApp('/settings')
     await userEvent.click(await screen.findByRole('button', { name: 'Back to main menu' }))
     expect(await screen.findByRole('navigation', { name: 'Main' })).toBeInTheDocument()
@@ -550,7 +562,7 @@ describe('drill-in panel (one sidebar on Chat and Settings)', () => {
   })
 
   it('Back returns to the page the user came from, with its search, past moves inside the module', async () => {
-    wide()
+    expanded()
     const { router } = renderApp('/tokenops?preset=7d')
     await screen.findByRole('navigation', { name: 'Main' })
     await router.navigate({ to: '/chat' })
@@ -570,7 +582,7 @@ describe('drill-in panel (one sidebar on Chat and Settings)', () => {
   })
 
   it('leaves the panel for the app nav on a page without one', async () => {
-    wide()
+    expanded()
     const { router } = renderApp('/settings')
     await screen.findByRole('navigation', { name: 'Settings sections' })
     await router.navigate({ to: '/agents' })
@@ -878,5 +890,39 @@ describe('sign out (eng D6)', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Sign in' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/chat'))
     expect(store.has('openruntime.signedOut')).toBe(false)
+  })
+})
+
+describe('assessment banner', () => {
+  it('sits above the top bar in one sticky block and stays dismissed once closed', async () => {
+    renderApp('/agents')
+    const banner = await screen.findByRole('region', { name: copy.assessment.title })
+    const bar = document.querySelector('[data-slot="topbar"]')!
+    // Before the bar, in the same sticky block; not in the sidebar.
+    expect(banner.nextElementSibling).toBe(bar)
+    expect(banner.parentElement).toHaveClass('sticky')
+    expect(banner.closest('[data-slot="sidebar"]')).toBeNull()
+    // The pages' sticky rows clear both.
+    expect(document.querySelector('[data-slot="sidebar-wrapper"]')).toHaveClass(
+      '[--topbar-h:calc(3.25rem_+_var(--banner-h))]',
+    )
+    expect(within(banner).getByRole('link', { name: copy.assessment.cta })).toHaveAttribute(
+      'href',
+      '/assessment',
+    )
+    // The sidebar's row waits for the banner to go, so the assessment never shows twice.
+    const sidebarRow = () =>
+      within(document.querySelector<HTMLElement>('[data-slot="sidebar"]')!).queryByRole('link', {
+        name: copy.help.assessment,
+      })
+    expect(sidebarRow()).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: copy.assessment.dismiss }))
+    expect(screen.queryByRole('region', { name: copy.assessment.title })).toBeNull()
+    expect(sidebarRow()).toHaveAttribute('href', '/assessment')
+    cleanup()
+    renderApp('/agents')
+    await screen.findByRole('navigation', { name: 'Main' })
+    expect(screen.queryByRole('region', { name: copy.assessment.title })).toBeNull()
+    expect(sidebarRow()).toHaveAttribute('href', '/assessment')
   })
 })

@@ -141,3 +141,47 @@ async fn the_seed_reuses_its_own_row_but_not_a_deleted_one() {
 
     server.cleanup().await;
 }
+
+async fn live_parking_policy(server: &common::TestServer) -> String {
+    sqlx::query_scalar(
+        "SELECT parking_policy FROM agents WHERE name = $1 AND is_internal AND deleted_at IS NULL",
+    )
+    .bind(NAME)
+    .fetch_one(&server.db)
+    .await
+    .unwrap()
+}
+
+#[tokio::test]
+#[serial]
+async fn the_seed_creates_the_internal_agent_resident() {
+    let server = common::TestServer::start().await;
+    seed_user(&server, "dummy-root", true).await;
+
+    seed(&server).await;
+
+    assert_eq!(live_parking_policy(&server).await, "resident");
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_seed_keeps_an_existing_internal_agent_resident() {
+    let server = common::TestServer::start().await;
+    let root = seed_user(&server, "dummy-root", true).await;
+    // A row created while new agents defaulted to `auto`.
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, image, status, is_internal, parking_policy) \
+         VALUES ($1, $2, 'nasiko/dummy-internal:1', 'running', true, 'auto')",
+    )
+    .bind(NAME)
+    .bind(root)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    seed(&server).await;
+
+    assert_eq!(live_parking_policy(&server).await, "resident");
+    server.cleanup().await;
+}

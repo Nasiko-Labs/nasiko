@@ -44,7 +44,7 @@ export const BOOT_GUARD_SCRIPT = `
     var box = document.createElement('div'), p = document.createElement('p'), b = document.createElement('button')
     box.setAttribute('role', 'alert'); box.setAttribute('data-boot-error', '')
     box.className = 'mx-auto mt-[20vh] max-w-lg px-4 text-sm'
-    p.textContent = message || 'OpenRuntime could not load. It may have just been updated.'
+    p.textContent = message || 'Open Runtime could not load. It may have just been updated.'
     b.type = 'button'; b.textContent = 'Reload'; b.className = 'mt-3 rounded-md border px-3 py-1'
     b.addEventListener('click', function () { location.reload() })
     box.appendChild(p); box.appendChild(b); root.appendChild(box)
@@ -57,7 +57,7 @@ export const BOOT_GUARD_SCRIPT = `
     // Offline is not a new version: wait for the connection, then load again (nothing has mounted, nothing to lose).
     if (navigator.onLine === false) {
       window.addEventListener('online', function () { location.reload() }, { once: true })
-      var offline = function () { fallback("You're offline. OpenRuntime will load when the connection is back.") }
+      var offline = function () { fallback("You're offline. Open Runtime will load when the connection is back.") }
       if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', offline)
       else offline()
       return

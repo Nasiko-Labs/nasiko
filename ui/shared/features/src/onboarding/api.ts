@@ -4,6 +4,7 @@
  */
 import { queryOptions, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useCallback, useSyncExternalStore } from 'react'
+import { useSlots } from '@nasiko/app-core/edition/edition-context'
 import { meQuery } from '@nasiko/data-access/auth'
 import { apiFetch } from '@nasiko/data-access/client'
 import { guideDue, skipKey, type StepId } from './logic'
@@ -77,7 +78,7 @@ function writeSkipped(sub: string) {
 /** Storage blocked: remember the skip for this page load at least. */
 const memorySkips = new Set<string>()
 
-/** Whether the guide takes over `/` now, and how to skip it for this session. */
+/** Whether the guide takes over `/` now (first-time and never opened by itself before), and how to record that it was. */
 export function useGuide() {
   const me = useQuery(meQuery).data
   const onboarding = useOnboarding()
@@ -141,3 +142,52 @@ export function useGuideHiddenNav(): readonly string[] {
 }
 const HIDE_HOME = ['/'] as const
 const NONE = [] as const
+
+// ─── The guide's prebuilt deploys ───────────────────────────────────────────────────────────────────────────────────
+// Each import runs for minutes (seededDeploy.ts): the guide and Home's try-a-run card show where it is (NAS-1450).
+// Here, not in the lazy dialog, so Home reads it without loading the deploy code. A reload forgets them.
+
+/** One prebuilt agent the guide deployed, by its name. */
+export type SeededDeploy =
+  | { phase: 'deploying'; title: string; startedAt: number }
+  | { phase: 'running' | 'notRunning'; title: string; agentId: string }
+  | { phase: 'failed'; title: string; reason: string }
+
+let seededDeploys: ReadonlyMap<string, SeededDeploy> = new Map()
+const seededListeners = new Set<() => void>()
+function setSeededDeploys(next: ReadonlyMap<string, SeededDeploy>) {
+  seededDeploys = next
+  for (const fn of seededListeners) fn()
+}
+export const setSeededDeploy = (name: string, d: SeededDeploy) =>
+  setSeededDeploys(new Map(seededDeploys).set(name, d))
+export const seededDeployOf = (name: string) => seededDeploys.get(name)
+/** Sign-out: the next account never sees this one's deploys. */
+export const clearSeededDeploys = () => {
+  if (seededDeploys.size) setSeededDeploys(new Map())
+}
+const subscribeSeeded = (fn: () => void) => {
+  seededListeners.add(fn)
+  return () => void seededListeners.delete(fn)
+}
+export const useSeededDeploys = () =>
+  useSyncExternalStore(
+    subscribeSeeded,
+    () => seededDeploys,
+    () => seededDeploys,
+  )
+
+/** The query a guide with no `starterPack` slot holds instead: never run (`enabled: false`). */
+const NO_SLOT_QUERY = {
+  queryKey: ['onboarding', 'starter-pack', 'no-slot'],
+  queryFn: () => Promise.resolve(null),
+}
+
+/** Whether the Starter pack tab is offered: yes without a slot, else the slot's answer, null while it's coming. */
+export function useStarterPackOffered(): boolean | null {
+  const slot = useSlots().starterPack
+  const q = useQuery<unknown>({ ...(slot?.query ?? NO_SLOT_QUERY), enabled: !!slot, retry: false })
+  if (!slot) return true
+  if (q.isPending) return null
+  return slot.offered(q.isError ? undefined : q.data)
+}

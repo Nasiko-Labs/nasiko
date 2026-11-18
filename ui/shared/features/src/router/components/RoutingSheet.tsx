@@ -11,11 +11,11 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
 import { CopyButton } from '@nasiko/ui/composites/copy-button'
+import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { PrevNext } from '@nasiko/ui/composites/prev-next'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Field, FieldLabel, FieldLegend, FieldSet } from '@nasiko/ui/primitives/field'
-import { Input } from '@nasiko/ui/primitives/input'
 import { Label } from '@nasiko/ui/primitives/label'
 import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
 import {
@@ -44,6 +44,7 @@ import { sourceLabel } from '../format'
 import {
   catalogIndex,
   cliAttach,
+  cliAttachTemplate,
   cliDetach,
   keepOverrideCheck,
   keySource,
@@ -248,7 +249,6 @@ function Body({
   // Seeded once from the routing at open (never re-seeded under the user).
   const {
     control,
-    register,
     setValue,
     formState: { isDirty },
   } = useForm<Form>({
@@ -350,13 +350,6 @@ function Body({
           <dt className="text-muted-foreground">{copy.labelOverride}</dt>
           <dd className="font-mono text-xs">
             {routing.pinned_model ?? <span className="font-sans text-sm">{copy.none}</span>}
-          </dd>
-          <dt className="text-muted-foreground">{copy.requestFormat}</dt>
-          <dd>
-            <span className="font-mono text-xs">{routing.inbound_format}</span>
-            <span className="block text-xs text-muted-foreground">
-              {copy.requestFormatWayOut(target.name)}
-            </span>
           </dd>
         </dl>
 
@@ -488,19 +481,22 @@ function Body({
                 {copy.overrideModel}
               </FieldLabel>
               <div className="flex gap-2">
-                <Input
-                  id={`${ids}-override`}
-                  list={`${ids}-models`}
-                  {...register('override')}
-                  placeholder={copy.overridePlaceholder}
-                />
-                <datalist id={`${ids}-models`}>
-                  {(catalog ?? []).flatMap((g) =>
-                    g.models.map((m) => (
-                      <option key={`${g.provider}/${m.model}`} value={m.model} />
-                    )),
+                <Controller
+                  control={control}
+                  name="override"
+                  render={({ field }) => (
+                    <SuggestInput
+                      id={`${ids}-override`}
+                      className="flex-1"
+                      suggestions={(catalog ?? []).flatMap((g) => g.models.map((m) => m.model))}
+                      value={field.value}
+                      onValueChange={field.onChange}
+                      onBlur={field.onBlur}
+                      ref={field.ref}
+                      placeholder={copy.overridePlaceholder}
+                    />
                   )}
-                </datalist>
+                />
                 {override ? (
                   <Button
                     className="pointer-coarse:min-h-11"
@@ -513,20 +509,16 @@ function Body({
                 ) : null}
               </div>
             </FieldSet>
-            <div className="space-y-1 text-xs text-muted-foreground">
-              <p>{copy.cliEquivalent}</p>
-              {desiredConfig ? (
-                <CopyButton
-                  text={cliAttach(
-                    target.name,
-                    ownerConfigs.find((c) => c.id === desiredConfig)?.name ?? desiredConfig,
-                  )}
-                  label={copy.copyCli}
-                  showText
-                />
-              ) : (
-                <CopyButton text={cliDetach(target.name)} label={copy.copyCli} showText />
-              )}
+            <div className="space-y-1.5 text-xs text-muted-foreground">
+              <p>{copy.cliAttachLabel}</p>
+              <CopyButton
+                text={attachCommand(target.name, desiredConfig, routing, ownerConfigs)}
+                label={copy.copyCliAttach}
+                showText
+              />
+              <p>{copy.cliDetachLabel}</p>
+              <CopyButton text={cliDetach(target.name)} label={copy.copyCliDetach} showText />
+              <p>{copy.cliAppliesTo(CONFIG_CACHE_SECONDS)}</p>
             </div>
           </>
         )}
@@ -556,6 +548,23 @@ function Body({
       </SheetFooter>
     </>
   )
+}
+
+/**
+ * The attach command for the sheet's CLI block: the config chosen in the form, else the one attached now, else the
+ * caller's first; with none at all, a placeholder to fill in.
+ */
+function attachCommand(
+  agent: string,
+  desired: string | null,
+  routing: AgentRouting,
+  configs: readonly LlmConfig[],
+): string {
+  const name =
+    (desired && (configs.find((c) => c.id === desired)?.name ?? desired)) ||
+    routing.llm_config?.name ||
+    configs[0]?.name
+  return name ? cliAttach(agent, name) : cliAttachTemplate(agent)
 }
 
 function Outcome({

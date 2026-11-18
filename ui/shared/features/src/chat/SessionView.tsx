@@ -47,8 +47,8 @@ import { CHAT_COLUMN, TOUCH } from './components/turnStyles'
 import { chatIdentity, targetIdentity } from './identity'
 import { indexRequests } from './pending'
 import { isMetadataOnly } from './recorded'
-import { resolveChatTarget, type Target } from './target'
-import { answeredResume, firstSeenAnswer, mergeTurns, replyStatus } from './turnModel'
+import { resolveChatTarget, stoppedByOwner, type Target } from './target'
+import { answeredResume, firstSeenAnswer, mergeTurns, ownTurn, replyStatus } from './turnModel'
 import { endOf, isLivePhase, sawTerminal, stepsOf, type SendInput } from './turnRegistry'
 import { tuning } from './tuning'
 import type { HitlDto } from './types'
@@ -66,7 +66,6 @@ import {
 } from './components/PageParts'
 import { DebugFrames, RoutedMetricLine } from './components/DebugPanels'
 import { SessionHeader } from './components/SessionHeader'
-import { ownTurn } from './reconcile'
 import { useReconcile } from './useReconcile'
 
 /** Rail pages searched for an existing chat's row; after that the chat reads as "agent removed" (§6.11). */
@@ -174,6 +173,8 @@ function SessionView({
     : routed
       ? copy.theOrchestrator
       : (row?.agent_name ?? copy.theAgent)
+  // A stopped agent someone else owns: this user can't start it, so say its owner stopped it.
+  const byOwner = !!agent && stoppedByOwner(agent, userId)
   const identity = row
     ? chatIdentity(row, dir.byId, username)
     : agent
@@ -485,6 +486,9 @@ function SessionView({
   }
 
   const readOnly = target.kind === 'readonly'
+  // A parked agent takes messages: the message wakes it (`acceptsMessages` in ./target). Inline, not that
+  // call: a call here makes the React Compiler re-render every turn on each tick (ChatPage.tick.test).
+  const takesMessages = agent?.status === 'running' || agent?.status === 'parked'
   let mode: ComposerMode = { kind: 'ready' }
   if (capped && target.kind === 'loading')
     mode = { kind: 'locked', reason: copy.chatDetailsMissing }
@@ -505,9 +509,9 @@ function SessionView({
   else if (status === 'checking') mode = { kind: 'locked', reason: copy.lockedChecking }
   else if (forbiddenTurn && unlockedTurn !== forbiddenTurn)
     mode = { kind: 'locked', reason: copy.lockedForbidden }
-  else if (agent && agent.status !== 'running') {
+  else if (agent && !takesMessages) {
     // A stopped agent: Send stays focusable, and Enter or Send says why (E16).
-    const reason = copy.targetNotRunning(agentName)
+    const reason = byOwner ? copy.stoppedByOwner(agentName) : copy.targetNotRunning(agentName)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
   }
 
@@ -537,8 +541,13 @@ function SessionView({
         onDelete={() => setConfirm('delete')}
       />
 
-      {agent && agent.status !== 'running' && !liveNow ? (
-        <NotRunningBanner agentId={agent.id} name={agentName} refetch={() => void dir.refetch()} />
+      {agent && !takesMessages && !liveNow ? (
+        <NotRunningBanner
+          agentId={agent.id}
+          name={agentName}
+          byOwner={byOwner}
+          refetch={() => void dir.refetch()}
+        />
       ) : null}
       {capped && target.kind === 'loading' ? (
         <div
@@ -560,7 +569,9 @@ function SessionView({
         </div>
       ) : null}
 
-      {history.isPending ? (
+      {/* A live turn renders without history (mergeTurns), so a first send's turn stays put while its new chat's
+          history loads, instead of giving way to the loader. */}
+      {history.isPending && !live ? (
         <PageLoader label={copy.loadingChat} inline className="min-h-0" />
       ) : (
         <Transcript

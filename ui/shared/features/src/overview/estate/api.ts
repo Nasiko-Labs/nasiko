@@ -9,6 +9,7 @@ import { apiData, apiFetch } from '@nasiko/data-access/client'
 import { isEndpointAbsent } from '@nasiko/data-access/detect'
 import { DRAFT_PREFIX } from '@nasiko/app-core/draftKeys'
 import type { Range } from '../search'
+import { ESTATE_REFRESH_MS } from '../tuning'
 import {
   estateSchema,
   pinsSchema,
@@ -43,7 +44,7 @@ export function useEstate(range: Range, enabled = true) {
       ),
     enabled,
     // The map is live: problems and requests move while the page is open.
-    refetchInterval: 60_000,
+    refetchInterval: ESTATE_REFRESH_MS,
     refetchIntervalInBackground: false,
     placeholderData: (prev) => prev,
   })

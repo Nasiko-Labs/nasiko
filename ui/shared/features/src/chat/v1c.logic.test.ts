@@ -120,16 +120,17 @@ describe('chatIdentity (test 1, §5.2)', () => {
     expect(recordedName('admin-', 'admin')).toBe('admin-')
   })
 
-  it('the picker never lists harness agents; running ones come first, by display name', () => {
+  it('the picker never lists harness agents; running and parked ones come first, by display name', () => {
     const { running, stopped } = pickerAgents([
       agent('b', { display_name: 'Beta' }),
       agent('a', { display_name: 'Alpha' }),
       agent('s', { display_name: 'Sleepy', status: 'stopped' }),
+      agent('p', { display_name: 'Parked', status: 'parked' }),
       agent('h1', { tags: ['coding-agent'] }),
       agent('h2', { metadata: { source: 'nasiko-cli-integration' } }),
       agent('h3', { is_coding_agent: true }),
     ])
-    expect(running.map((a) => a.id)).toEqual(['a', 'b'])
+    expect(running.map((a) => a.id)).toEqual(['a', 'b', 'p'])
     expect(stopped.map((a) => a.id)).toEqual(['s'])
   })
 })
@@ -145,9 +146,9 @@ describe('copy guards (test 2, §5.1)', () => {
     errorCopy,
   })
 
-  it('no "Auto" badge, no "Let OpenRuntime choose", and composed strings take the article', () => {
+  it('no "Auto" badge, no "Let Open Runtime choose", and composed strings take the article', () => {
     expect(copy.orchestratorName).toBe('Orchestrator')
-    expect(all).not.toContain('Let OpenRuntime choose')
+    expect(all).not.toContain('Let Open Runtime choose')
     for (const banned of [
       /Ask Orchestrator/,
       /by Orchestrator/,
@@ -160,7 +161,7 @@ describe('copy guards (test 2, §5.1)', () => {
     expect(copy.theOrchestrator).toBe('the Orchestrator')
   })
 
-  it('routed strings say Orchestrator; platform strings keep OpenRuntime', () => {
+  it('routed strings say Orchestrator; platform strings keep Open Runtime', () => {
     for (const s of [
       copy.heroOrchestratorSubline,
       copy.routedBadgeTooltip,
@@ -180,7 +181,7 @@ describe('copy guards (test 2, §5.1)', () => {
       errorCopy.routedMayStillArrive,
       errorCopy.routedInternal,
     ])
-      expect(`${e.problem} ${e.cause}`).toMatch(/OpenRuntime/)
+      expect(`${e.problem} ${e.cause}`).toMatch(/Open Runtime/)
   })
 })
 

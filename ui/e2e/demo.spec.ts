@@ -23,11 +23,11 @@ test('TokenOps → Sessions → trace: follow the money', async ({ page }) => {
   )
   await top.click()
   await expect(
-    page.getByRole('heading', {
-      level: 1,
-      name: /^Session · Code Reviewer · Sep 17 16:33 · \$2\.63 · 52 traces/,
-    }),
+    page.getByRole('heading', { level: 1, name: /^Session · Code Reviewer · Sep 17 16:33/ }),
   ).toBeVisible()
+  await expect(page.getByText('Session total:').locator('..')).toHaveText(
+    /^Session total: \$2\.63 · .* · across 52 traces$/,
+  )
   await expect(page.getByLabel('What happened')).toContainText(
     'This trace cost $0.10; retries cost $0.05.',
   )

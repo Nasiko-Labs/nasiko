@@ -37,6 +37,11 @@ const MAX_TOOL_TURNS: usize = 20;
 /// text.
 const COMPLETION_TEMPERATURE: f64 = 0.2;
 
+/// What a caller sees when this agent has no model key at all. At deploy the platform's LLM
+/// router puts the agent's gateway token in `OPENAI_API_KEY`, so an empty value means neither
+/// the router nor the agent's secrets supplied a key.
+const MISSING_KEY_MESSAGE: &str = "OPENAI_API_KEY is not set for this agent. Add it in the agent's secrets, or configure a platform key.";
+
 /// A live progress message per tool call, for callers that stream status back to a caller
 /// (the A2A path). `None` for callers that only want the final digest (the Slack scheduler).
 pub(crate) type ProgressSink = Option<tokio::sync::mpsc::UnboundedSender<String>>;
@@ -82,6 +87,9 @@ impl RepoWatchAgent {
         remote_cx: Option<&opentelemetry::Context>,
         progress: ProgressSink,
     ) -> Result<String, String> {
+        if self.api_key.is_empty() {
+            return Err(MISSING_KEY_MESSAGE.to_owned());
+        }
         // `CompletionsClient` (the classic `/chat/completions` shape), not the default
         // `openai::Client` (OpenAI's newer Responses API) — DeepSeek and other
         // OpenAI-compatible providers implement the former, not the latter.

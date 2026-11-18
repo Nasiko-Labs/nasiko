@@ -112,7 +112,7 @@ export function RouterTitle({
                 <X className="size-4" aria-hidden />
               </Button>
             </div>
-            {/* Our take on Aceternity's Tracing Beam, as on the onboarding Welcome step (index.css `--animate-beam` /
+            {/* Our take on Aceternity's Tracing Beam (index.css `--animate-beam` /
                 `--animate-stage`): from lg a beam runs along the line through the five steps and each step's icon
                 lights as it passes; stacked, the icons still light in turn. Under reduced motion nothing moves and the
                 first step stays lit. Decorative: the words carry the meaning. */}

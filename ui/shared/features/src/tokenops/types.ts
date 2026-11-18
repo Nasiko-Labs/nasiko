@@ -451,8 +451,6 @@ interface SavingsCoverage {
   optimized_spend_usd: number
   unoptimized_spend_usd: number
   top_unoptimized?: { agent_id: string; agent_name: string; spend_usd: number }
-  /** Share of measured savings calibrated against real usage rather than the fallback divisor. */
-  calibrated_pct: number | null
 }
 
 export interface SavingsData {
@@ -462,4 +460,41 @@ export interface SavingsData {
   by_agent: AgentSavingsRow[]
   by_session: SessionSavingsRow[]
   coverage: SavingsCoverage
+}
+
+/**
+ * `GET /api/observability/finops/model-routing` — how the LLM router chose the model over the
+ * window (NAS-1263). Server: `oss/server/src/observability/model_routing.rs` (`ModelRoutingData`,
+ * `RoutingBucket`); the counters come from each call's `metadata.routing` block.
+ */
+export interface RoutingBucket {
+  /** A precedence level (`small_talk`) or a tier (`tier3`). */
+  key: string
+  calls: number
+  /** `null`, never 0, when nothing was routed in the window. */
+  call_share_pct: number | null
+  traces: number
+  /**
+   * Calls on traces this bucket served alone — the ones `tokens` and `cost_usd` cover. Below
+   * `calls` means the cost figure covers only part of the bucket's work (a trace that mixed two
+   * levels cannot have its cost split between them).
+   */
+  attributed_calls: number
+  tokens: number
+  cost_usd: number
+}
+
+export interface ModelRoutingData {
+  window: { start: string; end: string }
+  /** Trace rows carrying a routing record. */
+  traces: number
+  calls: number
+  /** Calls where routing overrode the model the resolver had picked. */
+  model_overridden: number
+  tokens: number
+  cost_usd: number
+  /** Rows with no routing record: calls from before this shipped, and ones that route no model. */
+  unrecorded_traces: number
+  by_level: RoutingBucket[]
+  by_tier: RoutingBucket[]
 }

@@ -28,7 +28,7 @@ describe('Fleet health with nothing deployed (ISSUE-004)', () => {
     const health = await screen.findByTestId('overview-health')
     expect(
       await within(health).findByTestId('health-none-deployed', {}, { timeout: 5000 }),
-    ).toHaveTextContent(copy.health.noneDeployed)
+    ).toHaveTextContent(copy.cardQuiet.health)
     await waitFor(() => expect(health).not.toHaveTextContent(/week of activity/))
   })
 

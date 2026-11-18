@@ -25,7 +25,6 @@ use nasiko_mcp_gateway::types::codes;
 
 use crate::mcp::identity::deny;
 use crate::state::AppState;
-use crate::usage::TokenUsageBuilder;
 
 /// Agent-facing MCP JSON-RPC gateway. Generic `tools/list` / `tools/call`
 /// JSON-RPC 2.0; request and response bodies are protocol-defined, not
@@ -215,10 +214,12 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         .and_then(|v| v.to_str().ok());
 
     // Two doors onto the same tail:
-    //   - a coding-agent *session token* (NAS-839) carries {agent, user, flow}
-    //     in signed claims, so it needs neither the ngt_ lookup nor a
-    //     traceparent — the signature is the proof of the binding, so the
-    //     claims' flow id is the verified flow for everything downstream;
+    //   - a coding-agent *session token* (NAS-839) carries {agent, user, session,
+    //     flow} in signed claims, so it needs neither the ngt_ lookup nor a
+    //     traceparent — the signature proves the user and agent, and the flow is
+    //     the claim or a later turn's flow that `attributed_flow` verified (owned
+    //     by that user, the agent a participant), so it is the verified flow for
+    //     everything downstream;
     //   - otherwise the deploy-time ngt_ gateway token names the agent and the
     //     user is resolved from the request's traceparent + flow (the A2A path,
     //     docs/MCP_GATEWAY_AGENT_AUTH.md §2.4), with rule 3b for CLI-bound
@@ -226,7 +227,8 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     //
     // `verified_flow_id` travels alongside `user_id` (rather than being
     // re-derived from `traceparent` further down) because it's the one thing
-    // this function actually proved — by signature on the session path, or
+    // this function actually proved — by signature plus the ownership and
+    // participant check on the session path, or
     // against `flows`/`flow_participants` on the A2A path. The raw
     // `traceparent` a caller sends is not proof of anything on its own. On the
     // owner-fallback branch below, `user_id` did NOT come from a verified flow,
@@ -241,7 +243,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         Uuid,
         Option<String>,
         Option<String>,
-    ) = match try_session_identity(state, token).await {
+    ) = match try_session_identity(state, token, header_traceparent).await {
         SessionResolution::Session {
             agent_id,
             user_id,
@@ -355,6 +357,9 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
     // content flag the hop and LLM spans honour, so a deployment that opts out
     // of content capture gets the Tool lane without the payloads.
     let capture_content = state.config.otel_capture_content;
+    // One id for the exported span and the stored row, so the Tempo materializer's
+    // `gen_ai.tool.call.id` and `tool_calls.call_id` name the same call.
+    let call_id: String = Uuid::new_v4().to_string();
     let tool_span = (method == "tools/call").then(|| {
         let span = tracing::info_span!(
             "execute_tool",
@@ -373,6 +378,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             gen_ai.operation.name = "execute_tool",
             gen_ai.agent.id = %agent_id,
             tool.name = %tool_name,
+            gen_ai.tool.call.id = %call_id,
             tool.success = tracing::field::Empty,
             tool.arguments = tracing::field::Empty,
             tool.result = tracing::field::Empty,
@@ -460,6 +466,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             latency_ms,
             success,
             verified_flow_id.as_deref(),
+            &call_id,
         );
 
         if result
@@ -538,11 +545,16 @@ enum SessionResolution {
 
 /// Try to authenticate the credential as a coding-agent session token.
 ///
-/// The signature is the proof of `{agent_id, user_id, flow_id}`, so — unlike the
-/// A2A path — this needs no live-flow freshness window (a long turn is never
-/// rejected for age) and no `flow_participants` lookup. The one DB touch is the
-/// `jti` revocation check, so a token can still be killed before its `exp`.
-async fn try_session_identity(state: &AppState, token: &str) -> SessionResolution {
+/// The signature proves `{agent_id, user_id}`, so — unlike the A2A path — this needs no
+/// live-flow freshness window (a long turn is never rejected for age). The DB touches are the
+/// `jti` revocation check, so a token can still be killed before its `exp`, and the flow
+/// attribution: a later turn's flow (the traceparent's, else the session's newest) is used only
+/// when that user owns it and the agent is a recorded participant, else the claim.
+async fn try_session_identity(
+    state: &AppState,
+    token: &str,
+    traceparent: Option<&str>,
+) -> SessionResolution {
     let secret = &state.config.agent_jwt_secret;
     // Unconfigured secret ⇒ this deployment doesn't issue session tokens; leave
     // the legacy path untouched.
@@ -583,11 +595,22 @@ async fn try_session_identity(state: &AppState, token: &str) -> SessionResolutio
     };
 
     match is_session_token_revoked(&state.db, &claims.jti).await {
-        Ok(false) => SessionResolution::Session {
-            agent_id,
-            user_id,
-            flow_id: claims.flow_id,
-        },
+        Ok(false) => {
+            let trace_flow = traceparent
+                .and_then(nasiko_flow::FlowContext::from_traceparent)
+                .map(|ctx| ctx.flow_id);
+            let attributed = nasiko_session_token::attribution::attributed_flow(
+                &state.db,
+                trace_flow.as_deref(),
+                &claims,
+            )
+            .await;
+            SessionResolution::Session {
+                agent_id,
+                user_id,
+                flow_id: attributed.flow_id,
+            }
+        }
         Ok(true) => SessionResolution::Deny(deny("session token revoked".into())),
         Err(e) => {
             // Rule 5: fail closed on identity-store failure.
@@ -622,7 +645,7 @@ fn synth_traceparent(flow_id: &str) -> String {
 /// `Err(denial)` arm above always needs both facts about the very same row at
 /// once. `is_local` is `coding_agent_integration_id IS NOT NULL`
 /// (`oss/migrations/0019_coding_agent_identity.sql`) or `discovered_on IS NOT
-/// NULL` (`oss/migrations/0078_discovered_agents.sql`) — deliberately the
+/// NULL` (`oss/migrations/0110_discovered_agents.sql`) — deliberately the
 /// columns themselves, never agent metadata or name — matching
 /// `is_coding_agent` and `is_discovered_agent` in
 /// `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
@@ -749,6 +772,8 @@ fn tool_call_succeeded(response: &Value) -> bool {
             != Some(true)
 }
 
+// One value per field of the stored call; a params struct would only repeat them.
+#[allow(clippy::too_many_arguments)]
 fn record_tool_usage(
     state: &AppState,
     user_id: Uuid,
@@ -757,6 +782,7 @@ fn record_tool_usage(
     latency_ms: i32,
     success: bool,
     flow_id: Option<&str>,
+    call_id: &str,
 ) {
     state.genai_metrics.record_tool_call(
         latency_ms as f64 / 1000.0,
@@ -764,25 +790,20 @@ fn record_tool_usage(
         &agent_id.to_string(),
     );
 
-    // `session_id` carries the flow id (= trace id), exactly as the LLM rows do
-    // (`router/usage_meta.rs` stamps `.session_id(flow_id)`), so a tool call joins
-    // its turn in SQL the same way — via `token_usage.session_id = <trace_id>`.
-    // Only the server-proven `verified_flow_id` is used, never the raw inbound
-    // `traceparent`: an owner-fallback coding-agent row has no proven flow, so it
-    // stays unstamped rather than naming a turn it can't be shown to belong to.
-    let mut builder = TokenUsageBuilder::new(user_id, "mcp_tool_call", "mcp", tool_name)
-        .agent_id(agent_id)
-        .latency_ms(latency_ms)
-        .finish_reason(if success { "ok" } else { "error" })
-        .metadata(json!({ "tool": tool_name, "success": success, "team_id": null }));
-    if let Some(flow_id) = flow_id {
-        builder = builder.session_id(flow_id);
-    }
-    let usage = builder.build();
+    let call = crate::usage::ToolCallRecord {
+        call_id: call_id.to_string(),
+        user_id,
+        agent_id,
+        tool_name: tool_name.to_string(),
+        success,
+        latency_ms,
+        metadata: json!({ "tool": tool_name, "success": success, "team_id": null, "flow_id": flow_id }),
+        verified_flow_id: flow_id.map(str::to_string),
+    };
 
     let tracker = state.usage_tracker.clone();
     tokio::spawn(async move {
-        if let Err(e) = tracker.track_tokens(usage).await {
+        if let Err(e) = tracker.track_tool_call(call).await {
             tracing::warn!(error = %e, "failed to record mcp_tool_call usage");
         }
     });

@@ -1,4 +1,5 @@
 import { screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it } from 'vitest'
 import { configureMocks, deployMockState } from '@nasiko/mocks/handlers'
 import { now, seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
@@ -24,7 +25,7 @@ describe("An agent's Builds tab (plans/feat-deploy.md §6, design review 1)", ()
       expect(within(r).getAllByRole('link')[0]!.getAttribute('href')).toMatch(/^\/builds\/5eed/)
     expect(
       screen.getByRole('link', { name: copy.agentBuilds.deploy }).getAttribute('href'),
-    ).toMatch(/^\/deploy\?name=/)
+    ).toMatch(/^\/deploy\?name=[^&]+&newVersion=true$/)
   })
 
   it('says why an agent has no builds', async () => {
@@ -40,5 +41,21 @@ describe("An agent's Builds tab (plans/feat-deploy.md §6, design review 1)", ()
     configureMocks({ variant: 'deploy-no-rights' })
     renderApp(`/agents/${seed.agents[0]!.id}?tab=builds`)
     expect(await screen.findByText(copy.builds.noRights, {}, { timeout: 5000 })).toBeInTheDocument()
+  })
+
+  it('shows a finished build’s logs inline when its row is expanded', async () => {
+    const agentId = deployMockState().state.builds[0]!.record.agent_id
+    renderApp(`/agents/${agentId}?tab=builds`)
+    const table = await screen.findByRole(
+      'table',
+      { name: copy.agentBuilds.label },
+      { timeout: 5000 },
+    )
+    const firstRow = within(table).getAllByTestId('agent-build-row')[0]!
+    await userEvent.click(within(firstRow).getByRole('button', { name: copy.build.viewLogs }))
+    // The mock serves the build's captured output (shared/mocks/src/handlers.ts), rendered line by
+    // line by BuildLogView.
+    expect(await within(table).findByLabelText(copy.build.logsHeading)).toBeInTheDocument()
+    expect(within(table).getByText(/Successfully tagged/)).toBeInTheDocument()
   })
 })

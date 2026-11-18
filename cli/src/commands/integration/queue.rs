@@ -48,6 +48,10 @@ pub struct QueueRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_attempt_at: Option<DateTime<Utc>>,
     pub event: CodingAgentEventV1,
+    /// Whether the turn may carry its chat history: captured with the consent this CLI records.
+    /// A record queued without it (by an older CLI) is sent as usage only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub chat_history: bool,
 }
 
 impl QueueRecord {
@@ -62,6 +66,7 @@ impl QueueRecord {
             attempts: 0,
             next_attempt_at: None,
             event,
+            chat_history: false,
         }
     }
 }

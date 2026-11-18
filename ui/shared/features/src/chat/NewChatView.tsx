@@ -10,7 +10,9 @@ import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { Button } from '@nasiko/ui/primitives/button'
 import { cn } from '@nasiko/ui/lib/utils'
 import { useAgentsDirectory } from '@nasiko/features/agents/api'
+import type { Skill } from '@nasiko/features/agents/types'
 import { chatKeys, removeSessionRow, sessionRows, upsertSessionRow, useChatSessions } from './api'
+import { AgentApps } from './components/AgentApps'
 import { Composer, type ComposerHandle, type ComposerMode } from './components/Composer'
 import {
   AgentChooser,
@@ -47,6 +49,7 @@ import {
   orchestratorExamples,
   preselectTarget,
   resolveAgentParam,
+  stoppedByOwner,
 } from './target'
 import type { DisplayTurn } from './turnModel'
 import { isLivePhase, type LiveTurn, type SendInput } from './turnRegistry'
@@ -71,6 +74,8 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
   const list = useChatSessions()
   const target = resolveAgentParam(search.agent, directoryOf(dir), isAuto(search))
   const agent = target.kind === 'direct' ? target.agent : undefined
+  // A stopped agent someone else owns: this user can't start it, so say its owner stopped it.
+  const byOwner = !!agent && stoppedByOwner(agent, userId)
   const routed = target.kind === 'routed'
   const noTarget = target.kind === 'choose'
   const draftKeyOf = (a: { id: string } | undefined) =>
@@ -187,12 +192,18 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
       void client.invalidateQueries({ queryKey: chatKeys.history(row.session_id) })
       // Only move to the chat if this view is still the one the user sent from (EN8). The URL
       // alone isn't enough: leaving and coming back to the same URL makes a new view.
-      if (mounted.current && router.state.location.href === sentFrom)
-        void navigate({
-          to: '/chat/$sessionId',
-          params: { sessionId: row.session_id },
-          search: carry,
-          replace: true,
+      const stillHere = () => mounted.current && router.state.location.href === sentFrom
+      const to = {
+        to: '/chat/$sessionId',
+        params: { sessionId: row.session_id },
+        search: carry,
+      } as const
+      // Load the chat route's code (and start its history read) before moving: a first move to code that isn't
+      // loaded yet shows the router's pending loader over the whole page (past 150 ms, for at least 500 ms), which on
+      // a real network reads as a reload. This view keeps showing the turn meanwhile. preloadRoute never rejects.
+      if (stillHere())
+        void router.preloadRoute(to).then(() => {
+          if (stillHere()) void navigate({ ...to, replace: true })
         })
     }
     // Runs from the registry, so it works even if this view is gone by then.
@@ -309,13 +320,17 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
     },
   }
 
+  // A parked agent takes messages: the message wakes it (`acceptsMessages` in ./target). Inline, not that
+  // call: a call here makes the React Compiler re-render every turn on each tick (ChatPage.tick.test).
+  const takesMessages = agent?.status === 'running' || agent?.status === 'parked'
   // The composer's lock: no target opens the picker (DS3); a stopped agent says why (E16); a turn in flight locks.
   let mode: ComposerMode = { kind: 'ready' }
   if (noTarget)
     mode = { kind: 'locked', reason: copy.needTarget, blocked: () => setPickerOpen(true) }
   else if (target.kind === 'loading' || target.kind === 'invalid') mode = { kind: 'locked' }
-  else if (agent && agent.status !== 'running') {
-    const reason = copy.stoppedTarget(agentLabel(agent))
+  else if (agent && !takesMessages) {
+    const name = agentLabel(agent)
+    const reason = byOwner ? copy.stoppedByOwner(name) : copy.stoppedTarget(name)
     mode = { kind: 'locked', reason, blocked: () => announce(reason) }
   }
   if (live && isLivePhase(live.phase)) mode = { kind: 'locked' }
@@ -419,10 +434,14 @@ function NewChatView({ userId, registry, search, railButton, username }: ViewPro
         ) : (
           <NewChatHero target={identity} description={agent?.description} />
         )}
-        {agent && agent.status !== 'running' ? (
+        {agent && takesMessages ? (
+          <AgentApps agentId={agent.id} skills={(agent.skills ?? []) as Skill[]} />
+        ) : null}
+        {agent && !takesMessages ? (
           <NotRunningBanner
             agentId={agent.id}
             name={agentLabel(agent)}
+            byOwner={byOwner}
             refetch={() => void dir.refetch()}
           />
         ) : null}

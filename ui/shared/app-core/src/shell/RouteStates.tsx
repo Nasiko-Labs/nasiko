@@ -3,6 +3,7 @@
  * shows this instead of TanStack's bare error; a 403 reads as "No access", never as a crash. A route whose code
  * chunk is gone (a tab older than the running build) gets the stale-build recovery instead (lib/staleBuild.ts).
  */
+import { productEvent } from '../analytics'
 import { useQueryErrorResetBoundary } from '@tanstack/react-query'
 import { useRouter, type ErrorComponentProps } from '@tanstack/react-router'
 import { useEffect } from 'react'
@@ -46,6 +47,14 @@ export function RouteError({ error, reset }: ErrorComponentProps) {
   const recovery = useStaleRecovery() ?? 'checking'
   // A query error thrown to the boundary stays thrown until its boundary resets.
   useEffect(() => queryReset.reset(), [queryReset])
+  // What failed, never the message (it can carry ids or server text).
+  useEffect(() => {
+    const status = (error as { status?: unknown } | null)?.status
+    productEvent('error_shown', {
+      area: router.state.matches.at(-1)?.routeId ?? 'unknown',
+      code: typeof status === 'number' ? String(status) : chunk ? 'chunk' : 'error',
+    })
+  }, [error, chunk, router])
   useEffect(() => {
     if (chunk) void recoverFromChunkError()
   }, [error, chunk])

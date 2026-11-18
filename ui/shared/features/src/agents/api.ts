@@ -32,7 +32,7 @@ import {
   type AccessGrants,
   type GrantsBody,
 } from './grants'
-import { normalizeDetail, type AgentView } from './normalize'
+import { normalizeDetail, type AgentView, type ParkingPolicy } from './normalize'
 import { displayStatus, isHarness, type DisplayStatus } from './status'
 import {
   AGENTS_MAX_PAGES,
@@ -61,6 +61,7 @@ import type {
   AgentVersion,
   DeletedAgent,
   DeploymentRow,
+  InheritedSecret,
   RollbackResponse,
   SecretName,
   Unavailable,
@@ -88,6 +89,8 @@ export const agentKeys = {
   userGrants: (id: string) => ['agents', 'grants-users', id] as const,
   agentGrants: (id: string) => ['agents', 'grants-agents', id] as const,
   secrets: (id: string) => ['agents', 'secrets', id] as const,
+  // Under `secrets`, so the agent's own secret writes (which can override one) refresh it too.
+  inheritedSecrets: (id: string) => ['agents', 'secrets', id, 'inherited'] as const,
   stats: (id: string) => ['agents', 'stats', id] as const,
   resources: (id: string) => ['agents', 'resources', id] as const,
   errorLogs: (id: string) => ['agents', 'error-logs', id] as const,
@@ -426,6 +429,20 @@ export function useSecrets(id: string, enabled: boolean) {
   })
 }
 
+/** The owner's Settings → Secrets names this agent inherits, each marked when the agent overrides it. */
+export function useInheritedSecrets(id: string, enabled: boolean) {
+  const path = `/api/agents/${id}/secrets/inherited`
+  const parse = arrayOf<InheritedSecret>(
+    (x) => isObj(x) && typeof x.name === 'string' && typeof x.overridden === 'boolean',
+    path,
+  )
+  return useQuery({
+    queryKey: agentKeys.inheritedSecrets(id),
+    queryFn: async ({ signal }) => parse(await apiFetch<unknown>(path, { signal })),
+    enabled,
+  })
+}
+
 export function useAgentStats(id: string, enabled: boolean) {
   return useQuery({
     queryKey: agentKeys.stats(id),
@@ -694,7 +711,12 @@ export function useLifecycle(id: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (action: 'restart' | 'stop' | 'start') =>
-      apiFetch<unknown>(`/api/containers/${id}/${action}`, { method: 'POST' }),
+      apiFetch<unknown>(`/api/containers/${id}/${action}`, {
+        method: 'POST',
+        // Start on a parked agent answers once it serves, within the server's own wake budget (up to minutes);
+        // a client deadline would cut the request and the server would park it again (admin/routes.rs `start`).
+        timeout: action === 'start' ? 0 : undefined,
+      }),
     onSettled: () => invalidateAgent(qc, id),
   })
 }
@@ -733,6 +755,8 @@ export interface AgentUpdate {
   metadata?: Record<string, unknown>
   compress_enabled?: boolean
   minimal_code_enabled?: boolean
+  /** `auto` parks it when idle, `resident` keeps it running (catalog/routes.rs `update`, 400 otherwise). */
+  parking_policy?: ParkingPolicy
 }
 
 export function useUpdateAgent(id: string) {

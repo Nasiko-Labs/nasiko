@@ -23,8 +23,13 @@ import {
   InputGroupButton,
   InputGroupTextarea,
 } from '@nasiko/ui/primitives/input-group'
+import { ApiError } from '@nasiko/data-access/client'
 import { copy, reason } from '../copy'
 import { planFailure } from '../logic'
+
+/** The server's own words for a refusal, without a trailing full stop (the copy adds its own). */
+const serverReason = (error: unknown) =>
+  error instanceof ApiError ? (error.serverMessage?.replace(/\.$/, '') ?? null) : null
 
 /** Why the planner said no, and what the person can do instead. */
 function PlanNotice({ error }: { error: unknown }) {
@@ -40,6 +45,7 @@ function PlanNotice({ error }: { error: unknown }) {
       </>
     )
   if (why === 'other') return copy.plan.other(reason(error))
+  if (why === 'no-key' || why === 'key-rejected') return copy.plan[why](serverReason(error))
   return copy.plan[why]
 }
 

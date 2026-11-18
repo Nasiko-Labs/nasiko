@@ -455,6 +455,13 @@ async fn spend_totals_include_child_turns_exactly_once() {
     assert_eq!(totals["turns"], 5, "{usage}");
     assert_eq!(totals["tokens"], tokens, "{usage}");
     assert!((totals["cost_usd"].as_f64().unwrap() - cost).abs() < 1e-9);
+    // One child session, however many turns it ran; the parent is not a run.
+    let claude = &usage["data"]["by_harness"][0];
+    assert_eq!(claude["harness"], "claude", "{usage}");
+    assert_eq!(claude["subagent_runs"], 1, "{usage}");
+    assert_eq!(claude["models"][0]["model"], "claude-test", "{usage}");
+    assert_eq!(claude["models"][0]["turns"], 5, "{usage}");
+    assert_eq!(claude["models"][0]["tokens"], tokens, "{usage}");
     server.cleanup().await;
 }
 
@@ -521,8 +528,8 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
     // An indexed trace, so the detail resolves the session without searching Tempo.
     for session in [&parent, &explore] {
         sqlx::query(
-            "INSERT INTO session_traces (session_id, trace_id, created_at) \
-             SELECT session_id, md5(session_id), created_at FROM chat_sessions WHERE session_id = $1",
+            "INSERT INTO flows (flow_id, user_id, session_id, created_at) \
+             SELECT md5(session_id), user_id, session_id, created_at FROM chat_sessions WHERE session_id = $1",
         )
         .bind(session)
         .execute(&server.db)
@@ -530,6 +537,12 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
         .unwrap();
     }
 
+    // The importer stores a subagent's description as its session title.
+    sqlx::query("UPDATE chat_sessions SET title = 'Map the auth flow' WHERE session_id = $1")
+        .bind(&explore)
+        .execute(&server.db)
+        .await
+        .unwrap();
     let detail = get_as(
         &server,
         user_id,
@@ -541,10 +554,10 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
     assert_eq!(
         session["subagents"],
         json!([
-            {"session_id": explore, "subagent_type": "Explore", "spawn_tool_call_id": "toolu_1",
+            {"session_id": explore, "title": "Map the auth flow", "subagent_type": "Explore", "spawn_tool_call_id": "toolu_1",
              "turns": 2, "tokens": 2 * TURN_TOKENS, "cost": 0.5,
              "start_time": "2023-11-14T22:14:20.000Z", "end_time": "2023-11-14T22:15:30.000Z"},
-            {"session_id": plan, "subagent_type": "Plan", "spawn_tool_call_id": "toolu_2",
+            {"session_id": plan, "title": null, "subagent_type": "Plan", "spawn_tool_call_id": "toolu_2",
              "turns": 1, "tokens": TURN_TOKENS, "cost": 0.25,
              "start_time": "2023-11-14T22:18:20.000Z", "end_time": "2023-11-14T22:18:30.000Z"},
         ])
@@ -561,5 +574,148 @@ async fn session_detail_lists_subagents_and_the_parent_link() {
     assert_eq!(session["spawn_tool_call_id"], "toolu_1");
     assert_eq!(session["subagent_type"], "Explore");
     assert_eq!(session["subagents"], json!([]));
+    server.cleanup().await;
+}
+
+/// A server whose Tempo and Loki answer every request as an overloaded Tempo
+/// does (NAS-1213: `429 job queue full`), and an admin with a parent session
+/// and one "Explore" subagent. Returns the server, the admin, the child's
+/// session id and its one turn's trace id.
+async fn subagent_with_tempo(tempo_url: String) -> (common::TestServer, Uuid, String, String) {
+    let server = common::TestServer::start_with(move |config| {
+        config.observability_enabled = true;
+        config.loki_url = tempo_url.clone();
+        config.tempo_url = tempo_url;
+    })
+    .await;
+    let (user_id, _) = setup(&server).await;
+    accept(&server, user_id, &[turn("parent", 0)]).await;
+    accept(
+        &server,
+        user_id,
+        &[child_turn(
+            "explore",
+            1,
+            "parent",
+            Some("toolu_1"),
+            Some("Explore"),
+        )],
+    )
+    .await;
+    let child = scoped_id(&server, user_id, "explore").await;
+    let trace_id: String =
+        sqlx::query_scalar("SELECT trace_id FROM trace_usage WHERE session_id = $1")
+            .bind(&child)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    (server, user_id, child, trace_id)
+}
+
+async fn overloaded(tempo: &mut mockito::Server) -> mockito::Mock {
+    tempo
+        .mock("GET", mockito::Matcher::Regex("^/".into()))
+        .with_status(429)
+        .with_body("job queue full")
+        .create_async()
+        .await
+}
+
+/// A subagent's turns never cross the proxy, so the server has no `flows` row
+/// for them. With Tempo failing, its session, trace and span pages answer from
+/// the receipts' `trace_usage` rows instead of failing (NAS-1213).
+#[tokio::test]
+#[serial]
+async fn subagent_pages_answer_from_receipts_while_tempo_fails() {
+    let mut tempo = mockito::Server::new_async().await;
+    overloaded(&mut tempo).await;
+    let (server, user_id, child, trace_id) = subagent_with_tempo(tempo.url()).await;
+    let parent = scoped_id(&server, user_id, "parent").await;
+
+    let detail = get_as(
+        &server,
+        user_id,
+        &format!("/api/observability/session/{child}"),
+    )
+    .await;
+    let session = &detail["data"]["session"];
+    assert_eq!(session["parent_session_id"], parent.as_str());
+    assert_eq!(session["num_traces"], 1, "{detail}");
+    assert_eq!(session["traces"][0]["trace_id"], trace_id.as_str());
+    assert_eq!(session["cost_summary"]["total"]["tokens"], TURN_TOKENS);
+
+    let trace = get_as(
+        &server,
+        user_id,
+        &format!("/api/observability/trace/{trace_id}"),
+    )
+    .await;
+    let trace = &trace["data"]["trace"];
+    assert_eq!(trace["project_session_id"], child.as_str());
+    assert!(trace["num_spans"].as_u64().unwrap() >= 2, "{trace}");
+
+    get_as(
+        &server,
+        user_id,
+        &format!("/api/observability/span/{trace_id}/0000000000000001"),
+    )
+    .await;
+
+    // Rebuilt from receipts, the trace is still authorized against its session.
+    let stranger = second_user(&server).await;
+    let denied = common::as_member(
+        server
+            .client
+            .get(server.url(&format!("/api/observability/trace/{trace_id}"))),
+        &stranger.to_string(),
+        "second",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(denied.status(), 404);
+    server.cleanup().await;
+}
+
+/// The span page reads the trace, then the span: Tempo answering the first and
+/// refusing the second serves the span from the first read, not a 500.
+#[tokio::test]
+#[serial]
+async fn span_page_survives_tempo_refusing_the_second_read() {
+    let mut tempo = mockito::Server::new_async().await;
+    let (server, user_id, child, trace_id) = subagent_with_tempo(tempo.url()).await;
+    let nanos = "1700000060000000000";
+    let body = json!({"batches": [{
+        "resource": {"attributes": [
+            {"key": "service.name", "value": {"stringValue": "coding-agent"}},
+        ]},
+        "scopeSpans": [{"spans": [{
+            "traceId": trace_id,
+            "spanId": "AAAAAAAAAAE=",
+            "name": "turn",
+            "kind": "SPAN_KIND_SERVER",
+            "startTimeUnixNano": nanos,
+            "endTimeUnixNano": nanos,
+            "attributes": [
+                {"key": "session.id", "value": {"stringValue": child}},
+            ],
+        }]}],
+    }]});
+    tempo
+        .mock("GET", format!("/api/traces/{trace_id}").as_str())
+        .with_status(200)
+        .with_body(body.to_string())
+        .expect(1)
+        .create_async()
+        .await;
+    overloaded(&mut tempo).await;
+
+    let span = get_as(
+        &server,
+        user_id,
+        &format!("/api/observability/span/{trace_id}/0000000000000001"),
+    )
+    .await;
+    assert_eq!(span["data"]["span"]["name"], "turn", "{span}");
     server.cleanup().await;
 }

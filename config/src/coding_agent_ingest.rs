@@ -30,6 +30,12 @@ pub struct CodingAgentIngestConfig {
     /// `CODING_AGENT_TEMPO_MAX_AGE_SECS`, default 15 days — must not exceed
     /// Tempo's `ingestion_time_range_slack`.
     pub tempo_max_age_secs: u64,
+    /// Whether a coding agent's chat history (prompt, response, session title, tool bodies) is
+    /// stored when its CLI sends it. Off, every turn is stripped to what prices it — tokens,
+    /// model, cost, timings, ids — whatever the client sends. The CLI only offers to send chat
+    /// history to a server on localhost; this is the server's own guard. Hosted servers turn it
+    /// off. `CODING_AGENT_CHAT_HISTORY`, default `true`.
+    pub accept_chat_history: bool,
 }
 
 impl Default for CodingAgentIngestConfig {
@@ -38,6 +44,7 @@ impl Default for CodingAgentIngestConfig {
             events_per_min: DEFAULT_EVENTS_PER_MIN,
             max_concurrent: DEFAULT_MAX_CONCURRENT,
             tempo_max_age_secs: DEFAULT_TEMPO_MAX_AGE_SECS,
+            accept_chat_history: true,
         }
     }
 }
@@ -53,6 +60,7 @@ impl CodingAgentIngestConfig {
                 "CODING_AGENT_TEMPO_MAX_AGE_SECS",
                 DEFAULT_TEMPO_MAX_AGE_SECS,
             ),
+            accept_chat_history: nasiko_utils::env_bool("CODING_AGENT_CHAT_HISTORY", true),
         }
     }
 }

@@ -18,6 +18,7 @@ mod courier;
 mod import;
 mod launcher;
 mod ledger;
+mod locality;
 mod model;
 mod onboarding;
 mod pace;
@@ -36,8 +37,12 @@ use std::path::Path;
 use agents::Agent;
 use catalog::Support;
 use onboarding::AgentReport;
-use state::{AgentState, InstallationBinding, IntegrationState};
+use state::{AgentState, InstallationBinding, IntegrationState, decline_key};
 
+pub use locality::{
+    USAGE, chat_history_question, chat_history_warning, content_refused, content_unconfirmed,
+    is_local_cluster, privacy_unknown, synced, usage_only_notice,
+};
 pub use setup::SetupOptions;
 
 /// Options accepted by `nasiko agents install`.
@@ -78,13 +83,21 @@ pub struct ReportingDestination {
     pub cluster_name: String,
     pub cluster_url: String,
     pub principal_id: String,
+    /// Whether this control plane keeps coding agents' chat history. For the active cluster
+    /// ([`Self::current`]) the server's own answer; for a recorded binding, whether it runs on
+    /// this machine (the fallback, not used to decide anything). `None` when the server couldn't
+    /// be asked: new reporting then gets usage only, and existing reporting keeps its setting.
+    pub accepts_chat_history: Option<bool>,
 }
 
 impl ReportingDestination {
     /// Where reporting would be bound if installed now: the active cluster and its login.
     pub fn current() -> Result<Self> {
         let binding = control_plane::installation_binding()?;
-        Ok(Self::from(&binding))
+        Ok(Self {
+            accepts_chat_history: locality::server_accepts_chat_history(&binding.cluster_url),
+            ..Self::from(&binding)
+        })
     }
 
     pub fn same_as(&self, other: &Self) -> bool {
@@ -112,6 +125,7 @@ impl From<&InstallationBinding> for ReportingDestination {
             cluster_name: binding.cluster_name.clone(),
             cluster_url: binding.cluster_url.clone(),
             principal_id: binding.principal_id.to_string(),
+            accepts_chat_history: Some(is_local_cluster(&binding.cluster_url)),
         }
     }
 }
@@ -119,6 +133,8 @@ impl From<&InstallationBinding> for ReportingDestination {
 /// Every catalogued coding agent with its detection and reporting state.
 pub fn local_agents() -> Result<Vec<LocalAgent>> {
     let settings = IntegrationState::load()?;
+    // Declines count on the cluster and account signed in now; elsewhere the agent is offered.
+    let here = current_decline_key();
     Ok(Agent::ALL
         .iter()
         .copied()
@@ -131,12 +147,15 @@ pub fn local_agents() -> Result<Vec<LocalAgent>> {
                 display_name: spec.display_name,
                 detected: detect(agent).is_present(),
                 reporting_supported: spec.support == Support::Instrumented,
-                reporting_declined: settings.declined.contains(spec.id),
+                reporting_declined: settings.is_declined(spec.id, here.as_deref()),
                 reporting_agent_name: state.map(|state| state.agent_name.clone()),
                 reporting_active: reporting.connected,
                 reporting_installed: state.is_some(),
                 reporting_status: reporting.status,
-                capture_content: state.is_none_or(|state| state.capture_content),
+                // Chat history only with the consent this CLI records (`chat_history`): a yes
+                // saved by an older one, under its default, doesn't count.
+                capture_content: state
+                    .is_some_and(|state| state.capture_content && state.chat_history),
                 hook_location: tildify(&agent.config_path()),
                 reporting_destination: state
                     .and_then(|state| state.binding.as_ref())
@@ -947,12 +966,18 @@ pub fn uninstall(agent_id: &str) -> Result<()> {
     let mut settings = IntegrationState::load()?;
     // The agent reporting was installed under — the routing agent or an account-scoped name —
     // not the catalog default.
-    let agent_name = settings
-        .agents
-        .remove(spec.id)
-        .map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
-    // Removing reporting is a no: it isn't offered again after the next login.
-    settings.declined.insert(spec.id.to_string());
+    let removed = settings.agents.remove(spec.id);
+    // Removing reporting is a no on the cluster it reported to: it isn't offered again there
+    // after the next login, and still is on any other.
+    let key = removed
+        .as_ref()
+        .and_then(|state| state.binding.as_ref())
+        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
+        .or_else(current_decline_key);
+    if let Some(key) = key {
+        settings.decline(spec.id, &key);
+    }
+    let agent_name = removed.map_or_else(|| spec.agent_name.to_string(), |state| state.agent_name);
     settings.save()?;
 
     term::print_success(&format!("Removed the {} hook.", spec.display_name));
@@ -985,16 +1010,26 @@ pub(super) fn auto_install_detected() -> Result<()> {
     }
 
     let here = ReportingDestination::current()?;
+    let steps: Vec<_> = agents
+        .into_iter()
+        .map(|agent| (agent, setup_step(settings.get(agent.spec().id), &here)))
+        .collect();
+    // Asked only when its answer is used: agents already reporting here are kept as they are.
+    let chat_history = if steps.iter().any(|(_, step)| *step != SetupStep::Keep) {
+        chat_history_for_setup(&here)?
+    } else {
+        false
+    };
     println!("\nConfiguring detected coding agents for this account...");
     let mut installed = 0usize;
-    for agent in agents {
+    for (agent, step) in steps {
         let spec = agent.spec();
         let reconnect = format!(
             "{} connect {} --no-routing --reporting",
             crate::commands::local_agents::cli_name(),
             spec.id
         );
-        let capture_content = match setup_step(settings.get(spec.id), &here) {
+        let capture_content = match step {
             SetupStep::Keep => {
                 println!(
                     "{} already reports sessions to {}.",
@@ -1003,16 +1038,14 @@ pub(super) fn auto_install_detected() -> Result<()> {
                 installed += 1;
                 continue;
             }
-            SetupStep::Install => true,
-            SetupStep::Move {
-                from,
-                capture_content,
-            } => {
+            SetupStep::Install => chat_history,
+            SetupStep::Move { from } => {
                 println!(
                     "{} reports sessions to {from}; moving it to {}.",
                     spec.display_name, here.cluster_name
                 );
-                capture_content
+                // Asked for here, like a new install: an earlier yes was for another cluster.
+                chat_history
             }
         };
         match install(InstallOptions {
@@ -1032,16 +1065,45 @@ pub(super) fn auto_install_detected() -> Result<()> {
     Ok(())
 }
 
+/// Whether `nasiko agents setup` syncs chat history for the agents it connects or moves here. A
+/// control plane that doesn't keep it never gets it (and is said so); one that does is asked
+/// once, on a terminal, defaulting to no. Without a terminal (the desktop app, a script), or when
+/// the control plane couldn't be asked, usage only.
+fn chat_history_for_setup(here: &ReportingDestination) -> Result<bool> {
+    use std::io::IsTerminal;
+    match here.accepts_chat_history {
+        Some(true) => {}
+        Some(false) => {
+            term::print_info(&usage_only_notice(&here.cluster_name));
+            return Ok(false);
+        }
+        None => {
+            term::print_warning(&privacy_unknown(&here.cluster_name));
+            return Ok(false);
+        }
+    }
+    if !std::io::stdin().is_terminal() {
+        return Ok(false);
+    }
+    term::print_warning(&chat_history_warning(&here.cluster_name));
+    Ok(
+        dialoguer::Confirm::with_theme(&dialoguer::theme::ColorfulTheme::default())
+            .with_prompt(chat_history_question(&here.cluster_name))
+            .default(false)
+            .interact()?,
+    )
+}
+
 /// What `nasiko agents setup` does with one detected agent's reporting.
 #[derive(Debug, PartialEq, Eq)]
 enum SetupStep {
-    /// Nothing installed yet: install it here, with prompt and response text.
+    /// Nothing installed yet: install it here.
     Install,
     /// Already reporting to this cluster and account.
     Keep,
     /// Reporting goes to `from` (another cluster or account, or none recorded): reinstall it
-    /// here, keeping its content setting.
-    Move { from: String, capture_content: bool },
+    /// here, with this run's chat-history answer.
+    Move { from: String },
 }
 
 /// Running setup is the user's yes, so reporting that goes elsewhere is moved to `here`, the
@@ -1057,10 +1119,7 @@ fn setup_step(state: Option<&AgentState>, here: &ReportingDestination) -> SetupS
         Some(binding) => binding.cluster_name.clone(),
         None => "an older install with no cluster recorded".to_string(),
     };
-    SetupStep::Move {
-        from,
-        capture_content: state.capture_content,
-    }
+    SetupStep::Move { from }
 }
 
 /// `nasiko agents sync` — see [`setup::sync`].
@@ -1112,13 +1171,24 @@ fn agent_rows() -> Vec<AgentReport> {
 }
 
 /// Remembers that the user said no when reporting was offered for these agents after logging
-/// in, so it isn't offered again.
+/// in, so it isn't offered again on this cluster and account. Without a login to record it
+/// against, nothing is recorded (the offer is only made to a signed-in user).
 pub fn record_declined(agent_ids: &[&str]) -> Result<()> {
+    let Some(key) = current_decline_key() else {
+        return Ok(());
+    };
     let mut settings = IntegrationState::load()?;
-    settings
-        .declined
-        .extend(agent_ids.iter().map(|id| id.to_string()));
+    for id in agent_ids {
+        settings.decline(id, &key);
+    }
     settings.save()
+}
+
+/// The cluster and account a decline made now is kept under, if anyone is signed in.
+fn current_decline_key() -> Option<String> {
+    control_plane::installation_binding()
+        .ok()
+        .map(|binding| decline_key(&binding.cluster_url, &binding.principal_id.to_string()))
 }
 
 /// Rewrites every detected agent's outdated reporting hook in place, so a hook fix reaches
@@ -1199,7 +1269,15 @@ fn refresh_hook(agent: Agent, state: &AgentState, binding: &InstallationBinding)
     let artifacts = agent.install()?;
     persist_installed_artifacts(
         artifacts,
-        || save_agent_state(agent, &state.agent_name, state.capture_content, binding),
+        // A yes saved without this CLI's recorded consent is dropped here, not carried on.
+        || {
+            save_agent_state(
+                agent,
+                &state.agent_name,
+                state.capture_content && state.chat_history,
+                binding,
+            )
+        },
         || agent.uninstall(),
     )?;
     Ok(())
@@ -1383,12 +1461,14 @@ fn save_agent_state(
 ) -> Result<()> {
     let spec = agent.spec();
     let mut settings = IntegrationState::load()?;
-    settings.declined.remove(spec.id);
+    settings.clear_declines(spec.id);
     settings.agents.insert(
         spec.id.to_string(),
         AgentState {
             agent_name: agent_name.to_string(),
             capture_content,
+            // Saved only by a run that asked (or read --content) for a cluster that keeps it.
+            chat_history: capture_content,
             hook_version: agent.install_version().expect("instrumented adapter"),
             binding: Some(binding.clone()),
         },
@@ -1721,6 +1801,7 @@ mod tests {
         let state = AgentState {
             agent_name: "claude-code".into(),
             capture_content: true,
+            chat_history: true,
             hook_version: expected.saturating_sub(1),
             binding: None,
         };
@@ -1731,6 +1812,7 @@ mod tests {
         AgentState {
             agent_name: "user-opencode".into(),
             capture_content: true,
+            chat_history: true,
             hook_version,
             binding: Some(InstallationBinding {
                 cluster_name: "cp".into(),
@@ -1745,6 +1827,7 @@ mod tests {
             cluster_name: cluster_name.into(),
             cluster_url: cluster_url.into(),
             principal_id: uuid::Uuid::nil().to_string(),
+            accepts_chat_history: Some(false),
         }
     }
 
@@ -1762,10 +1845,7 @@ mod tests {
         );
         assert_eq!(
             setup_step(Some(&state), &signed_in_to("cp2", "https://cp2.example")),
-            SetupStep::Move {
-                from: "cp".into(),
-                capture_content: true
-            }
+            SetupStep::Move { from: "cp".into() }
         );
     }
 
@@ -1779,7 +1859,6 @@ mod tests {
             setup_step(Some(&state), &signed_in_to("cp", "https://cp.example")),
             SetupStep::Move {
                 from: "an older install with no cluster recorded".into(),
-                capture_content: false
             }
         );
     }

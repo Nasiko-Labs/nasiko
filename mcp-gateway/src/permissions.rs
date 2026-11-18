@@ -158,13 +158,26 @@ pub async fn load_permission_context(
         .collect();
     // Default-on system connectors: a `provider_type = 'system'` connector with
     // `auto_enable = true` the agent's owner can reach is enabled for this agent
-    // without any `mcp_agent_connector_access` row. A PURE ADDITIVE UNION at this
-    // one chokepoint — the set feeds both `tools/list` (aggregator) and
-    // `tools/call` (protocol) through `decide`, and `compute_hash` below folds the
-    // unioned ids so the manifest cache busts correctly. Nothing else changes: an
-    // existing access row's meaning, `decide`, and `get_stance` are untouched.
-    enabled_connectors
-        .extend(repo::list_auto_enabled_system_connector_ids(&state.db, agent_id).await?);
+    // without any `mcp_agent_connector_access` row. A union at this one chokepoint —
+    // the set feeds both `tools/list` (aggregator) and `tools/call` (protocol)
+    // through `decide`, and `compute_hash` below folds the unioned ids so the
+    // manifest cache busts correctly. An access row that switches the connector
+    // off wins over the default, or the connector could never be turned off.
+    let switched_off: HashSet<Uuid> = rows
+        .iter()
+        .filter(|r| !r.enabled)
+        .map(|r| r.connector_id)
+        .collect();
+    let (system, toolkits) = tokio::try_join!(
+        repo::list_auto_enabled_system_connector_ids(&state.db, agent_id),
+        repo::list_coding_agent_owner_toolkit_ids(&state.db, agent_id),
+    )?;
+    enabled_connectors.extend(
+        system
+            .into_iter()
+            .chain(toolkits)
+            .filter(|id| !switched_off.contains(id)),
+    );
     let mut rules = Vec::new();
     for row in &rows {
         for tr in parse_tool_rules(&row.tool_rules) {
@@ -329,6 +342,92 @@ pub async fn list_connectors_view(
     Ok(json!({ "connectors": data }))
 }
 
+/// Where the caller stands with one connector an agent uses: whether its tools can run for
+/// them, and if not, what they have to do. Every tool call runs on the calling user's own
+/// connection — never the agent owner's — so this is per viewer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallerConnection {
+    /// Needs no credential (`auth_type = "none"`).
+    Ready,
+    /// The caller has connected their own account.
+    Connected,
+    /// The caller can reach the connector but has not connected their own account.
+    NeedsConnection,
+    /// The connector is not shared with the caller, so they cannot connect it yet.
+    NotShared,
+}
+
+impl CallerConnection {
+    /// Pure: the caller's standing from what is known about them and the connector. The
+    /// connector owner's static headers deliberately do not count (see
+    /// `credentials::static_headers_usable_by`): a caller without their own connection needs one.
+    pub fn of(needs_credential: bool, reachable: bool, connected: bool) -> Self {
+        match (reachable, needs_credential, connected) {
+            (false, _, _) => Self::NotShared,
+            (true, false, _) => Self::Ready,
+            (true, true, true) => Self::Connected,
+            (true, true, false) => Self::NeedsConnection,
+        }
+    }
+}
+
+/// Whether running `c`'s tools takes a connection of the caller's own: every Composio toolkit
+/// does, and every custom server except an `auth_type = "none"` one.
+fn needs_own_credential(c: &repo::McpConnector) -> bool {
+    c.is_composio() || c.auth_type.as_deref().is_some_and(|a| a != "none")
+}
+
+/// `GET /agents/{id}/my-connections` view: the connectors enabled on this agent, each with the
+/// caller's own [`CallerConnection`] — for someone the agent is shared with, which of its tools
+/// need them to connect their own account. Names nothing about anyone else's connections.
+pub async fn list_caller_connections_view(
+    state: &McpState,
+    user_id: Uuid,
+    agent_id: Uuid,
+) -> Result<Value> {
+    let enabled: Vec<Uuid> = repo::get_agent_connector_access(&state.db, agent_id)
+        .await?
+        .into_iter()
+        .filter(|row| row.enabled)
+        .map(|row| row.connector_id)
+        .collect();
+    let connected: HashSet<Uuid> = repo::list_user_connections(&state.db, user_id, Some("ACTIVE"))
+        .await?
+        .into_iter()
+        .map(|c| c.connector_id)
+        .collect();
+
+    let mut data = Vec::with_capacity(enabled.len());
+    for connector_id in enabled {
+        let Some(c) = repo::get_connector_by_id(&state.db, connector_id).await? else {
+            continue;
+        };
+        if !c.active() {
+            continue;
+        }
+        let reachable = state
+            .authorizer
+            .can_access_connector(&state.db, user_id, c.id)
+            .await?;
+        let standing = CallerConnection::of(
+            needs_own_credential(&c),
+            reachable,
+            connected.contains(&c.id),
+        );
+        data.push(json!({
+            "connector_id": c.id,
+            "provider_type": c.provider_type,
+            "name": c.name,
+            "display_name": c.display_name.unwrap_or_else(|| crate::catalog::capitalize(&c.name)),
+            "logo_url": c.logo_url,
+            "auth_type": c.auth_type,
+            "status": standing,
+        }));
+    }
+    Ok(json!({ "connectors": data }))
+}
+
 /// `PUT /agents/{id}/connectors/{connector_id}` — toggle a connector, preserving
 /// any existing tool rules. Requires the connector be reachable (Layer 1).
 pub async fn set_connector_access_view(
@@ -366,23 +465,19 @@ pub async fn set_connector_access_view(
     .await?;
     invalidate_permission_cache(state, agent_id).await;
     if enabled {
-        tokio::spawn(sync_catalog_after_enable(
-            state.clone(),
-            user_id,
-            connector_id,
-        ));
+        tokio::spawn(sync_catalog_if_empty(state.clone(), user_id, connector_id));
     }
     Ok(json!({ "connector_id": row.connector_id, "enabled": row.enabled }))
 }
 
-/// Fill a never-synced connector's tool catalog when it is enabled on an agent.
-/// Search finds a connector's tools only once they are in the catalog, and
-/// enabling (`nasiko mcp agent tools enable`) is often the only step a caller
-/// takes — nothing else guarantees the tool list is ever opened. Runs off the
-/// request, since a live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the
-/// toggle is already saved, so an unreachable backend only logs, and the tool
-/// list view retries the sync on its next read.
-async fn sync_catalog_after_enable(state: McpState, user_id: Uuid, connector_id: Uuid) {
+/// Fill a never-synced connector's tool catalog. Search and the connector list find a
+/// connector's tools only once they are in the catalog, and enabling a connector on an agent
+/// (`nasiko mcp agent tools enable`) or connecting an account is often the only step a caller
+/// takes — nothing else guarantees the tool list is ever opened. Runs off the request, since a
+/// live `tools/list` can take `LIST_TIMEOUT`. Best-effort: the toggle or connection is already
+/// saved, so an unreachable backend only logs, and the tool list view retries the sync on its
+/// next read.
+pub async fn sync_catalog_if_empty(state: McpState, user_id: Uuid, connector_id: Uuid) {
     let synced = match repo::list_connector_tools(&state.db, connector_id).await {
         Ok(catalog) if !catalog.is_empty() => return,
         Ok(_) => sync_connector_tools(&state, user_id, connector_id).await,
@@ -636,7 +731,7 @@ async fn sync_connector_tools(state: &McpState, user_id: Uuid, connector_id: Uui
     // (name, description, input_schema) — schema is only ever used as
     // LLM-fallback signal below, never persisted.
     let mut tools: Vec<(String, Option<String>, Option<Value>)> = if connector.is_composio() {
-        match &state.providers.composio {
+        match state.providers.composio.get() {
             Some(p) => p
                 .list_toolkit_tools(&connector.name)
                 .await?
@@ -751,8 +846,9 @@ pub struct ToolRuleInput {
     pub stance: String,
 }
 
-/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates
-/// + dedupes each connector's rules, and upserts (preserving `enabled`).
+/// `PUT /agents/{id}/tools` — replace tool rules. Groups by connector, validates and dedupes
+/// each connector's rules, and upserts them, preserving `enabled`. An agent with no access row
+/// yet gets one that is not enabled: setting a rule is not enabling.
 pub async fn bulk_update_tools(
     state: &McpState,
     user_id: Uuid,
@@ -790,7 +886,7 @@ pub async fn bulk_update_tools(
         let enabled = repo::get_agent_connector_access_row(&state.db, agent_id, connector_id)
             .await?
             .map(|r| r.enabled)
-            .unwrap_or(true);
+            .unwrap_or(false);
         let tool_rules: Vec<ToolRule> = patterns
             .iter()
             .map(|(p, s)| ToolRule {
@@ -826,6 +922,32 @@ pub async fn reset(state: &McpState, agent_id: Uuid) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_connector_not_shared_with_the_caller_is_not_shared_whatever_the_owner_connected() {
+        for (needs, connected) in [(true, false), (true, true), (false, false)] {
+            assert_eq!(
+                CallerConnection::of(needs, false, connected),
+                CallerConnection::NotShared
+            );
+        }
+    }
+
+    #[test]
+    fn a_caller_without_their_own_connection_needs_one() {
+        assert_eq!(
+            CallerConnection::of(true, true, false),
+            CallerConnection::NeedsConnection
+        );
+        assert_eq!(
+            CallerConnection::of(true, true, true),
+            CallerConnection::Connected
+        );
+        assert_eq!(
+            CallerConnection::of(false, true, false),
+            CallerConnection::Ready
+        );
+    }
 
     fn ctx(rules: Vec<PermissionRule>, disabled: &[Uuid]) -> PermissionContext {
         // The old test convention passes "disabled" IDs. With the new allowlist
@@ -1319,6 +1441,14 @@ mod tests {
             _accessible_connector_ids: &[Uuid],
             _perms: &PermissionContext,
             _limit: usize,
+        ) -> Vec<crate::search::ToolMatch> {
+            Vec::new()
+        }
+
+        fn granted_tools(
+            &self,
+            _connector_ids: &[Uuid],
+            _perms: &PermissionContext,
         ) -> Vec<crate::search::ToolMatch> {
             Vec::new()
         }

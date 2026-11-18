@@ -12,6 +12,14 @@ import { generateSeed } from './seed'
 /** Mock-only key: the mock session was ended by a sign-out. */
 const MOCK_SIGNED_OUT_KEY = 'ui-lab:mock-signed-out'
 
+/**
+ * `?mock=signed-in`: this load is the end of a sign-in round trip the mocks can't see (a provider's redirect, which an
+ * edition's dev server answers in mock mode), so a stored sign-out ends here, as the server's cookie would be set again.
+ */
+function signingIn(): boolean {
+  return new URLSearchParams(location.search).get('mock')?.split(',').includes('signed-in') === true
+}
+
 /** Storage blocked: null, so every load starts signed in, as before. */
 function readMockSignedOut(): boolean | null {
   try {
@@ -58,6 +66,13 @@ export async function startMocks(cfg: EnvConfig): Promise<void> {
   if (cfg.mode !== 'mock') configureMocks({ persona: null, lockPersona: true })
   // Full mock mode: a sign-out survives a reload, as the server's cleared cookie does (QA ISSUE-003).
   if (cfg.mode === 'mock') {
+    if (signingIn()) {
+      try {
+        localStorage.removeItem(MOCK_SIGNED_OUT_KEY)
+      } catch {
+        // Storage blocked: nothing was stored.
+      }
+    }
     configureMocks({
       loggedIn: readMockSignedOut() !== true,
       persistLogin: (value) => {

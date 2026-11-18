@@ -1,67 +1,81 @@
 /**
  * The onboarding guide (docs/superpowers/specs/2026-10-01-login-onboarding-design.md §3): the prototype's dialog, a
- * left rail of five steps beside the step itself, with Back / Skip this step / Continue below. Lazy (index.ts).
+ * left rail of three steps beside the step itself, with Back / Continue below. Lazy (index.ts). Finish lands on the
+ * homepage (user request 2026-11-09).
  */
+import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from '@tanstack/react-router'
 import {
   ArrowLeft,
   ArrowRight,
+  Bot,
   Check,
   Clock,
-  House,
-  Info,
+  DollarSign,
+  Gauge,
   Play,
   Plug,
-  Scissors,
   ShieldCheck,
-  Sparkles,
+  SquareTerminal,
   WandSparkles,
   X,
-  type LucideIcon,
 } from 'lucide-react'
-import { useRef, useState } from 'react'
-import { NAV_ITEMS } from '@nasiko/app-core/shell/nav'
+import { useEffect, useRef, useState } from 'react'
+import { agentKeys } from '@nasiko/features/agents/api'
+import { DotBackground } from '@nasiko/ui/composites/dot-background'
+import { GlowingEffect } from '@nasiko/ui/composites/glowing-effect'
 import { NasikoMark } from '@nasiko/ui/composites/NasikoMark'
-import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
-import { Badge } from '@nasiko/ui/primitives/badge'
+import { TextGenerateEffect } from '@nasiko/ui/composites/text-generate-effect'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Dialog, DialogContent } from '@nasiko/ui/primitives/dialog'
 import { Progress } from '@nasiko/ui/primitives/progress'
-import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
-import { Spinner } from '@nasiko/ui/primitives/spinner'
+import { StageIcon } from '@nasiko/features/deploy/components/StageList'
 import type { DeployStarted } from '@nasiko/features/deploy/UploadTab'
 import { cn } from '@nasiko/ui/lib/utils'
-import { useGuide, useSavePersona } from './api'
+import { type SeededDeploy, useSeededDeploys } from './api'
 import { AgentStep } from './AgentStep'
-import { OptimiseStep } from './OptimiseStep'
 import { copy } from './copy'
-import { minutesLeft, opensFor, STEPS, type StepId } from './logic'
+import { HarnessStep } from './HarnessStep'
+import { CONTINUE_HOLD_SECONDS, minutesLeft, STEPS, type StepId } from './logic'
 import { ModelStep } from './ModelStep'
 import { StepHeading } from './parts'
-import { PERSONAS, type Persona } from './types'
 
+/** The Welcome rows' icons: the nav's own for Agents, Monitor, Optimize and Coding harnesses. */
+const ROW_ICONS = [Bot, DollarSign, Gauge, SquareTerminal]
 const STAGE_ICONS = [Plug, WandSparkles, Play, ShieldCheck]
 /** When each stage lights in the beam's 4 s pass (index.css `--animate-beam` / `--animate-stage`): negative, so the
  *  loop is already running when the step opens. */
 const STAGE_DELAYS = ['-3.8s', '-2.73s', '-1.67s', '-0.6s']
-const pageLabel = (to: string) => NAV_ITEMS.find((i) => i.to === to)?.label ?? to
 
 export function OnboardingDialog({
   initialStep,
-  onClose,
+  onClose: close,
 }: {
   initialStep: StepId
-  /** Skip guide, the close button, Escape, finishing and leaving through a link all end here. */
+  /** Skip guide, the close button, Escape, Finish and leaving through a link all end here. */
   onClose: () => void
 }) {
   const navigate = useNavigate()
-  const guide = useGuide()
-  const save = useSavePersona()
-  const [index, setIndex] = useState(STEPS.indexOf(initialStep))
+  const qc = useQueryClient()
+  // Every way out refreshes the agent lists: an import the guide started registers its agent in seconds but finishes
+  // in minutes, so without this the homepage still reads an empty fleet and offers to deploy a first agent, and an
+  // Agents list read earlier hides it (NAS-1449). The restart watches are cache-only state.
+  const onClose = () => {
+    void qc.invalidateQueries({
+      queryKey: agentKeys.directory,
+      predicate: (q) => q.queryKey[1] !== 'watch',
+    })
+    close()
+  }
+  // An opening at a step that no longer exists (a stale link) starts at the beginning.
+  const [index, setIndex] = useState(Math.max(0, STEPS.indexOf(initialStep)))
   const [reached, setReached] = useState(index)
-  const [persona, setPersona] = useState<Persona | null>(guide.persona)
   const [model, setModel] = useState<string | null>(null)
   const [agent, setAgent] = useState<DeployStarted | null>(null)
+  // Every deploy started from the guide's tabs in this page, kept outside the dialog (NAS-1450): reopened, it shows
+  // their progress again.
+  const deploys = useSeededDeploys()
+  const seeded = deploys.size > 0
   const step = STEPS[index] ?? 'welcome'
   const primary = useRef<HTMLButtonElement>(null)
   const go = (i: number) => {
@@ -69,16 +83,29 @@ export function OnboardingDialog({
     setReached((r) => Math.max(r, i))
   }
   const next = () => go(index + 1)
+  // The Agent and key step's Continue holds for CONTINUE_HOLD_SECONDS, counting down in its label; each visit restarts it.
+  const [hold, setHold] = useState({ index, left: CONTINUE_HOLD_SECONDS })
+  if (hold.index !== index) setHold({ index, left: CONTINUE_HOLD_SECONDS })
+  const held = step === 'start' ? hold.left : 0
+  useEffect(() => {
+    if (held <= 0) return
+    const t = setTimeout(() => setHold((h) => ({ ...h, left: h.left - 1 })), 1000)
+    return () => clearTimeout(t)
+  }, [held, index])
+  const waiting = held > 0
+  const last = index === STEPS.length - 1
+  /** Out of the guide to a page: closing first, so the guide never stays open over it. */
+  const leave = (to: Parameters<typeof navigate>[0]) => {
+    onClose()
+    void navigate(to)
+  }
 
   const onContinue = () => {
-    if (step === 'ready') return onClose()
-    if (step !== 'role') return next()
-    if (!persona) return
-    // Already saved (back on this step): nothing to send.
-    if (persona === guide.persona) return next()
-    save.mutate(persona, { onSuccess: next })
+    // Finish takes everyone to the homepage (user request 2026-11-09).
+    if (last) return leave({ to: '/' })
+    // Continue only moves on: it deploys nothing (user request 2026-11-12).
+    next()
   }
-  const opens = persona ? opensFor(persona) : '/'
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -108,13 +135,7 @@ export function OnboardingDialog({
               // Ticked only when done, not merely passed: a skipped model or agent stays a number.
               const done =
                 i !== index &&
-                (id === 'welcome'
-                  ? reached > 0
-                  : id === 'role'
-                    ? !!persona && persona === guide.persona
-                    : id === 'model'
-                      ? !!model
-                      : id === 'agent' && !!agent)
+                (id === 'welcome' ? reached > 0 : id === 'start' && (!!model || !!agent || seeded))
               return (
                 <Button
                   key={id}
@@ -165,11 +186,11 @@ export function OnboardingDialog({
               {copy.guide.step(index + 1, STEPS.length)}
             </span>
             <span className="flex-1" />
-            {step !== 'ready' ? (
+            {last ? null : (
               <Button type="button" variant="ghost" size="sm" onClick={onClose}>
                 {copy.guide.skipGuide}
               </Button>
-            ) : null}
+            )}
             <Button
               type="button"
               variant="outline"
@@ -181,58 +202,23 @@ export function OnboardingDialog({
             </Button>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-8 md:px-10">
-            {step === 'welcome' ? <Welcome /> : null}
-            {step === 'role' ? (
-              <Role
-                persona={persona}
-                onPick={(p) => {
-                  setPersona(p)
-                  save.reset()
-                }}
-                failed={save.isError}
-              />
+          <div className="relative min-h-0 flex-1 overflow-y-auto px-6 py-8 md:px-10">
+            {step === 'welcome' ? (
+              <>
+                <DotBackground />
+                <Welcome />
+              </>
             ) : null}
-            {step === 'model' ? <ModelStep connected={model} onConnected={setModel} /> : null}
-            {step === 'agent' ? (
-              <AgentStep started={agent} onStarted={setAgent} onLeave={onClose} />
+            {/* The agent first, then the key (user request 2026-11-05). Continue needs only the hold: a user with no key
+                yet may go on (user request 2026-11-06). */}
+            {step === 'start' ? (
+              <div className="flex flex-col gap-10">
+                <StepHeading title={copy.start.title} intro={copy.start.intro} />
+                <AgentStep started={agent} onStarted={setAgent} onLeave={onClose} />
+                <ModelStep connected={model} onConnected={setModel} />
+              </div>
             ) : null}
-            {step === 'optimize' ? (
-              <OptimiseStep
-                onOpenAgents={() => {
-                  onClose()
-                  void navigate({ to: '/agents' })
-                }}
-              />
-            ) : null}
-            {step === 'ready' ? (
-              <Ready
-                rows={[
-                  {
-                    step: 'role',
-                    label: copy.ready.role,
-                    value: persona ? copy.role.personas[persona].title : null,
-                  },
-                  {
-                    step: 'model',
-                    label: copy.ready.model,
-                    value: model,
-                  },
-                  {
-                    step: 'agent',
-                    label: copy.ready.agent,
-                    value: agent ? copy.ready.building : null,
-                  },
-                ]}
-                onEdit={(s) => go(STEPS.indexOf(s))}
-                opens={opens}
-                onOverview={onClose}
-                onOpen={() => {
-                  onClose()
-                  void navigate({ to: opens })
-                }}
-              />
-            ) : null}
+            {step === 'harness' ? <HarnessStep onOpen={(to) => leave({ to })} /> : null}
           </div>
 
           <div className="flex items-center gap-2 border-t px-6 py-3">
@@ -242,36 +228,25 @@ export function OnboardingDialog({
                 {copy.guide.back}
               </Button>
             ) : null}
+            {/* The agent step has a row per deploy; after it, this line keeps them in view while the guide goes on. */}
+            {seeded && step !== 'start' ? <DeploySummary deploys={deploys} /> : null}
             <span className="flex-1" />
-            {step === 'model' && !model ? (
-              <span className="hidden text-sm text-muted-foreground sm:inline">
-                {copy.model.later}
-              </span>
-            ) : null}
-            {(step === 'model' && !model) || (step === 'agent' && !agent) ? (
-              <Button type="button" variant="outline" onClick={next}>
-                {copy.guide.skipStep}
-              </Button>
-            ) : null}
-            {/* Informational, so there is nothing to complete: the opt-out is worded as a
-                decision rather than as skipping an unfinished task. */}
-            {step === 'optimize' ? (
-              <Button type="button" variant="outline" onClick={next}>
-                {copy.optimise.skip}
-              </Button>
-            ) : null}
             <Button
               ref={primary}
               type="button"
-              disabled={(step === 'role' && !persona) || save.isPending}
+              // Focusable while off, so focus never drops to the page while it holds.
+              focusableWhenDisabled
+              className="data-disabled:pointer-events-none data-disabled:opacity-50"
+              disabled={waiting}
               onClick={onContinue}
             >
-              {save.isPending ? <Spinner aria-hidden /> : null}
               {step === 'welcome'
                 ? copy.guide.getStarted
-                : step === 'ready'
+                : last
                   ? copy.guide.finish
-                  : copy.guide.continue}
+                  : held > 0
+                    ? copy.guide.continueIn(held)
+                    : copy.guide.continue}
               <ArrowRight aria-hidden />
             </Button>
           </div>
@@ -281,201 +256,150 @@ export function OnboardingDialog({
   )
 }
 
-function Welcome() {
+/** The guide's deploys (its tabs') in one line: how many are still deploying, then how many run or didn't start. A status
+ *  region: it changes only when one finishes. */
+function DeploySummary({ deploys }: { deploys: ReadonlyMap<string, SeededDeploy> }) {
+  const all = [...deploys.values()]
+  const busy = all.filter((d) => d.phase === 'deploying').length
+  const bad = all.filter((d) => d.phase === 'failed' || d.phase === 'notRunning').length
+  const s = copy.agent.summary
   return (
-    <div className="flex flex-col gap-6">
-      <Badge variant="outline" className="gap-1.5 rounded-full px-3 py-1 font-normal">
-        <Sparkles aria-hidden />
-        {copy.welcome.badge}
-      </Badge>
-      <StepHeading title={copy.welcome.title} intro={copy.welcome.intro} />
-      {/* The four stages as one flow (user review 2026-10-01): our take on Aceternity's Tracing Beam. A beam runs along
-          the line from Connect to Govern and each stage's icon lights as it passes; under reduced motion Connect stays
-          lit, the stage the next steps set up. Decorative: the words carry the meaning. */}
-      <div className="relative pt-2">
+    <p role="status" className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+      <StageIcon state={busy ? 'current' : bad ? 'failed' : 'done'} />
+      <span className="truncate">
+        {busy ? s.deploying(busy) : bad ? s.failed(bad, all.length) : s.running(all.length)}
+      </span>
+    </p>
+  )
+}
+
+/** The Welcome rows' sequence, in seconds: the first row starts as the title settles, then one row every `ROW_STEP`. */
+const ROW_START = 0.4
+const ROW_STEP = 0.3
+
+/** Where the panel's band sits: its bottom-left, where the last row ends (degrees clockwise from the top). Still: a
+ *  band that followed the rows down the edge read as a crawl (user review 2026-11-04). */
+const BAND_ANGLE = 248
+
+function Welcome() {
+  const rows = copy.welcome.rows
+  return (
+    // Sized to fit the dialog without scrolling (user review 2026-11-05): tight gaps, 32 px stage icons, short rows.
+    <div className="relative flex flex-col gap-5">
+      <StepHeading
+        title={<TextGenerateEffect words={copy.welcome.title} />}
+        intro={copy.welcome.intro}
+      />
+      {/* The four stages as one flow, as before 2026-11-04 (user review 2026-11-05): our take on Aceternity's Tracing
+          Beam. A beam runs along the line from Connect to Govern and each stage's icon lights as it passes; under
+          reduced motion Connect stays lit. Decorative: the words carry the meaning. */}
+      {/* The line runs between the first and last icons' centres: 1 rem in from each (half a size-8 icon). */}
+      <div className="relative">
         <div
           aria-hidden
-          className="pointer-events-none absolute top-7 right-[calc(25%-2.375rem)] left-5 hidden h-px overflow-hidden bg-border sm:block"
+          className="pointer-events-none absolute top-4 right-[calc(25%-2.125rem)] left-4 hidden h-px overflow-hidden bg-border sm:block"
         >
           <div className="absolute inset-y-0 w-1/4 animate-beam bg-linear-to-r from-transparent via-primary to-transparent motion-reduce:hidden" />
         </div>
-        <ol className="grid gap-x-6 gap-y-6 sm:grid-cols-4">
+        <ol aria-label={copy.welcome.stagesLabel} className="grid gap-x-6 gap-y-4 sm:grid-cols-4">
           {copy.welcome.stages.map((s, i) => {
             const Icon = STAGE_ICONS[i] ?? Plug
             return (
-              <li key={s.title} className="relative flex flex-col gap-3">
+              <li key={s.title} className="relative flex flex-col gap-2">
                 <span
                   aria-hidden
                   style={{ animationDelay: STAGE_DELAYS[i] }}
                   className={cn(
-                    'flex size-10 animate-stage items-center justify-center rounded-xl border bg-muted text-foreground ring-4 ring-background motion-reduce:animate-none',
+                    'flex size-8 animate-stage items-center justify-center rounded-lg border bg-muted text-foreground ring-4 ring-background motion-reduce:animate-none',
                     i === 0 &&
                       'motion-reduce:border-primary motion-reduce:bg-primary motion-reduce:text-primary-foreground',
                   )}
                 >
-                  <Icon className="size-[18px]" />
+                  <Icon className="size-4" />
                 </span>
                 <div>
-                  <p className="flex items-baseline gap-2 font-medium">
+                  <p className="flex items-baseline gap-2 text-sm font-medium">
                     {s.title}
                     <span className="font-mono text-[11px] font-normal text-muted-foreground">{`0${i + 1}`}</span>
                   </p>
-                  <p className="text-sm text-pretty text-muted-foreground">{s.line}</p>
+                  <p className="text-xs text-pretty text-muted-foreground">{s.line}</p>
                 </div>
               </li>
             )
           })}
         </ol>
       </div>
-      <p className="flex items-center gap-2 text-sm text-muted-foreground">
-        <Info aria-hidden className="size-4 shrink-0" />
-        {copy.welcome.note}
-      </p>
-    </div>
-  )
-}
-
-function Role({
-  persona,
-  onPick,
-  failed,
-}: {
-  persona: Persona | null
-  onPick: (p: Persona) => void
-  failed: boolean
-}) {
-  return (
-    <div className="flex flex-col gap-6">
-      <StepHeading title={copy.role.title} intro={copy.role.intro} />
-      {failed ? (
-        <Alert variant="destructive">
-          <AlertDescription>{copy.role.saveFailed}</AlertDescription>
-        </Alert>
-      ) : null}
-      <RadioGroup
-        aria-label={copy.role.label}
-        value={persona ?? ''}
-        onValueChange={(v) => onPick(v as Persona)}
-        className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3"
-      >
-        {PERSONAS.map((p) => (
-          <label
-            key={p}
-            htmlFor={`persona-${p}`}
-            className="flex cursor-pointer items-start gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
-          >
-            <RadioGroupItem id={`persona-${p}`} value={p} className="mt-0.5" />
-            <span className="flex min-w-0 flex-col gap-1">
-              <span className="text-sm font-medium">{copy.role.personas[p].title}</span>
-              <span className="text-xs text-muted-foreground">{copy.role.personas[p].line}</span>
-              <span className="text-xs text-muted-foreground">
-                {copy.role.opens(pageLabel(opensFor(p)))}
-              </span>
-            </span>
-          </label>
-        ))}
-      </RadioGroup>
-    </div>
-  )
-}
-
-function Ready({
-  rows,
-  onEdit,
-  opens,
-  onOverview,
-  onOpen,
-}: {
-  rows: { step: StepId; label: string; value: string | null }[]
-  onEdit: (step: StepId) => void
-  opens: string
-  onOverview: () => void
-  onOpen: () => void
-}) {
-  return (
-    <div className="flex flex-col gap-6">
-      <span className="flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground">
-        <Check aria-hidden className="size-6" />
-      </span>
-      <StepHeading title={copy.ready.title} intro={copy.ready.intro} />
-      <ul className="divide-y rounded-xl border bg-card">
-        {rows.map((r) => (
-          <li key={r.step} className="flex items-center gap-3 px-4 py-3 text-sm">
-            <span
-              className={cn(
-                'flex size-5 shrink-0 items-center justify-center rounded-full',
-                r.value ? 'bg-primary text-primary-foreground' : 'border',
-              )}
-            >
-              {r.value ? <Check aria-hidden className="size-3" /> : null}
-            </span>
-            <span className="w-20 text-muted-foreground">{r.label}</span>
-            <span className="flex-1 font-medium">{r.value ?? copy.ready.skipped}</span>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-label={copy.ready.edit(r.label)}
-              onClick={() => onEdit(r.step)}
-            >
-              {copy.ready.editShort}
-            </Button>
-          </li>
-        ))}
-      </ul>
-      <div className="rounded-xl border border-dashed bg-muted/40 px-4 py-3 text-sm">
-        <p className="flex items-center gap-2 font-medium">
-          <Scissors aria-hidden className="size-4 text-muted-foreground" />
-          {copy.ready.savings.title}
-        </p>
-        <p className="mt-1 text-xs text-muted-foreground">{copy.ready.savings.line}</p>
-        <p className="mt-1 text-xs text-muted-foreground italic">{copy.ready.savings.beta}</p>
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Choice
-          icon={House}
-          title={copy.ready.home}
-          line={copy.ready.homeLine}
-          onClick={onOverview}
+      {/* Capability beside outcome (user review 2026-11-04): what Nasiko does, and what that gets you. The outcome is
+          the point, so it carries the weight. The step's one effect area, all Aceternity (user request 2026-11-04): the
+          dot background behind it, the title's words arriving, and the Glowing Effect on the panel's edge, the tour's
+          pairing (a soft blurred band under a sharp one). Once, on open, the rows switch on in turn: the icon, the
+          capability, the arrow, then the outcome's words. The band stays still at the bottom-left. Then nothing moves;
+          under reduced motion it is all there at once. */}
+      <div className="relative rounded-xl">
+        <GlowingEffect
+          angle={BAND_ANGLE}
+          spread={30}
+          blur={12}
+          borderWidth={4}
+          className="opacity-60"
         />
-        {opens !== '/' ? (
-          <Choice
-            icon={ArrowRight}
-            title={copy.ready.open(pageLabel(opens))}
-            line={copy.ready.openLine}
-            onClick={onOpen}
-          />
-        ) : null}
+        <GlowingEffect glow angle={BAND_ANGLE} spread={30} borderWidth={2} />
+        <div className="relative overflow-hidden rounded-xl border bg-card shadow-sm">
+          <div className="hidden grid-cols-2 gap-6 border-b bg-muted/40 px-4 py-2 text-xs font-medium text-muted-foreground sm:grid">
+            <span>{copy.welcome.does}</span>
+            <span className="pl-6">{copy.welcome.get}</span>
+          </div>
+          <dl className="divide-y">
+            {rows.map((r, i) => {
+              const Icon = ROW_ICONS[i] ?? Bot
+              const on = ROW_START + i * ROW_STEP
+              return (
+                <div
+                  key={r.does}
+                  data-row
+                  className="grid gap-1.5 px-4 py-2 sm:grid-cols-2 sm:items-center sm:gap-6"
+                >
+                  <dt
+                    className={cn(
+                      'flex items-center gap-3 text-sm text-muted-foreground',
+                      SWITCH_ON,
+                    )}
+                    style={{ animationDelay: `${on}s` }}
+                  >
+                    <span
+                      className={cn(
+                        'flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground zoom-in-50',
+                        SWITCH_ON,
+                      )}
+                      style={{ animationDelay: `${on}s` }}
+                    >
+                      <Icon aria-hidden className="size-4" />
+                    </span>
+                    {r.does}
+                  </dt>
+                  <dd className="flex items-center gap-2 pl-11 text-sm font-medium text-pretty sm:pl-0">
+                    <ArrowRight
+                      aria-hidden
+                      className={cn(
+                        'hidden size-4 shrink-0 text-muted-foreground slide-in-from-left-2 sm:block',
+                        SWITCH_ON,
+                      )}
+                      style={{ animationDelay: `${on + 0.15}s` }}
+                    />
+                    <span>
+                      <TextGenerateEffect words={r.get} stagger={0.04} delay={on + 0.25} />
+                    </span>
+                  </dd>
+                </div>
+              )
+            })}
+          </dl>
+        </div>
       </div>
     </div>
   )
 }
 
-function Choice({
-  icon: Icon,
-  title,
-  line,
-  onClick,
-}: {
-  icon: LucideIcon
-  title: string
-  line: string
-  onClick: () => void
-}) {
-  return (
-    <Button
-      type="button"
-      variant="outline"
-      onClick={onClick}
-      className="h-auto justify-start gap-3 rounded-xl p-4 text-left whitespace-normal"
-    >
-      <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-        <Icon aria-hidden className="size-4" />
-      </span>
-      <span className="min-w-0">
-        <span className="block font-medium">{title}</span>
-        <span className="block text-xs font-normal text-muted-foreground">{line}</span>
-      </span>
-    </Button>
-  )
-}
+/** A Welcome row's part arriving on its turn (tw-animate-css, with the turn as an inline `animation-delay`): hidden
+ *  until then, still under reduced motion. */
+const SWITCH_ON = 'animate-in fade-in fill-mode-both duration-300 motion-reduce:animate-none'

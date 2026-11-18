@@ -55,6 +55,8 @@ export interface MockAgent {
   metadata?: Record<string, unknown>
   // Token optimization is `compress` above (seeded, read by the savings mocks), not a second optional copy.
   minimal_code_enabled?: boolean
+  /** `agents.parking_policy` (column default `auto`); written by `PUT /api/agents/{id}`. */
+  parking_policy?: 'auto' | 'resident'
 }
 
 export interface AgentsState {
@@ -276,6 +278,31 @@ export function buildAgentsState(seed: Seed, hs: HarnessSeed, now: number): Agen
   return { agents, users: hs.users.filter((u) => !u.service_account) }
 }
 
+/**
+ * `?mock=fleet-100` / `fleet-1000` (NAS-1519): the fleet grown to `size` agents (harnesses aside) with copies of the
+ * seed's own agents (statuses, owners, tags and versions included) under new ids (`5eed0018-*`) and names.
+ */
+export function withFleetSize(state: AgentsState, size: number): AgentsState {
+  const base = state.agents.filter((a) => !a.deleted && !a.tags.includes('coding-agent'))
+  const extra = Array.from({ length: Math.max(0, size - base.length) }, (_, i): MockAgent => {
+    const a = base[i % base.length]!
+    const id = `5eed0018-0000-4000-8000-${pad(i)}`
+    const name = `${a.name}-${i + 1}`
+    return {
+      ...a,
+      id,
+      name,
+      display_name: `${a.display_name} ${i + 1}`,
+      versions: a.versions.map((v) => ({ ...v, agent_id: id })),
+      deployment: a.deployment ? { ...a.deployment, agent_id: id, agent_name: name } : null,
+      secrets: [...a.secrets],
+      userGrants: [],
+      agentAcl: [],
+    }
+  })
+  return { ...state, agents: [...state.agents, ...extra] }
+}
+
 /** Current status, advancing a roll back once its time has passed. */
 export function liveStatus(a: MockAgent, now: number): string {
   if (!a.rollback) return a.status
@@ -381,6 +408,9 @@ export function detailBody(a: MockAgent, canManage: boolean) {
     coding_agent_integration_id: a.harness,
     compress_enabled: a.compress,
     minimal_code_enabled: a.minimal_code_enabled ?? false,
+    parking_policy: a.parking_policy ?? 'auto',
+    // AgentScaling::honours_resident_policy: true off the Free plane.
+    resident_available: true,
     has_coding_skills: a.skills.some((k) =>
       [k.id, k.name, ...(k.tags ?? [])].some((t) => mentionsCoding(t)),
     ),

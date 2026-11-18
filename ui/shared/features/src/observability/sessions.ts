@@ -50,15 +50,21 @@ export function percentile(values: readonly (number | null | undefined)[], q = P
 }
 
 /**
- * `failed` / `ok` / `running` are the server's own values (`session/list`,
+ * `failed` / `ok` / `running` / `timed_out` are the server's own values (`session/list`,
  * derived from the flow outcome recorded at the proxy). The rest are client
  * states: `unchecked` when the server has no recorded request to judge by, and
  * `unknown` / `checking` for the Sessions page's per-trace checks.
  */
-export type Status = 'failed' | 'ok' | 'running' | 'unchecked' | 'unknown' | 'checking'
+export type Status =
+  'failed' | 'ok' | 'running' | 'timed_out' | 'unchecked' | 'unknown' | 'checking'
 
-const SERVER_STATUSES: ReadonlySet<string> = new Set<Status>(['failed', 'ok', 'running'])
-/** `session/list.status` (sessions_sql.rs `derive_status`: `failed` / `ok` / `running`, or null with no recorded
+const SERVER_STATUSES: ReadonlySet<string> = new Set<Status>([
+  'failed',
+  'ok',
+  'running',
+  'timed_out',
+])
+/** `session/list.status` (sessions_sql.rs `derive_status`: `failed` / `ok` / `running` / `timed_out`, or null with no recorded
  *  request) as a display status; null when the server has none, so the caller falls back to its own check. */
 export const serverStatus = (raw: string | null | undefined): Status | null =>
   raw && SERVER_STATUSES.has(raw) ? (raw as Status) : null

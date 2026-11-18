@@ -2650,7 +2650,7 @@ export interface components {
             /** Format: double */
             avg_latency_ms?: number | null;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -2908,7 +2908,7 @@ export interface components {
             /** Format: date */
             date: string;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -3353,7 +3353,7 @@ export interface components {
             model: string;
             provider: string;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -3655,6 +3655,12 @@ export interface components {
              */
             failed_flows: number;
             first_input?: string | null;
+            /**
+             * Format: int32
+             * @description Requests the proxy recorded for this session. `0` for a session that
+             *     never crossed it, which has no flow to open.
+             */
+            flow_count: number;
             id: string;
             last_output?: string | null;
             /** Format: int32 */
@@ -3779,6 +3785,11 @@ export interface components {
             span_kind: string;
             start_time?: string | null;
             status_code: string;
+            /**
+             * @description The span's status description, when it has one — lets the UI tell the a2a SDK's
+             *     end-of-stream `QueueShutDown` from a real failure, exactly as the server does.
+             */
+            status_message?: string | null;
             /** Format: int64 */
             token_count_total: number;
         };
@@ -4205,7 +4216,7 @@ export interface components {
             /** Format: int64 */
             period_days: number;
             /** Format: int64 */
-            request_count: number;
+            traces: number;
             /** Format: double */
             total_cost_usd: number;
             /** Format: int64 */
@@ -8324,7 +8335,7 @@ export interface operations {
                  */
                 cursor?: string | null;
                 /**
-                 * @description `failed` | `ok` | `running`. Filtered in SQL, so `matching_count` counts
+                 * @description `failed` | `ok` | `running` | `timed_out`. Filtered in SQL, so `matching_count` counts
                  *     every match in the window rather than the rows on this page.
                  */
                 status?: string | null;

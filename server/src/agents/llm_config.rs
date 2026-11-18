@@ -44,6 +44,12 @@ pub fn router() -> Router<AppState> {
                 .delete(delete_llm_config),
         )
         .route(
+            "/{id}/my-llm-config",
+            get(get_my_llm_config)
+                .put(set_my_llm_config)
+                .delete(delete_my_llm_config),
+        )
+        .route(
             "/{id}/llm-token",
             post(issue_llm_token).delete(revoke_llm_tokens),
         )
@@ -155,9 +161,6 @@ pub(crate) async fn issue_llm_token(
         )
             .into_response();
     }
-    if let Err(resp) = wait_out_revocation_second(&state.db, agent_id).await {
-        return resp;
-    }
     let ttl_seconds = match is_discovered_agent(&state.db, agent_id).await {
         Ok(true) => DEFAULT_TTL_SECONDS,
         Ok(false) => LOCAL_ROUTING_TOKEN_TTL_SECONDS,
@@ -189,86 +192,6 @@ pub(crate) async fn issue_llm_token(
         ),
     )
         .into_response()
-}
-
-/// A key's `iat` has whole-second precision and the router refuses every key minted up to the
-/// second of the agent's last revocation, so a key minted in that same second (a `connect`
-/// right after a `disconnect`) would be born revoked. Wait for the next second first.
-async fn wait_out_revocation_second(
-    db: &sqlx::PgPool,
-    agent_id: Uuid,
-) -> Result<(), axum::response::Response> {
-    let wait_ms: Option<f64> = sqlx::query_scalar(
-        "SELECT (1000 * (floor(extract(epoch FROM llm_tokens_revoked_at)) + 1 \
-                         - extract(epoch FROM clock_timestamp())))::float8 \
-         FROM agents WHERE id = $1 AND llm_tokens_revoked_at IS NOT NULL",
-    )
-    .bind(agent_id)
-    .fetch_optional(db)
-    .await
-    .map_err(|error| {
-        tracing::error!(%error, %agent_id, "LLM key revocation lookup failed");
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "failed to issue LLM routing token",
-        )
-            .into_response()
-    })?
-    .flatten();
-    if let Some(ms) = wait_ms.filter(|ms| *ms > 0.0) {
-        tokio::time::sleep(std::time::Duration::from_millis(ms.ceil() as u64)).await;
-    }
-    Ok(())
-}
-
-/// Revoke every LLM key the agent has been given.
-///
-/// The keys are signed tokens the router verifies without a lookup, so this records a cut-off
-/// (`agents.llm_tokens_revoked_at`): the router refuses every key minted up to now, at once.
-/// A key minted afterwards (`POST`) works. `nasiko disconnect` calls this for a discovered
-/// agent, whose key lives in a file on the user's machine. The owner or a superuser may call
-/// it; like the MCP-token `DELETE` it grants nothing. For a deployed agent it leaves the
-/// running container without a working key until its next redeploy mints one.
-#[utoipa::path(
-    delete,
-    path = "/api/agents/{id}/llm-token",
-    tag = "agents",
-    params(("id" = Uuid, Path, description = "Agent id")),
-    responses(
-        (status = 204, description = "Every LLM key issued so far is revoked"),
-        (status = 403, description = "Caller is neither the agent owner nor a superuser"),
-        (status = 404, description = "No such agent"),
-    ),
-)]
-pub(crate) async fn revoke_llm_tokens(
-    State(state): State<AppState>,
-    claims: Claims,
-    Path(agent_id): Path<Uuid>,
-) -> impl IntoResponse {
-    let user_id = match claims.user_uuid() {
-        Ok(id) => id,
-        Err(e) => return e.into_response(),
-    };
-    if let Err(resp) =
-        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
-    {
-        return resp;
-    }
-    match sqlx::query("UPDATE agents SET llm_tokens_revoked_at = clock_timestamp() WHERE id = $1")
-        .bind(agent_id)
-        .execute(&state.db)
-        .await
-    {
-        Ok(_) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => {
-            tracing::error!(%error, %agent_id, "failed to revoke LLM keys");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "failed to revoke LLM keys",
-            )
-                .into_response()
-        }
-    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -477,6 +400,59 @@ pub(crate) async fn revoke_mcp_token(
     }
 }
 
+/// Revoke every LLM routing token issued for the agent so far. `nasiko disconnect <coding-agent>`
+/// calls this so a session still holding a cached token stops spending through the router at
+/// once instead of when its token expires: the router refuses agent tokens issued before
+/// `agents.llm_tokens_revoked_at`. Tokens issued afterwards work, so reconnecting needs nothing
+/// more. Owner or superuser, like the MCP-token DELETE; idempotent. The time comes from this
+/// process's clock, the clock that stamps a token's `iat`, not the database's. For a deployed
+/// agent this also refuses its deploy-time token until its next redeploy re-mints one.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}/llm-token",
+    tag = "agents",
+    params(("id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 204, description = "LLM routing tokens revoked"),
+        (status = 403, description = "Caller is neither the agent owner nor a superuser"),
+        (status = 404, description = "No such agent"),
+    ),
+)]
+pub(crate) async fn revoke_llm_tokens(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return e.into_response(),
+    };
+    if let Err(resp) =
+        agent_owner_or_reject(&state.db, agent_id, user_id, claims.is_superuser).await
+    {
+        return resp;
+    }
+
+    let revoked = sqlx::query(
+        "UPDATE agents SET llm_tokens_revoked_at = $2 WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(agent_id)
+    .bind(Utc::now())
+    .execute(&state.db)
+    .await;
+    match revoked {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => {
+            tracing::error!(%error, %agent_id, "failed to revoke LLM routing tokens");
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "failed to revoke LLM routing tokens",
+            )
+                .into_response()
+        }
+    }
+}
+
 /// Resolve the config an agent routes through: attached (`agents.llm_config_id`) → the owner's
 /// default (`llm_configs.is_default`) → none. Mirrors `nasiko_llm_router`'s resolver so the API
 /// shows exactly what the router will use. Returns the config JSON and its source label.
@@ -674,6 +650,17 @@ pub(crate) async fn update_llm_config(
     Path(agent_id): Path<Uuid>,
     Json(req): Json<AttachLlmConfigRequest>,
 ) -> impl IntoResponse {
+    let response = apply_llm_config_update(&state, claims, agent_id, req).await;
+    state.llm_config_cache.invalidate(agent_id);
+    response
+}
+
+async fn apply_llm_config_update(
+    state: &AppState,
+    claims: Claims,
+    agent_id: Uuid,
+    req: AttachLlmConfigRequest,
+) -> axum::response::Response {
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -852,7 +839,218 @@ pub(crate) async fn delete_llm_config(
     {
         return db_error("delete", e);
     }
+    state.llm_config_cache.invalidate(agent_id);
     ApiResponse::ok(json!(null), "Agent LLM config removed successfully").into_response()
+}
+
+// ─── GET / PUT / DELETE /{id}/my-llm-config ───────────────────────────────────
+
+const OWNER_SETS_MODEL_ON_AGENT: &str =
+    "you own this agent: set its model with PATCH /api/agents/{id}/llm-config";
+
+/// The caller's own config choice for an agent they use but do not own.
+#[derive(Serialize, ToSchema)]
+pub(crate) struct MyLlmConfigResponse {
+    agent_id: Uuid,
+    /// The config the caller chose; `null` when unset or when the chosen config was deleted.
+    llm_config_id: Option<Uuid>,
+    llm_config: Option<Value>,
+}
+
+/// `crate::mcp::ApiResponse` envelope around [`MyLlmConfigResponse`].
+#[derive(Serialize, ToSchema)]
+pub(crate) struct MyLlmConfigEnvelope {
+    data: MyLlmConfigResponse,
+    status_code: u16,
+    message: String,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+pub(crate) struct SetMyLlmConfigRequest {
+    /// One of the caller's own configs.
+    llm_config_id: Uuid,
+}
+
+/// The caller of a `my-llm-config` route: someone who may use the agent but does not own it. `Err` is a
+/// ready-to-return 404 (no such agent, or not theirs to use) or 400 (an owner sets the model on the agent
+/// itself), decided before any write.
+async fn shared_agent_caller(
+    state: &AppState,
+    claims: &Claims,
+    agent_id: Uuid,
+) -> Result<Uuid, axum::response::Response> {
+    let user_id = claims.user_uuid().map_err(IntoResponse::into_response)?;
+    let owner: Option<Uuid> =
+        sqlx::query_scalar("SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL")
+            .bind(agent_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(|e| db_error("check access for", e))?;
+    // A superuser passes `can_access_agent` for any id, so the lookup above is what rules out a deleted agent.
+    let owner = match owner {
+        Some(owner) if crate::acl::can_access_agent(state, claims, agent_id).await => owner,
+        _ => return Err((StatusCode::NOT_FOUND, "agent not found").into_response()),
+    };
+    if owner == user_id {
+        return Err((StatusCode::BAD_REQUEST, OWNER_SETS_MODEL_ON_AGENT).into_response());
+    }
+    Ok(user_id)
+}
+
+/// The caller's choice for `agent_id` as the response. A choice whose config was soft-deleted reads as
+/// unset, as it does for the router.
+async fn my_llm_config_response(
+    db: &sqlx::PgPool,
+    agent_id: Uuid,
+    user_id: Uuid,
+    message: &'static str,
+) -> axum::response::Response {
+    let chosen: Result<Option<(Uuid, Value)>, _> = sqlx::query_as(&format!(
+        "SELECT id, {CONFIG_JSON} FROM llm_configs \
+         WHERE created_by = $1 AND deleted_at IS NULL AND id = \
+             (SELECT llm_config_id FROM agent_user_llm_configs WHERE user_id = $1 AND agent_id = $2)"
+    ))
+    .bind(user_id)
+    .bind(agent_id)
+    .fetch_optional(db)
+    .await;
+    match chosen {
+        Ok(chosen) => {
+            let (llm_config_id, llm_config) = chosen.unzip();
+            ApiResponse::ok(
+                json!({
+                    "agent_id": agent_id,
+                    "llm_config_id": llm_config_id,
+                    "llm_config": llm_config,
+                }),
+                message,
+            )
+            .into_response()
+        }
+        Err(e) => db_error("read my", e),
+    }
+}
+
+/// The config the caller chose for this agent, used for the caller's own calls through it. Anyone who may
+/// use the agent and does not own it.
+#[utoipa::path(
+    get,
+    path = "/api/agents/{id}/my-llm-config",
+    tag = "agents",
+    params(("id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "The caller's chosen config, or nulls when unset", body = MyLlmConfigEnvelope),
+        (status = 400, description = "The caller owns the agent"),
+        (status = 404, description = "No such agent, or the caller may not use it"),
+    ),
+)]
+pub(crate) async fn get_my_llm_config(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match shared_agent_caller(&state, &claims, agent_id).await {
+        Ok(user_id) => user_id,
+        Err(resp) => return resp,
+    };
+    my_llm_config_response(
+        &state.db,
+        agent_id,
+        user_id,
+        "Your LLM config for this agent retrieved successfully",
+    )
+    .await
+}
+
+/// Choose one of the caller's own configs for this agent: the caller's calls through it then run on that
+/// config and the caller's key. Replaces an earlier choice.
+#[utoipa::path(
+    put,
+    path = "/api/agents/{id}/my-llm-config",
+    tag = "agents",
+    params(("id" = Uuid, Path, description = "Agent id")),
+    request_body = SetMyLlmConfigRequest,
+    responses(
+        (status = 200, description = "Chosen", body = MyLlmConfigEnvelope),
+        (status = 400, description = "The caller owns the agent"),
+        (status = 404, description = "No such agent, the caller may not use it, or the config is not a live config of the caller"),
+    ),
+)]
+pub(crate) async fn set_my_llm_config(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+    Json(req): Json<SetMyLlmConfigRequest>,
+) -> impl IntoResponse {
+    let user_id = match shared_agent_caller(&state, &claims, agent_id).await {
+        Ok(user_id) => user_id,
+        Err(resp) => return resp,
+    };
+    // One statement, so the config is checked and written together: a config the caller does not own would
+    // fail to decrypt its key for them, and a deleted one is not a choice.
+    match sqlx::query(
+        "INSERT INTO agent_user_llm_configs (user_id, agent_id, llm_config_id) \
+         SELECT $1, $2, id FROM llm_configs \
+         WHERE id = $3 AND created_by = $1 AND deleted_at IS NULL \
+         ON CONFLICT (user_id, agent_id) \
+         DO UPDATE SET llm_config_id = EXCLUDED.llm_config_id, updated_at = now()",
+    )
+    .bind(user_id)
+    .bind(agent_id)
+    .bind(req.llm_config_id)
+    .execute(&state.db)
+    .await
+    {
+        Ok(done) if done.rows_affected() == 0 => {
+            return (StatusCode::NOT_FOUND, "llm config not found").into_response();
+        }
+        Ok(_) => {}
+        Err(e) => return db_error("set my", e),
+    }
+    my_llm_config_response(
+        &state.db,
+        agent_id,
+        user_id,
+        "Your LLM config for this agent updated successfully",
+    )
+    .await
+}
+
+/// Drop the caller's choice for this agent. Succeeds when nothing was set.
+#[utoipa::path(
+    delete,
+    path = "/api/agents/{id}/my-llm-config",
+    tag = "agents",
+    params(("id" = Uuid, Path, description = "Agent id")),
+    responses(
+        (status = 200, description = "Choice removed", body = crate::openapi::EmptyEnvelope),
+        (status = 400, description = "The caller owns the agent"),
+        (status = 404, description = "No such agent, or the caller may not use it"),
+    ),
+)]
+pub(crate) async fn delete_my_llm_config(
+    State(state): State<AppState>,
+    claims: Claims,
+    Path(agent_id): Path<Uuid>,
+) -> impl IntoResponse {
+    let user_id = match shared_agent_caller(&state, &claims, agent_id).await {
+        Ok(user_id) => user_id,
+        Err(resp) => return resp,
+    };
+    if let Err(e) =
+        sqlx::query("DELETE FROM agent_user_llm_configs WHERE user_id = $1 AND agent_id = $2")
+            .bind(user_id)
+            .bind(agent_id)
+            .execute(&state.db)
+            .await
+    {
+        return db_error("clear my", e);
+    }
+    ApiResponse::ok(
+        json!(null),
+        "Your LLM config for this agent removed successfully",
+    )
+    .into_response()
 }
 
 fn db_error(op: &str, e: sqlx::Error) -> axum::response::Response {

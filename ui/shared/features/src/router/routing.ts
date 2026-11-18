@@ -11,6 +11,9 @@
 import { copy } from './copy'
 import type { AgentRouting, AttachBody, LlmConfig, ProviderCatalog, RoutingConfig } from './types'
 
+// Public so other features label a routing source the router's way (format.ts is internal).
+export { sourceLabel } from './format'
+
 /** Providers the router speaks natively (llm-router resolver `is_builtin_provider`). */
 const BUILTIN_PROVIDERS = ['openai', 'anthropic', 'gemini', 'openrouter'] as const
 
@@ -20,6 +23,16 @@ const tierModels = (c: Pick<LlmConfig, 'tier1_model' | 'tier2_model' | 'tier3_mo
   [c.tier1_model, c.tier2_model, c.tier3_model].filter((m): m is string => !!m)
 
 /** The model a config pins (its `pinned_model`, else its model, as the CLI documents), or null when not pinned. */
+/**
+ * Harnesses whose model calls never pass through the LLM router: Cursor reports sessions only (the CLI's
+ * `nasiko connect cursor`), so an LLM config attached to its agent would be saved and never used.
+ */
+const UNROUTABLE_HARNESSES: ReadonlySet<string> = new Set(['cursor'])
+
+/** Whether "Change routing" is off for an agent behind harness `integration` (`harnessIntegration`). */
+export const routingUnsupported = (integration: string | null) =>
+  integration !== null && UNROUTABLE_HARNESSES.has(integration)
+
 export function configPin(c: RoutingConfig): string | null {
   if (!c.pinned) return null
   return c.pinned_model || c.model || null
@@ -402,6 +415,8 @@ export function cliLine(
 export const cliAttach = (agent: string, config: string) =>
   `nasiko llm-config attach ${q(agent)} ${q(config)}`
 export const cliDetach = (agent: string) => `nasiko llm-config detach ${q(agent)}`
+/** The attach command with the config left to fill in, for a caller with no config to name. */
+export const cliAttachTemplate = (agent: string) => `nasiko llm-config attach ${q(agent)} <config>`
 
 /** Flags a generated line uses, for the test against the recorded `--help`. */
 export const cliFlags = (line: string): string[] => [

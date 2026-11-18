@@ -30,7 +30,7 @@ import {
 
 export type Rating = 'healthy' | 'watch' | 'action' | 'unknown'
 type Level = 'watch' | 'action'
-type Dimension = 'reliability' | 'cost' | 'activity' | 'latency'
+export type Dimension = 'reliability' | 'cost' | 'activity' | 'latency'
 
 interface Reason {
   dimension: Dimension

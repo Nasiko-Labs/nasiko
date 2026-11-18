@@ -49,7 +49,7 @@ fn token(agent: Uuid, owner: Uuid) -> String {
 async fn stub_upstream() -> mockito::ServerGuard {
     let mut upstream = mockito::Server::new_async().await;
     upstream
-        .mock("POST", "/chat/completions")
+        .mock("POST", "/v1/chat/completions")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -61,7 +61,7 @@ async fn stub_upstream() -> mockito::ServerGuard {
         .create_async()
         .await;
     upstream
-        .mock("POST", "/embeddings")
+        .mock("POST", "/v1/embeddings")
         .with_status(200)
         .with_header("content-type", "application/json")
         .with_body(
@@ -74,7 +74,7 @@ async fn stub_upstream() -> mockito::ServerGuard {
         .await;
     // SAFETY: serialized by #[serial] within this test binary.
     unsafe {
-        std::env::set_var("OPENAI_API_BASE", upstream.url());
+        std::env::set_var("OPENAI_BASE_URL", upstream.url());
         std::env::set_var("AGENT_JWT_SECRET", JWT_SECRET);
         std::env::set_var("PLATFORM_OPENAI_API_KEY", "sk-platform-test");
     }
@@ -100,15 +100,19 @@ async fn call(server: &TestServer, path: &str, bearer: &str, traceparent: &str) 
         .as_u16()
 }
 
-/// Usage rows are written fire-and-forget: wait for `want`, then a little longer
-/// so a stray extra row would also land.
-async fn usage_rows_settled(server: &TestServer, agent: Uuid, want: i64) -> i64 {
+/// Tokens billed to `agent`. Usage is written fire-and-forget: wait for `want`, then
+/// a little longer so a stray extra call would also land. Calls in one flow share
+/// one `trace_usage` row, so tokens, not rows, count the calls billed.
+async fn billed_tokens_settled(server: &TestServer, agent: Uuid, want: i64) -> i64 {
     let count = || async {
-        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM token_usage WHERE agent_id = $1")
-            .bind(agent)
-            .fetch_one(&server.db)
-            .await
-            .unwrap()
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COALESCE(SUM(input_tokens + output_tokens), 0)::BIGINT FROM trace_usage \
+             WHERE agent_id = $1 AND priced_by = 'router'",
+        )
+        .bind(agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
     };
     for _ in 0..50 {
         if count().await >= want {
@@ -128,16 +132,20 @@ async fn a_token_from_before_a_transfer_is_refused() {
     let previous = seed_user(&server, "dummy-previous-owner").await;
     let current = seed_user(&server, "dummy-current-owner").await;
     let agent = seed_agent(&server, previous).await;
+    // Each phase chats as the agent's owner of the moment: a caller who is not the owner is
+    // served on their own LLM config, which these users do not have (NAS-1459).
+    let (_, before_transfer) = common::open_flow(&server.db, previous, agent).await;
     let (_, traceparent) = common::open_flow(&server.db, current, agent).await;
     let stale = token(agent, previous);
 
     // Served while the claim is true.
     assert_eq!(
-        call(&server, "/v1/chat/completions", &stale, &traceparent).await,
+        call(&server, "/v1/chat/completions", &stale, &before_transfer).await,
         200
     );
 
-    assert_eq!(usage_rows_settled(&server, agent, 1).await, 1);
+    // The stub answers each chat call with 3 + 2 tokens.
+    assert_eq!(billed_tokens_settled(&server, agent, 5).await, 5);
 
     sqlx::query("UPDATE agents SET owner_id = $2 WHERE id = $1")
         .bind(agent)
@@ -160,8 +168,8 @@ async fn a_token_from_before_a_transfer_is_refused() {
         200
     );
 
-    // Two served calls, two usage rows: the refused ones billed nothing.
-    assert_eq!(usage_rows_settled(&server, agent, 2).await, 2);
+    // Two served chat calls, 5 tokens each: the refused ones billed nothing.
+    assert_eq!(billed_tokens_settled(&server, agent, 10).await, 10);
 
     server.cleanup().await;
 }

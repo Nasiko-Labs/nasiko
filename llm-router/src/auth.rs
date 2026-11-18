@@ -27,34 +27,24 @@ struct AgentClaims {
     #[serde(default)]
     owner_id: Option<String>,
     #[serde(default)]
-    iat: Option<u64>,
+    iat: Option<i64>,
 }
 
-/// A verified agent-identity token.
+/// A verified agent token's identity: who it speaks for, and when it was issued (`iat`, Unix
+/// seconds; `None` for a token minted without one), which the router compares against the
+/// agent's `llm_tokens_revoked_at`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifiedAgent {
+pub struct AgentToken {
     pub agent_id: String,
     pub owner_id: String,
-    /// When it was minted (`iat`, Unix seconds), if it says: what revocation compares
-    /// against (`agents.llm_tokens_revoked_at`, see [`crate::resolver::RegistryStore`]).
-    pub issued_at: Option<u64>,
-}
-
-/// Whether a token minted at `issued_at` was revoked by a revocation at `revoked_at` (Unix
-/// seconds). `iat` has whole-second precision, so a token minted in the revocation's own
-/// second counts as revoked (failing closed); one with no `iat` is revoked by any revocation.
-pub fn is_revoked(issued_at: Option<u64>, revoked_at: Option<u64>) -> bool {
-    match (issued_at, revoked_at) {
-        (_, None) => false,
-        (None, Some(_)) => true,
-        (Some(issued), Some(revoked)) => issued <= revoked,
-    }
+    pub issued_at: Option<i64>,
 }
 
 /// Verify an `Authorization` header value and extract `(agent_id, owner_id)`.
 ///
 /// - `None` header ⇒ 401 "Missing Authorization header".
-/// - Empty `agent_jwt_secret` ⇒ fail closed: 401 "Gateway JWT secret not configured".
+/// - Empty `agent_jwt_secret` ⇒ fail closed: 503 "LLM router misconfigured: AGENT_JWT_SECRET is
+///   not set on the server." (a server fault, so not a 401 an SDK reads as a bad key).
 /// - Expired ⇒ 401 "Agent token expired". Other signature/format errors ⇒ 401
 ///   "Invalid agent token: <err>". Absent/empty `agent_id` ⇒ 401 "Token missing
 ///   agent_id claim".
@@ -62,14 +52,15 @@ pub fn verify_agent_jwt(
     authorization: Option<&str>,
     cfg: &GatewayConfig,
 ) -> Result<(String, String), GatewayError> {
-    verify_agent_token(authorization, cfg).map(|agent| (agent.agent_id, agent.owner_id))
+    let token = verify_agent_token(authorization, cfg)?;
+    Ok((token.agent_id, token.owner_id))
 }
 
-/// [`verify_agent_jwt`], keeping the token's `iat` for the revocation check.
+/// [`verify_agent_jwt`], also returning the token's issue time.
 pub fn verify_agent_token(
     authorization: Option<&str>,
     cfg: &GatewayConfig,
-) -> Result<VerifiedAgent, GatewayError> {
+) -> Result<AgentToken, GatewayError> {
     let header = authorization.ok_or(GatewayError::MissingAuthHeader)?;
 
     // Fail closed on misconfiguration — never fail open.
@@ -94,7 +85,7 @@ pub fn verify_agent_token(
         .filter(|s| !s.is_empty())
         .ok_or(GatewayError::MissingAgentId)?;
     let owner_id = data.claims.owner_id.unwrap_or_default();
-    Ok(VerifiedAgent {
+    Ok(AgentToken {
         agent_id,
         owner_id,
         issued_at: data.claims.iat,
@@ -208,21 +199,14 @@ mod tests {
     }
 
     #[test]
-    fn a_token_carries_when_it_was_minted() {
+    fn verified_token_carries_its_issue_time() {
+        let now = now_unix();
         let token =
-            mint_agent_token("agent-123", "owner-abc", SECRET, 3600, Algorithm::HS256).unwrap();
-        let agent = verify_agent_token(Some(&bearer(&token)), &cfg(SECRET)).unwrap();
-        let issued = agent.issued_at.expect("iat");
-        assert!(issued.abs_diff(now_unix() as u64) <= 2);
-    }
-
-    #[test]
-    fn a_token_minted_up_to_its_revocations_second_is_revoked() {
-        assert!(!is_revoked(Some(100), None));
-        assert!(is_revoked(Some(99), Some(100)));
-        assert!(is_revoked(Some(100), Some(100)));
-        assert!(!is_revoked(Some(101), Some(100)));
-        assert!(is_revoked(None, Some(100)));
+            mint_with_times("a", "o", SECRET, now - 30, now + 3600, Algorithm::HS256).unwrap();
+        let verified = verify_agent_token(Some(&bearer(&token)), &cfg(SECRET)).unwrap();
+        assert_eq!(verified.issued_at, Some((now - 30) as i64));
+        assert_eq!(verified.agent_id, "a");
+        assert_eq!(verified.owner_id, "o");
     }
 
     #[test]

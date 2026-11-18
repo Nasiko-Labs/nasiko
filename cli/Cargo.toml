@@ -3,7 +3,7 @@ name = "nasiko"
 edition.workspace = true
 # Its own version, not the workspace's: the CLI is released on its own (`just release-cli-oss`), and
 # `nasiko --version` must match the tag it was published under.
-version = "0.2.0"
+version = "0.2.1"
 
 [lib]
 name = "nasiko"
@@ -42,11 +42,10 @@ chrono.workspace = true
 tabled.workspace = true
 zip.workspace = true
 rusqlite.workspace = true
-# Not `[target.'cfg(unix)'.dependencies]`: scripts/gen-oss-cargo-toml only scans plain
-# dependency tables for `workspace = true` usage (see its `collect_used_workspace_deps`), so a
-# target-gated table here would always get pruned from oss/Cargo.toml, breaking the OSS
-# standalone build. `libc` itself builds fine on every platform; the actual Unix-only signal
-# code that uses it is gated with `#[cfg(unix)]` in hitl.rs, not here.
+# A plain dependency rather than `[target.'cfg(unix)'.dependencies]`: `libc` builds on every
+# platform, and the Unix-only signal code that uses it is gated with `#[cfg(unix)]` in hitl.rs.
+# (A target-gated table would also work: scripts/gen-oss-cargo-toml keeps workspace
+# dependencies used from `[target.*]` tables too.)
 libc.workspace = true
 
 [dev-dependencies]

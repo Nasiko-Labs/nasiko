@@ -1,23 +1,41 @@
 /**
- * Step 3: pick a built-in provider and save its key as the caller's default LLM config, through the router's own
- * `useSaveConfig` (key hygiene as there: the mutation keeps nothing and resets on unmount; the key is never read back).
+ * The Agent and key step's second half (bring your own key for your own agents; Starter pack agents are free): pick a
+ * built-in provider and save its key as
+ * the caller's default LLM config, through the router's own `useSaveConfig` (key hygiene as there: the mutation keeps
+ * nothing and resets on unmount; the key is never read back). "Where do I get a key?" above the field opens the steps.
+ * Then the model, the LLM router's own field (`SuggestInput`: the provider's catalog models as suggestions, any name
+ * accepted): never guessed, since a catalog's first model isn't always one the key can call (user 2026-11-06).
  */
-import { CircleCheck, KeyRound, Lock, TriangleAlert } from 'lucide-react'
+import { CircleCheck, CircleHelp, Eye, EyeOff, KeyRound, Lock, TriangleAlert } from 'lucide-react'
 import { useEffect, useId, useState } from 'react'
 import { PanelError } from '@nasiko/ui/composites/panel'
+import { SuggestInput } from '@nasiko/ui/composites/suggest-input'
 import { Alert, AlertDescription } from '@nasiko/ui/primitives/alert'
 import { Button } from '@nasiko/ui/primitives/button'
 import { Field, FieldLabel } from '@nasiko/ui/primitives/field'
-import { InputGroup, InputGroupAddon, InputGroupInput } from '@nasiko/ui/primitives/input-group'
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+  InputGroupInput,
+} from '@nasiko/ui/primitives/input-group'
+import {
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
+} from '@nasiko/ui/primitives/popover'
 import { RadioGroup, RadioGroupItem } from '@nasiko/ui/primitives/radio-group'
 import { Skeleton } from '@nasiko/ui/primitives/skeleton'
 import { Spinner } from '@nasiko/ui/primitives/spinner'
 import { useCatalog, useSaveConfig } from '@nasiko/features/router/api'
 import { defaultSecretName } from '@nasiko/features/router/routing'
 import { ApiError } from '@nasiko/data-access/client'
+import { useStarterPackOffered } from './api'
 import { copy } from './copy'
 import { guideProviders, providerName } from './logic'
-import { StepHeading } from './parts'
+import { SectionHeading } from './parts'
+import { ProviderIcon } from './ProviderIcon'
 
 export function ModelStep({
   connected,
@@ -29,6 +47,7 @@ export function ModelStep({
 }) {
   const ids = useId()
   const catalog = useCatalog()
+  const starterPack = useStarterPackOffered()
   const save = useSaveConfig()
   const { reset } = save
   useEffect(() => () => reset(), [reset])
@@ -36,21 +55,23 @@ export function ModelStep({
   const [picked, setPicked] = useState<string | null>(null)
   const provider = picked ?? providers[0]?.provider ?? null
   const [key, setKey] = useState('')
-  const [empty, setEmpty] = useState(false)
+  // The eye beside the key, as on the login page's password: to check a paste before Connect.
+  const [showKey, setShowKey] = useState(false)
+  const [model, setModel] = useState('')
+  const [empty, setEmpty] = useState<'key' | 'model' | null>(null)
+  const models = providers.find((p) => p.provider === provider)?.models ?? []
 
   const connect = () => {
     if (!provider) return
-    if (!key.trim()) return setEmpty(true)
-    // The server needs a model (or tier models) on every config: the provider's first catalog model, changeable later
-    // in the LLM router.
-    const model = providers.find((p) => p.provider === provider)?.models[0] ?? null
+    if (!key.trim()) return setEmpty('key')
+    if (!model.trim()) return setEmpty('model')
     save.mutate(
       {
         mode: 'create',
         body: {
           name: `${provider}-setup`,
           provider,
-          model,
+          model: model.trim(),
           api_key_secret_name: defaultSecretName(provider),
           secret_value: key.trim(),
           is_default: true,
@@ -59,15 +80,18 @@ export function ModelStep({
       {
         onSuccess: () => {
           setKey('')
-          onConnected(model ? `${providerName(provider)} · ${model}` : providerName(provider))
+          onConnected(`${providerName(provider)} · ${model.trim()}`)
         },
       },
     )
   }
 
   return (
-    <div className="flex flex-col gap-6">
-      <StepHeading title={copy.model.title} intro={copy.model.intro} />
+    <section className="flex flex-col gap-4">
+      <SectionHeading
+        title={copy.model.title}
+        intro={starterPack === false ? copy.model.introOwn : copy.model.intro}
+      />
       {catalog.isPending ? (
         <Skeleton className="h-24 w-full" />
       ) : catalog.isError ? (
@@ -76,18 +100,21 @@ export function ModelStep({
           onRetry={() => void catalog.refetch()}
           what={copy.model.loadFailed}
         />
-      ) : !providers.length ? (
-        <p className="text-sm text-muted-foreground">{copy.model.noProviders}</p>
       ) : (
         <>
+          {!providers.length ? (
+            <p className="text-sm text-muted-foreground">{copy.model.noProviders}</p>
+          ) : null}
           <RadioGroup
             aria-label={copy.model.label}
             value={provider ?? ''}
             onValueChange={(v) => {
               setPicked(v)
+              // Another provider's model names don't carry over.
+              setModel('')
               save.reset()
             }}
-            className="grid gap-3 sm:grid-cols-3"
+            className="grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3"
           >
             {providers.map((p) => (
               <label
@@ -96,6 +123,9 @@ export function ModelStep({
                 className="flex cursor-pointer items-center gap-3 rounded-xl border bg-card p-4 hover:bg-accent/50 has-[[data-checked]]:border-foreground/50 has-[[data-checked]]:bg-accent"
               >
                 <RadioGroupItem id={`${ids}-${p.provider}`} value={p.provider} />
+                <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
+                  <ProviderIcon provider={p.provider} className="size-4" />
+                </span>
                 <span className="min-w-0">
                   <span className="block text-sm font-medium">{providerName(p.provider)}</span>
                   <span className="block text-xs text-muted-foreground">
@@ -107,27 +137,59 @@ export function ModelStep({
           </RadioGroup>
           {provider ? (
             <Field className="gap-2">
-              <FieldLabel htmlFor={`${ids}-key`}>
-                {copy.model.key(providerName(provider))}
-              </FieldLabel>
+              <div className="flex items-center gap-1">
+                <FieldLabel htmlFor={`${ids}-key`}>
+                  {copy.model.key(providerName(provider))}
+                </FieldLabel>
+                <KeyHelp provider={provider} />
+              </div>
+              <InputGroup className="h-10">
+                <InputGroupAddon>
+                  <KeyRound aria-hidden />
+                </InputGroupAddon>
+                <InputGroupInput
+                  id={`${ids}-key`}
+                  type={showKey ? 'text' : 'password'}
+                  placeholder={copy.model.placeholder[provider] ?? copy.model.placeholderOther}
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={key}
+                  onChange={(e) => {
+                    setKey(e.target.value)
+                    setEmpty(null)
+                  }}
+                />
+                <InputGroupAddon align="inline-end">
+                  <InputGroupButton
+                    size="icon-sm"
+                    aria-label={copy.model.showKey}
+                    aria-pressed={showKey}
+                    aria-controls={`${ids}-key`}
+                    onClick={() => setShowKey((v) => !v)}
+                  >
+                    {showKey ? <EyeOff aria-hidden /> : <Eye aria-hidden />}
+                  </InputGroupButton>
+                </InputGroupAddon>
+              </InputGroup>
+            </Field>
+          ) : null}
+          {provider ? (
+            <Field className="gap-2">
+              <FieldLabel htmlFor={`${ids}-model`}>{copy.model.model}</FieldLabel>
               <div className="flex gap-2">
-                <InputGroup className="h-10">
-                  <InputGroupAddon>
-                    <KeyRound aria-hidden />
-                  </InputGroupAddon>
-                  <InputGroupInput
-                    id={`${ids}-key`}
-                    type="password"
-                    placeholder={copy.model.placeholder[provider] ?? copy.model.placeholderOther}
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={key}
-                    onChange={(e) => {
-                      setKey(e.target.value)
-                      setEmpty(false)
-                    }}
-                  />
-                </InputGroup>
+                <SuggestInput
+                  id={`${ids}-model`}
+                  className="h-10 flex-1"
+                  suggestions={models}
+                  value={model}
+                  placeholder={copy.model.modelPlaceholder}
+                  autoComplete="off"
+                  spellCheck={false}
+                  onValueChange={(m) => {
+                    setModel(m)
+                    setEmpty(null)
+                  }}
+                />
                 <Button
                   type="button"
                   variant="outline"
@@ -150,7 +212,7 @@ export function ModelStep({
           {empty ? (
             <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
               <TriangleAlert aria-hidden className="size-4" />
-              {copy.model.keyEmpty}
+              {empty === 'key' ? copy.model.keyEmpty : copy.model.modelEmpty}
             </p>
           ) : null}
           {save.isError ? (
@@ -167,12 +229,56 @@ export function ModelStep({
               </AlertDescription>
             </Alert>
           ) : null}
-          <p className="flex items-center gap-2 text-xs text-muted-foreground">
-            <Lock aria-hidden className="size-3.5" />
-            {copy.model.vault}
+          <p className="flex items-start gap-2 text-xs text-muted-foreground">
+            <Lock aria-hidden className="mt-px size-3.5 shrink-0" />
+            <span>
+              {copy.model.vault} {copy.model.manageSecrets}
+            </span>
           </p>
         </>
       )}
-    </div>
+    </section>
+  )
+}
+
+/** Where to get a key for the picked provider: its keys page, then copy and paste. */
+function KeyHelp({ provider }: { provider: string }) {
+  const name = providerName(provider)
+  const page = copy.model.keyPage[provider]
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <Button type="button" variant="ghost" size="xs" className="ml-auto text-primary-text" />
+        }
+      >
+        <CircleHelp aria-hidden />
+        {copy.model.help.label}
+      </PopoverTrigger>
+      <PopoverContent align="end" className="flex w-80 flex-col gap-3">
+        <PopoverTitle className="text-sm">{copy.model.help.title(name)}</PopoverTitle>
+        <ol className="flex list-decimal flex-col gap-1.5 pl-4 text-sm text-muted-foreground marker:text-foreground">
+          <li>
+            {page ? (
+              <a
+                href={page}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary-text underline underline-offset-4"
+              >
+                {copy.model.help.open(name)}
+              </a>
+            ) : (
+              copy.model.help.open(name)
+            )}{' '}
+            {copy.model.help.signIn}
+          </li>
+          {copy.model.help.steps.map((s) => (
+            <li key={s}>{s}</li>
+          ))}
+        </ol>
+        <p className="border-t pt-3 text-xs text-muted-foreground">{copy.model.help.billing}</p>
+      </PopoverContent>
+    </Popover>
   )
 }

@@ -11,7 +11,10 @@ import {
   sessionDetail,
   SHOWCASE_SESSION,
   spanDetail,
+  traceDetail,
 } from '@nasiko/mocks/observability'
+import { entryCost } from '@nasiko/features/observability/sessions'
+import { fmtMoney, fmtMoneyFine, fmtTokens } from '@nasiko/ui/lib/format'
 import { seed, setupPinnedSeed } from '@nasiko/testing/pinnedSeed'
 import { renderApp } from '@nasiko/testing/renderApp'
 import { server } from '@nasiko/testing/setup'
@@ -211,6 +214,73 @@ describe('Session trace', () => {
   })
 })
 
+// NAS-1453: which figure is the session's, which is a trace's, and why they would ever not add up.
+describe('Session trace: totals', () => {
+  const s = data.sessions.find((x) => x.traces.length > 1 && x.traces.length <= 6)!
+  const d = sessionDetail(seed, s)
+  const picked = d.traces[1]
+  const line = (label: string) => screen.getByText(label).parentElement!
+
+  it('labels the session total and each trace; the header and narrative use the figure that adds up', async () => {
+    // The trace read re-prices its spans live; that figure must not stand in for the trace's share of the total.
+    server.use(
+      http.get('/api/observability/trace/:traceId', ({ params }) => {
+        const t = traceDetail(seed, String(params.traceId))
+        if (!t) return undefined
+        return HttpResponse.json({
+          data: { trace: { ...t, cost_summary: { ...t.cost_summary, total: { cost: 99 } } } },
+        })
+      }),
+    )
+    renderApp(`/sessions/${s.session_id}?trace=${picked.trace_id}`)
+    await screen.findByText(copy.traceTotal(2), {}, { timeout: 8000 })
+
+    const tokens = (i: number, o: number) => `${fmtTokens(i)} in · ${fmtTokens(o)} out tokens`
+    const total = line(copy.sessionTotal)
+    expect(total).toHaveTextContent(fmtMoneyFine(d.cost_summary.total.cost))
+    expect(total).toHaveTextContent(
+      tokens(d.cost_summary.prompt.tokens, d.cost_summary.completion.tokens),
+    )
+    expect(total).toHaveTextContent(copy.acrossTraces(d.traces.length))
+    expect(screen.queryByText(copy.totalsPartial)).toBeNull()
+
+    const traceLine = line(copy.traceTotal(2))
+    expect(traceLine).toHaveTextContent(fmtMoneyFine(entryCost(picked)))
+    expect(traceLine).toHaveTextContent(
+      tokens(picked.root_span.input_tokens, picked.root_span.output_tokens),
+    )
+    expect(traceLine).not.toHaveTextContent('$99')
+    expect(screen.getByLabelText('What happened')).toHaveTextContent(
+      `This trace cost ${fmtMoney(entryCost(picked))}`,
+    )
+
+    // Each trace's chip says the same figures, and they add up to the session total.
+    const chips = within(
+      screen.getByRole('group', { name: 'Traces in this session' }),
+    ).getAllByRole('button')
+    d.traces.forEach((t, i) =>
+      expect(chips[i]).toHaveTextContent(
+        `${fmtMoneyFine(entryCost(t))} · ${tokens(t.root_span.input_tokens, t.root_span.output_tokens)}`,
+      ),
+    )
+    const sum = (f: (t: (typeof d.traces)[number]) => number) =>
+      d.traces.reduce((acc, t) => acc + f(t), 0)
+    expect(sum((t) => entryCost(t)!)).toBeCloseTo(d.cost_summary.total.cost, 6)
+    expect(sum((t) => t.root_span.input_tokens)).toBe(d.cost_summary.prompt.tokens)
+    expect(sum((t) => t.root_span.output_tokens)).toBe(d.cost_summary.completion.tokens)
+  })
+
+  it('an incomplete session total says it covers only the traces listed', async () => {
+    server.use(
+      http.get('/api/observability/session/:sessionId', () =>
+        HttpResponse.json({ data: { session: { ...d, metrics_complete: false } } }),
+      ),
+    )
+    renderApp(`/sessions/${s.session_id}`)
+    expect(await screen.findByText(copy.totalsPartial, {}, { timeout: 8000 })).toBeInTheDocument()
+  })
+})
+
 // plans/feat-context-optimization.md M2 (1B, 2A, 5A, F2; eng E4 assertion 1).
 describe('Session trace: the Optimization block', () => {
   const proxy = () => showcaseSpans().find((s) => s.name === 'a2a.proxy')!
@@ -298,5 +368,54 @@ describe('Session trace: the Optimization block', () => {
     await waitFor(() => expect(screen.queryByText('Loading…')).toBeNull())
     expect(screen.queryByRole('table', { name: optimizationCopy.trace.label })).toBeNull()
     expect(screen.queryByText(optimizationCopy.trace.pointer)).toBeNull()
+  })
+})
+
+describe('Expired trace', () => {
+  const call = (over: Record<string, unknown>) => ({
+    trace_id: data.showcaseTraceId,
+    call_id: 'c1',
+    agent_name: null,
+    tool_name: 'read_file',
+    tool_kind: null,
+    status: 'succeeded',
+    error: null,
+    arguments: null,
+    output: null,
+    duration_ms: 120,
+    started_at: '2026-07-01T10:00:00Z',
+    ...over,
+  })
+  const expire = (calls: unknown[]) =>
+    server.use(
+      http.get('/api/observability/trace/:traceId', () =>
+        HttpResponse.json({ detail: 'not found' }, { status: 404 }),
+      ),
+      http.get('/api/observability/session/:sessionId/tool-calls', ({ params }) =>
+        HttpResponse.json({ session_id: params.sessionId, tool_calls: calls }),
+      ),
+    )
+
+  it('a 404 trace lists its stored tool calls, failed ones marked', async () => {
+    expire([
+      call({}),
+      call({ call_id: 'c2', tool_name: 'run_shell', status: 'failed' }),
+      call({ call_id: 'c3', tool_name: 'other_trace_tool', trace_id: 'other' }),
+    ])
+    renderApp(`/sessions/${SHOWCASE_SESSION}?trace=${data.showcaseTraceId}`)
+    expect(
+      await screen.findByText(copy.traceExpiredTools, {}, { timeout: 8000 }),
+    ).toBeInTheDocument()
+    expect(screen.getByText('read_file')).toBeInTheDocument()
+    expect(screen.getByText('run_shell')).toBeInTheDocument()
+    expect(screen.queryByText('other_trace_tool')).toBeNull()
+  })
+
+  it('a 404 trace with no stored tool calls says so', async () => {
+    expire([])
+    renderApp(`/sessions/${SHOWCASE_SESSION}?trace=${data.showcaseTraceId}`)
+    expect(
+      await screen.findByText(copy.traceExpiredNoTools, {}, { timeout: 8000 }),
+    ).toBeInTheDocument()
   })
 })

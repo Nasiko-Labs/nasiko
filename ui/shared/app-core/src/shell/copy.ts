@@ -1,6 +1,5 @@
 /** Every user-facing string of the app shell (sidebar, theme menu, sign out). */
 export const copy = {
-  brand: 'Nasiko',
   brandTooltip: '',
   navLabel: 'Main',
   // The drill-in panel's way back (Chat, Settings): it reads "Back"; its name (and tooltip) says where to: the page
@@ -47,18 +46,24 @@ export const copy = {
   },
   // lib/staleBuild.ts: a tab older than the running build. A new version is said only when the server serves one.
   staleBuild: {
-    notice: 'A new version of OpenRuntime is available. Save any changes, then reload.',
+    notice: 'A new version of Open Runtime is available. Save any changes, then reload.',
     reload: 'Reload',
     tryAgain: 'Try again',
     checking: { title: 'Loading page', body: "Checking why this page couldn't load." },
-    reloading: { title: 'OpenRuntime was updated', body: 'Loading the new version…' },
-    held: { title: 'OpenRuntime was updated', body: 'Save your changes, then reload to continue.' },
+    reloading: { title: 'Open Runtime was updated', body: 'Loading the new version…' },
+    held: {
+      title: 'Open Runtime was updated',
+      body: 'Save your changes, then reload to continue.',
+    },
     exhausted: {
-      title: 'OpenRuntime was updated',
+      title: 'Open Runtime was updated',
       body: "This page couldn't load its code. Reload to continue.",
     },
     offline: { title: "You're offline", body: 'This page will load when the connection is back.' },
-    network: { title: "Couldn't reach OpenRuntime", body: 'Check the connection, then try again.' },
+    network: {
+      title: "Couldn't reach Open Runtime",
+      body: 'Check the connection, then try again.',
+    },
     failed: { title: "This page couldn't load", body: 'Try again in a moment.' },
   },
   notFound: {
@@ -98,7 +103,7 @@ export const copy = {
   waitlist: {
     badge: 'Early access',
     title: 'Join the Nasiko waitlist',
-    line: 'Get managed OpenRuntime early, with help from the team.',
+    line: 'Get managed Open Runtime early, with help from the team.',
     cta: 'Join the waitlist',
     newTab: '(opens in a new tab)',
     loginLead: 'New to Nasiko?',
@@ -109,12 +114,14 @@ export const copy = {
     title: 'Get a free TokenOps assessment',
     line: "Tell us how your agents run. We'll show where the tokens go.",
     cta: 'Request assessment',
+    dismiss: 'Dismiss the assessment card',
   },
   // The sidebar footer's help rows, above the account (AppSidebar.tsx HelpRows).
   help: {
     docs: 'How to use',
     cli: 'CLI guide',
-    expert: 'Talk to an expert',
+    assessment: 'Free TokenOps assessment',
+    issue: 'Report an issue',
     newTab: '(opens in a new tab)',
   },
   // The desktop app's sign-in, while it runs Nasiko on this computer (ForgotPassword.tsx).
@@ -137,9 +144,9 @@ export const copy = {
     title: 'Sign in to Nasiko',
     // The decorative showcase beside the form (aria-hidden; the h1 names the page). Its chips are `nav` labels.
     showcaseTitle: 'Nasiko',
-    // nasiko.com's hero: the lead, then each word in turn, looping (LoginShowcase). In the prototype's order; the
-    // chips and the layer stack carry the same words.
-    showcaseLead: 'The OpenRuntime for',
+    // nasiko.com's hero: the lead, then "for" and each word in turn, looping (LoginShowcase).
+    showcaseLead: 'The Open Runtime',
+    showcaseFor: 'for',
     showcaseWords: ['Agents', 'Coding Harnesses', 'Tools', 'Frameworks'],
     showcaseLine: 'Use any harness. Reach any model. Measure every token. Change nothing.',
     username: 'Username',

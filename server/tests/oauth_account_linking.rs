@@ -97,3 +97,56 @@ async fn a_verified_email_still_links_to_its_existing_account() {
 
     server.cleanup().await;
 }
+
+/// `would_create_user` is what a cap on new accounts asks before a sign-in:
+/// "does this create an account?". It must answer exactly what
+/// `upsert_oauth_user` then does: a first sign-in whose username is taken
+/// creates an account (`name-2`), so it is new; a known identity, or a verified
+/// email that belongs to an account, is not.
+#[tokio::test]
+#[serial]
+async fn the_capacity_check_agrees_with_what_the_sign_in_creates() {
+    let server = common::TestServer::start().await;
+    let auth = &server.state.auth;
+    let users = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM users")
+            .fetch_one(&server.db)
+            .await
+            .unwrap()
+    };
+    seed_user(&server, "dummy-admin", true).await;
+
+    // A first sign-in whose provider username is taken: a new account.
+    let predicted = auth
+        .would_create_user("github", "gh-3003", None)
+        .await
+        .unwrap();
+    let before = users().await;
+    auth.upsert_oauth_user("github", "gh-3003", "dummy-admin", None)
+        .await
+        .unwrap();
+    assert!(users().await > before, "the sign-in did create an account");
+    assert!(
+        predicted,
+        "a taken username was counted as an existing user"
+    );
+
+    // The same identity again: no new account, and the check says so.
+    assert!(
+        !auth
+            .would_create_user("github", "gh-3003", None)
+            .await
+            .unwrap()
+    );
+
+    // A verified email that belongs to an account links to it: not new either.
+    seed_user(&server, "dummy-mail", false).await;
+    assert!(
+        !auth
+            .would_create_user("oidc", "sub-4004", Some("dummy-mail@local.test"))
+            .await
+            .unwrap()
+    );
+
+    server.cleanup().await;
+}

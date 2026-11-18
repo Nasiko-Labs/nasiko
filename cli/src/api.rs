@@ -19,6 +19,31 @@ fn check_status(resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Resul
     Err(ApiFailure::new(status, url, body).into_error())
 }
 
+/// Parse a successful response's body as JSON. A body that is not JSON at all usually means the
+/// cluster URL points at something other than the control plane API (its web UI, a proxy page),
+/// which a bare serde error ("expected value at line 1 column 1") does not say.
+pub fn read_json_body<T: for<'de> Deserialize<'de>>(
+    resp: &mut ureq::http::Response<ureq::Body>,
+    url: &str,
+) -> Result<T> {
+    let raw = resp.body_mut().read_to_string()?;
+    serde_json::from_str(&raw).map_err(|e| {
+        if serde_json::from_str::<serde_json::Value>(&raw).is_err() {
+            anyhow::anyhow!(
+                "unexpected (non-JSON) response from {url} — is the cluster URL correct? \
+                 (nasiko connect <url>)"
+            )
+        } else {
+            anyhow::anyhow!("unexpected response shape from {url}: {e}")
+        }
+    })
+}
+
+/// The message for a request that never got an HTTP answer (DNS, refused, TLS, timeout).
+fn unreachable(base_url: &str) -> String {
+    format!("cannot reach control plane at {base_url}")
+}
+
 /// A non-2xx response, kept as data so a caller can branch on the status and the body
 /// instead of only printing them.
 ///
@@ -90,7 +115,7 @@ pub enum Attempt<T> {
 /// Pull a human-readable message out of a server error body.
 /// Tries the standard `{"message":"..."}` and `{"error":"..."}` shapes first;
 /// falls back to the raw body when neither is present.
-fn extract_error_detail(body: &str) -> String {
+pub fn extract_error_detail(body: &str) -> String {
     if body.trim().is_empty() {
         return "(empty response)".to_string();
     }
@@ -116,10 +141,16 @@ fn extract_error_detail(body: &str) -> String {
     body.trim().to_string()
 }
 
-fn status_hint(status: u16) -> &'static str {
+/// A one-line next step for an HTTP failure status, starting with a newline; empty when there
+/// is nothing general to add. Public so another CLI built on this crate words its hints the same way.
+pub fn status_hint(status: u16) -> &'static str {
     match status {
         401 => "\nhint: session expired or invalid — run: nasiko auth login",
         403 => "\nhint: you don't have permission to do this",
+        // A 402 refuses a change, not the service. The server's message above
+        // says why and what to do; this only names the category, which is easy
+        // to miss behind a bare status code.
+        402 => "\nhint: the server refused this change - reads and running agents are unaffected",
         404 => "\nhint: resource not found — check the ID or name",
         // No blanket hint for 409: the server's detail message (already shown)
         // covers several distinct conflicts — name collision, version-not-greater,
@@ -196,10 +227,38 @@ impl Client {
         &self.base_url
     }
 
+    /// [`check_status`], except that a `401` on a request sent with no token at all says the user
+    /// never signed in to this cluster, instead of calling a session that never existed expired.
+    fn check_response(&self, resp: &mut ureq::http::Response<ureq::Body>, url: &str) -> Result<()> {
+        if self.token.is_none() && resp.status().as_u16() == 401 {
+            bail!(
+                "not logged in to {} — run: {} auth login",
+                self.base_url,
+                crate::commands::local_agents::cli_name()
+            );
+        }
+        check_status(resp, url)
+    }
+
     /// The caller's own user id, decoded locally from the stored JWT's `sub`
     /// claim. `None` if there's no token, or it's not a JWT this can decode.
     pub fn current_user_id(&self) -> Option<String> {
         crate::config::token_subject(self.token.as_deref()?)
+    }
+
+    /// Get the caller's image namespace from the server capability endpoint.
+    /// Returns `Ok(Some(namespace))` on success, `Ok(None)` if the server
+    /// doesn't support per-owner namespaces (404), or `Err` on other failures.
+    pub fn image_namespace(&self) -> Result<Option<String>> {
+        let data: serde_json::Value = match self.get_json_optional("/agents/image-namespace")? {
+            Some(d) => d,
+            None => return Ok(None), // 404 from old server
+        };
+        let namespace = data
+            .get("namespace")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+        Ok(namespace)
     }
 
     fn api_url(&self, path: &str) -> String {
@@ -250,9 +309,9 @@ impl Client {
         let mut resp = self
             .auth_get(&url)
             .call()
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// GET that answers `Ok(Err(status))` instead of failing when the response status is one of
@@ -268,13 +327,13 @@ impl Client {
         let mut resp = self
             .auth_get(&url)
             .call()
-            .context("cannot reach control plane")?;
+            .with_context(|| unreachable(&self.base_url))?;
         let status = resp.status().as_u16();
         if expected.contains(&status) {
             return Ok(Err(status));
         }
-        check_status(&mut resp, &url)?;
-        Ok(Ok(resp.body_mut().read_json()?))
+        self.check_response(&mut resp, &url)?;
+        Ok(Ok(read_json_body(&mut resp, &url)?))
     }
 
     /// GET returning `Ok(None)` on 404 instead of erroring, while still bailing
@@ -302,8 +361,8 @@ impl Client {
         let mut resp = self
             .auth_get(&url)
             .call()
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
         Ok(resp.body_mut().read_to_string()?)
     }
 
@@ -317,9 +376,9 @@ impl Client {
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// Authenticated JSON POST without terminal status output. Credential helpers
@@ -333,9 +392,9 @@ impl Client {
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     pub fn put_json<T: for<'de> Deserialize<'de>, B: Serialize>(
@@ -348,9 +407,9 @@ impl Client {
         let mut resp = self
             .auth_put(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// Authenticated JSON PUT without terminal status output, for calls made while a progress line
@@ -364,9 +423,9 @@ impl Client {
         let mut resp = self
             .auth_put(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     pub fn patch_json<T: for<'de> Deserialize<'de>, B: Serialize>(
@@ -379,9 +438,9 @@ impl Client {
         let mut resp = self
             .auth_patch(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// POST that hands a non-2xx back as [`ApiFailure`] rather than bailing, so the
@@ -396,7 +455,7 @@ impl Client {
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
+            .with_context(|| unreachable(&self.base_url))?;
         Self::into_attempt(&mut resp, &url)
     }
 
@@ -411,7 +470,7 @@ impl Client {
         let mut resp = self
             .auth_patch(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
+            .with_context(|| unreachable(&self.base_url))?;
         Self::into_attempt(&mut resp, &url)
     }
 
@@ -432,19 +491,33 @@ impl Client {
                 ..ApiFailure::new(status, url, raw)
             }));
         }
-        Ok(Attempt::Ok(resp.body_mut().read_json()?))
+        Ok(Attempt::Ok(read_json_body(resp, url)?))
     }
 
     /// POST with no body and ignore the response body (for endpoints that return 200/204 with no JSON).
     pub fn post_void(&self, path: &str) -> Result<()> {
+        self.post_void_or_status(path, &[]).map(|_| ())
+    }
+
+    /// [`Self::post_void`] that answers `Ok(Err(status))` when the status is one of `expected`,
+    /// for callers that give a particular failure (say a 404) its own message.
+    pub fn post_void_or_status(
+        &self,
+        path: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<(), u16>> {
         let _spin = nasiko_utils::term::start_status(format!("POST {path}"));
         let url = self.api_url(path);
         let mut resp = self
             .auth_post(&url)
             .send(&[] as &[u8])
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(())
+            .with_context(|| unreachable(&self.base_url))?;
+        let status = resp.status().as_u16();
+        if expected.contains(&status) {
+            return Ok(Err(status));
+        }
+        self.check_response(&mut resp, &url)?;
+        Ok(Ok(()))
     }
 
     /// POST a JSON body and ignore the response body (for endpoints that return 200/204 with no JSON).
@@ -454,8 +527,8 @@ impl Client {
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
         Ok(())
     }
 
@@ -471,7 +544,7 @@ impl Client {
         let mut resp = self
             .auth_post(&url)
             .send_json(body)
-            .context("cannot reach control plane")?;
+            .with_context(|| unreachable(&self.base_url))?;
         let envelope = match Self::into_attempt::<serde_json::Value>(&mut resp, &url)
             .with_context(|| format!("invalid coding-agent batch response from {url}"))?
         {
@@ -490,9 +563,31 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let mut resp = req.call().context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
+        let mut resp = req.call().with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
         Ok(())
+    }
+
+    /// DELETE that answers `Ok(Err(status))` instead of failing when the response status is one
+    /// of `expected`; every other failure still fails.
+    pub fn delete_or_status(
+        &self,
+        path: &str,
+        expected: &[u16],
+    ) -> Result<std::result::Result<(), u16>> {
+        let _spin = nasiko_utils::term::start_status(format!("DELETE {path}"));
+        let url = self.api_url(path);
+        let mut req = self.agent.delete(&url);
+        if let Some(ref t) = self.token {
+            req = req.header("Authorization", &format!("Bearer {t}"));
+        }
+        let mut resp = req.call().with_context(|| unreachable(&self.base_url))?;
+        let status = resp.status().as_u16();
+        if expected.contains(&status) {
+            return Ok(Err(status));
+        }
+        self.check_response(&mut resp, &url)?;
+        Ok(Ok(()))
     }
 
     /// DELETE and parse the JSON response body (for endpoints that return
@@ -504,9 +599,9 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let mut resp = req.call().context("request failed")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+        let mut resp = req.call().with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// DELETE and parse a JSON response body (for routes that return a
@@ -519,9 +614,9 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let mut resp = req.call().context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+        let mut resp = req.call().with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// DELETE with a JSON body, ignoring the response body. Off-spec (DELETE
@@ -535,8 +630,10 @@ impl Client {
         if let Some(ref t) = self.token {
             req = req.header("Authorization", &format!("Bearer {t}"));
         }
-        let mut resp = req.send_json(body).context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
+        let mut resp = req
+            .send_json(body)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
         Ok(())
     }
 
@@ -549,9 +646,9 @@ impl Client {
             .agent
             .get(&url)
             .call()
-            .context("cannot reach control plane")?;
-        check_status(&mut resp, &url)?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        self.check_response(&mut resp, &url)?;
+        read_json_body(&mut resp, &url)
     }
 
     /// Like `get_public_json`, but parses and returns the body regardless of
@@ -569,8 +666,8 @@ impl Client {
             .agent
             .get(&url)
             .call()
-            .context("cannot reach control plane")?;
-        Ok(resp.body_mut().read_json()?)
+            .with_context(|| unreachable(&self.base_url))?;
+        read_json_body(&mut resp, &url)
     }
 
     // ─── LLM router surface (no /api prefix, agent-scoped credential) ───────
@@ -593,7 +690,7 @@ impl Client {
             .post(&url)
             .header("Authorization", &format!("Bearer {token}"))
             .send_json(body)
-            .context("cannot reach control plane")?;
+            .with_context(|| unreachable(&self.base_url))?;
         let status = resp.status().as_u16();
         let body = resp
             .body_mut()
@@ -619,13 +716,11 @@ impl Client {
                 .build(),
         );
         let url = format!("{}/health", url.trim_end_matches('/'));
-        let resp = agent
+        let mut resp = agent
             .get(&url)
             .call()
-            .context("cannot reach control plane")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("health check returned HTTP {}", resp.status().as_u16());
-        }
+            .with_context(|| format!("cannot reach control plane at {url}"))?;
+        check_status(&mut resp, &url)?;
         Ok(())
     }
 }
@@ -732,13 +827,11 @@ impl OciClient {
 
         // POST to initiate
         let url = self.url(&format!("/v2/{repo}/blobs/uploads/"));
-        let resp = self
+        let mut resp = self
             .post(&url)
             .send(&[] as &[u8])
             .context("initiate upload failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("initiate upload: HTTP {}", resp.status().as_u16());
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("initiate upload: {e}"))?;
 
         let location = resp
             .headers()
@@ -755,10 +848,7 @@ impl OciClient {
             .header("Content-Type", "application/octet-stream")
             .send(data)
             .context("blob upload failed")?;
-        if resp.status().as_u16() >= 400 {
-            let body = resp.body_mut().read_to_string().unwrap_or_default();
-            bail!("blob upload: HTTP {}: {}", resp.status().as_u16(), body);
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("blob upload: {e}"))?;
         Ok(())
     }
 
@@ -770,14 +860,12 @@ impl OciClient {
         manifest: &[u8],
     ) -> Result<String> {
         let url = self.url(&format!("/v2/{repo}/manifests/{reference}"));
-        let resp = self
+        let mut resp = self
             .put(&url)
             .header("Content-Type", content_type)
             .send(manifest)
             .context("manifest push failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("manifest push: HTTP {}", resp.status().as_u16());
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("manifest push: {e}"))?;
         let digest = resp
             .headers()
             .get("Docker-Content-Digest")
@@ -790,27 +878,21 @@ impl OciClient {
     pub fn list_tags(&self, repo: &str) -> Result<String> {
         let url = self.url(&format!("/v2/{repo}/tags/list"));
         let mut resp = self.get(&url).call().context("tags list failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("tags list: HTTP {}", resp.status().as_u16());
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("tags list: {e}"))?;
         Ok(resp.body_mut().read_to_string()?)
     }
 
     pub fn pull_manifest(&self, repo: &str, reference: &str) -> Result<String> {
         let url = self.url(&format!("/v2/{repo}/manifests/{reference}"));
         let mut resp = self.get(&url).call().context("manifest pull failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("manifest pull: HTTP {}", resp.status().as_u16());
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("manifest pull: {e}"))?;
         Ok(resp.body_mut().read_to_string()?)
     }
 
     pub fn pull_blob(&self, repo: &str, digest: &str) -> Result<Vec<u8>> {
         let url = self.url(&format!("/v2/{repo}/blobs/{digest}"));
         let mut resp = self.get(&url).call().context("blob pull failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("blob pull: HTTP {}", resp.status().as_u16());
-        }
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("blob pull: {e}"))?;
         Ok(resp.body_mut().read_to_vec()?)
     }
 }
@@ -915,10 +997,8 @@ impl RegistryClient {
             .get(&url)
             .call()
             .context("registry search failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("registry search: HTTP {}", resp.status().as_u16());
-        }
-        let sr: SearchResponse = resp.body_mut().read_json()?;
+        check_status(&mut resp, &url).map_err(|e| anyhow::anyhow!("registry search: {e}"))?;
+        let sr: SearchResponse = read_json_body(&mut resp, &url)?;
         Ok(sr.data)
     }
 
@@ -944,6 +1024,7 @@ impl Client {
         writable: bool,
         writable_path: Option<&str>,
         workload_kind: Option<&str>,
+        hitl: Option<bool>,
     ) -> anyhow::Result<UploadQueued> {
         let file_bytes = std::fs::read(zip_path)
             .with_context(|| format!("cannot read {}", zip_path.display()))?;
@@ -998,6 +1079,13 @@ impl Client {
                 format!("--{boundary}\r\nContent-Disposition: form-data; name=\"workload_kind\"\r\n\r\n{kind}\r\n").as_bytes(),
             );
         }
+        // hitl (only when explicitly set via --hitl/--no-hitl; otherwise the
+        // server applies the kind's default — ON for a coding agent)
+        if let Some(hitl) = hitl {
+            body.extend_from_slice(
+                format!("--{boundary}\r\nContent-Disposition: form-data; name=\"hitl\"\r\n\r\n{hitl}\r\n").as_bytes(),
+            );
+        }
         // file (the zip file)
         body.extend_from_slice(
             format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"upload.zip\"\r\nContent-Type: application/zip\r\n\r\n").as_bytes(),
@@ -1018,7 +1106,9 @@ impl Client {
             "uploading {name} ({} KB)",
             body.len() / 1024
         ));
-        let mut resp = req.send(&body).context("cannot reach control plane")?;
+        let mut resp = req
+            .send(&body)
+            .with_context(|| unreachable(&self.base_url))?;
         drop(_spin);
         if resp.status().as_u16() >= 400 {
             let b = resp.body_mut().read_to_string().unwrap_or_default();
@@ -1028,7 +1118,7 @@ impl Client {
                 extract_error_detail(&b)
             );
         }
-        Ok(resp.body_mut().read_json()?)
+        read_json_body(&mut resp, &url)
     }
 
     /// Upload a zip to `PUT /api/agents/{id}/update` (re-upload / server-side rebuild).
@@ -1077,7 +1167,9 @@ impl Client {
             "uploading update ({} KB)",
             body.len() / 1024
         ));
-        let mut resp = req.send(&body).context("cannot reach control plane")?;
+        let mut resp = req
+            .send(&body)
+            .with_context(|| unreachable(&self.base_url))?;
         drop(_spin);
         if resp.status().as_u16() >= 400 {
             let b = resp.body_mut().read_to_string().unwrap_or_default();
@@ -1087,7 +1179,7 @@ impl Client {
                 extract_error_detail(&b)
             );
         }
-        Ok(resp.body_mut().read_json()?)
+        read_json_body(&mut resp, &url)
     }
 
     /// Poll `GET /api/agents/deploys/{build_id}/stream` (SSE) until the build finishes.
@@ -1097,10 +1189,9 @@ impl Client {
         use std::io::BufRead;
 
         let url = self.api_url(&format!("/agents/deploys/{build_id}/stream"));
-        let resp = self.auth_get(&url).call().context("status stream failed")?;
-        if resp.status().as_u16() >= 400 {
-            bail!("status stream: HTTP {}", resp.status().as_u16());
-        }
+        let mut resp = self.auth_get(&url).call().context("status stream failed")?;
+        self.check_response(&mut resp, &url)
+            .map_err(|e| anyhow::anyhow!("status stream: {e}"))?;
 
         let (_parts, body) = resp.into_parts();
         let reader = std::io::BufReader::new(body.into_reader());
@@ -1144,10 +1235,7 @@ impl Client {
         drop(spin);
 
         if failed {
-            if let Some(msg) = self.version_conflict_message(build_id) {
-                bail!("{msg}");
-            }
-            bail!("build failed");
+            bail!("{}", self.build_failure_message(build_id));
         }
         if !succeeded {
             bail!("build did not complete successfully");
@@ -1155,14 +1243,33 @@ impl Client {
         Ok(())
     }
 
-    /// Checks `/agents/uploads/{build_id}` for a `VERSION_CONFLICT:` error
-    /// detail and formats it into a helpful message, instead of the generic
-    /// "build failed" [`poll_build_status`] would otherwise print.
+    /// Why a build failed, from the first of the server's `error_details` on
+    /// `/agents/uploads/{build_id}`: a version clash is explained with the next version to use,
+    /// any other detail is shown as the server wrote it, and no detail says so.
+    fn build_failure_message(&self, build_id: &str) -> String {
+        let detail = self
+            .get_json::<serde_json::Value>(&format!("/agents/uploads/{build_id}"))
+            .ok()
+            .and_then(|item| {
+                item.get("error_details")?
+                    .get(0)?
+                    .as_str()
+                    .map(str::to_owned)
+            });
+        match detail {
+            Some(detail) => Self::version_conflict_message(&detail)
+                .unwrap_or_else(|| format!("build {build_id} failed: {detail}")),
+            None => format!(
+                "build {build_id} failed (no detail from server) — check the build's logs on the \
+                 server, or the agent's with: nasiko logs <agent>"
+            ),
+        }
+    }
+
+    /// A `VERSION_CONFLICT:` build detail as a helpful message, or `None` for any other detail.
     ///
     /// Wire format: `VERSION_CONFLICT:<version>:<suggested>:<message>`.
-    fn version_conflict_message(&self, build_id: &str) -> Option<String> {
-        let item: serde_json::Value = self.get_json(&format!("/agents/uploads/{build_id}")).ok()?;
-        let detail = item.get("error_details")?.get(0)?.as_str()?;
+    fn version_conflict_message(detail: &str) -> Option<String> {
         let rest = detail.strip_prefix("VERSION_CONFLICT:")?;
         let mut parts = rest.splitn(3, ':');
         let _version = parts.next()?;
@@ -1235,7 +1342,9 @@ impl Client {
             "uploading {name} ({} KB)",
             body.len() / 1024
         ));
-        let mut resp = req.send(&body).context("cannot reach control plane")?;
+        let mut resp = req
+            .send(&body)
+            .with_context(|| unreachable(&self.base_url))?;
         drop(_spin);
         if resp.status().as_u16() >= 400 {
             let b = resp.body_mut().read_to_string().unwrap_or_default();
@@ -1245,7 +1354,7 @@ impl Client {
                 extract_error_detail(&b)
             );
         }
-        unwrap_data(resp.body_mut().read_json()?)
+        unwrap_data(read_json_body(&mut resp, &url)?)
     }
 
     /// Polls `GET /api/mcp/connectors/{id}/build-status` every 2s until the
@@ -1254,36 +1363,53 @@ impl Client {
     /// the MCP upload route is deliberately plain polling JSON in v1 — no
     /// streaming (see `docs/MCP_UPLOAD_ITERATION_PLAN.md` Step 10's "Deferred"
     /// note) — so this polls on a fixed interval instead of reading a stream.
-    pub fn poll_mcp_build_status(&self, connector_id: &str) -> anyhow::Result<()> {
+    /// Polls `/mcp/connectors/uploads/{upload_id}` — not the connector-scoped
+    /// `/mcp/connectors/{id}/build-status` — because a first-time build
+    /// failure deletes the connector entirely
+    /// (`delete_mcp_connector_or_mark_failed`); the upload-status row is the
+    /// durable one that survives that (`oss/migrations/0101_mcp_upload_status.sql`),
+    /// so `upload_id` (the build's own id, exactly what `upload_mcp_connector_zip`
+    /// returned as `build_id`) keeps answering either way. The explicit 404
+    /// branch below is defense in depth, not the expected path: with this
+    /// table in place, this id should never 404 once the upload was queued.
+    pub fn poll_mcp_build_status(&self, upload_id: &str) -> anyhow::Result<()> {
         let mut last_status = String::new();
         let mut spin = Some(nasiko_utils::term::start_status("waiting for build"));
         let mut succeeded = false;
         let mut fail_msg = String::new();
 
         loop {
-            let raw: serde_json::Value =
-                self.get_json(&format!("/mcp/connectors/{connector_id}/build-status"))?;
-            let status: McpBuildStatus = unwrap_data(raw)?;
-            let build_status = status.build_status.unwrap_or_else(|| "pending".to_string());
-            if build_status != last_status {
-                last_status = build_status.clone();
+            let path = format!("/mcp/connectors/uploads/{upload_id}");
+            let raw: serde_json::Value = match self.get_json_or_status(&path, &[404])? {
+                Ok(raw) => raw,
+                Err(_) => {
+                    drop(spin);
+                    bail!(
+                        "build status for upload '{upload_id}' could not be found — \
+                         this shouldn't happen; please report it"
+                    );
+                }
+            };
+            let status: McpUploadStatus = unwrap_data(raw)?;
+            if status.status != last_status {
+                last_status = status.status.clone();
                 spin = None; // Drop first so the spinner line clears before the transition prints.
-                match build_status.as_str() {
+                match status.status.as_str() {
                     "pending" => spin = Some(nasiko_utils::term::start_status("queued")),
                     "building" => spin = Some(nasiko_utils::term::start_status("building image")),
-                    "running" => {
+                    "success" => {
                         println!("  build succeeded — connector is live");
                         succeeded = true;
                     }
                     "failed" => {
                         fail_msg = status
-                            .error_msg
+                            .error_message
                             .unwrap_or_else(|| "(no error message)".to_string());
                     }
                     other => println!("  {other}"),
                 }
             }
-            if succeeded || build_status == "failed" {
+            if succeeded || status.status == "failed" {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_secs(2));
@@ -1318,6 +1444,22 @@ pub struct McpBuildStatus {
     pub image_tag: Option<String>,
 }
 
+/// Response body of `GET /api/mcp/connectors/uploads/{upload_id}` — the
+/// durable counterpart to `McpBuildStatus` above (see `poll_mcp_build_status`'s
+/// doc comment). `status` is `pending`/`building`/`success`/`failed`, the same
+/// vocabulary `mcp_connector_builds.status` uses — not `McpBuildStatus`'s
+/// `running`, which is the connector row's own, separate vocabulary.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct McpUploadStatus {
+    pub upload_id: String,
+    #[serde(default)]
+    pub connector_id: Option<String>,
+    pub connector_name: String,
+    pub status: String,
+    #[serde(default)]
+    pub error_message: Option<String>,
+}
+
 // ─── API types ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, Tabled)]
@@ -1327,7 +1469,7 @@ pub struct AgentRecord {
     pub id: String,
     #[tabled(rename = "NAME")]
     pub name: String,
-    /// The server's human-facing label (e.g. "Claude Code (ankit@nasiko.com)")
+    /// The server's human-facing label (e.g. "Claude Code (dev@example.com)")
     /// — same string the web UI shows. `None` for agents registered before
     /// the server started returning it. `name` above stays the real
     /// identifier used everywhere else (chat targeting, resolution); this is
@@ -1570,6 +1712,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_refused_change_is_named_as_one() {
+        // A bare `HTTP 402` reads as a bug.
+        let hint = status_hint(402);
+        assert!(hint.contains("refused this change"), "got: {hint}");
+        // ...and says what still works, so nobody assumes the fleet is down.
+        assert!(hint.contains("running agents are unaffected"));
+    }
+
+    #[test]
     fn urlencode_escapes_query_text() {
         assert_eq!(urlencode("nutrition planning"), "nutrition%20planning");
         assert_eq!(urlencode("a&b=c"), "a%26b%3Dc");
@@ -1615,6 +1766,21 @@ mod tests {
                 .get_json_or_status::<serde_json::Value>("/agents/broken", &[403, 404])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn post_void_or_status_answers_expected_statuses_and_fails_on_others() {
+        let mut srv = mockito::Server::new();
+        srv.mock("POST", "/api/ok").with_status(204).create();
+        srv.mock("POST", "/api/gone").with_status(404).create();
+        srv.mock("POST", "/api/broken").with_status(500).create();
+        let client = Client::for_test(&srv.url(), None);
+        assert!(client.post_void_or_status("/ok", &[404]).unwrap().is_ok());
+        assert_eq!(
+            client.post_void_or_status("/gone", &[404]).unwrap(),
+            Err(404)
+        );
+        assert!(client.post_void_or_status("/broken", &[404]).is_err());
     }
 
     #[test]
@@ -1878,28 +2044,56 @@ mod tests {
     #[test]
     fn poll_mcp_build_status_returns_ok_once_running() {
         let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+        srv.mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"running","image_tag":"my-image:v1"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":"c-1","connector_name":"my-server","status":"success"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&srv.url(), None);
-        client.poll_mcp_build_status("c-1").unwrap();
+        client.poll_mcp_build_status("b-1").unwrap();
     }
 
     #[test]
     fn poll_mcp_build_status_errors_with_message_on_failed() {
         let mut srv = mockito::Server::new();
-        srv.mock("GET", "/api/mcp/connectors/c-1/build-status")
+        srv.mock("GET", "/api/mcp/connectors/uploads/b-1")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"data":{"build_status":"failed","error_msg":"no Dockerfile found"},"status_code":200,"message":"build status retrieved successfully"}"#)
+            .with_body(r#"{"data":{"upload_id":"b-1","connector_id":null,"connector_name":"my-server","status":"failed","error_message":"no Dockerfile found"},"status_code":200,"message":"upload status retrieved successfully"}"#)
             .create();
         let client = Client::for_test(&srv.url(), None);
-        let err = client.poll_mcp_build_status("c-1").unwrap_err();
+        let err = client.poll_mcp_build_status("b-1").unwrap_err();
         assert!(
             err.to_string().contains("no Dockerfile found"),
             "got: {err}"
         );
+    }
+
+    #[test]
+    fn image_namespace_returns_namespace_on_200() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/image-namespace")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"namespace":"u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), Some("token"));
+        let namespace = client.image_namespace().unwrap();
+        assert_eq!(
+            namespace,
+            Some("u-a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4".to_string())
+        );
+    }
+
+    #[test]
+    fn image_namespace_returns_none_on_404() {
+        let mut srv = mockito::Server::new();
+        srv.mock("GET", "/api/agents/image-namespace")
+            .with_status(404)
+            .with_body(r#"{"error":"not found"}"#)
+            .create();
+        let client = Client::for_test(&srv.url(), Some("token"));
+        let namespace = client.image_namespace().unwrap();
+        assert_eq!(namespace, None);
     }
 }

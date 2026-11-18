@@ -66,11 +66,14 @@ const PAGES: readonly [RegExp, TourId][] = [
 /** A layer's tours, as far as these rules need them (the `tours` slot). */
 type Layered = readonly Pick<LayerTour, 'id' | 'match'>[]
 
-/** The page's own tour: the core's, else a layer's (EE: Access control), else null (Weave). */
+/**
+ * The page's own tour: a layer's first (EE: Access control, Marketplace, Budgets), so a layer's page under a core
+ * prefix gets its own (EE's /settings/memory is not the workspace Settings); else the core's; else null (Weave).
+ */
 export function tourFor(pathname: string, layers: Layered = []): string | null {
   return (
-    PAGES.find(([re]) => re.test(pathname))?.[1] ??
     layers.find((t) => t.match.test(pathname))?.id ??
+    PAGES.find(([re]) => re.test(pathname))?.[1] ??
     null
   )
 }

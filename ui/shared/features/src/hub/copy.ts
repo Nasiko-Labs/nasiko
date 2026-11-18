@@ -37,7 +37,7 @@ export const copy = {
       `Showing the first ${n} buckets of this window; pick a shorter window to see the rest.`,
     notDeployedYet: 'Not deployed yet',
     previousWindow: 'Previous window',
-    estCost: 'Est. cost (API list price)',
+    estCost: 'Value at API prices',
     requestsCount: (n: number) => plural(n, 'request', 'requests'),
   },
 
@@ -200,7 +200,7 @@ export const copy = {
     tools: 'Tools',
     tokens: 'Tokens in / out',
     cost: 'Cost',
-    estCost: 'Est. cost (API list price)',
+    estCost: 'Value at API prices',
     running: 'Running total',
     context: 'Context',
     memory: 'Memory',
