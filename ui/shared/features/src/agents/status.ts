@@ -104,6 +104,15 @@ export function isHarness(a: HarnessMarkers): boolean {
   return meta?.source === 'nasiko-cli-integration'
 }
 
+/**
+ * An A2A agent the CLI found running on a user's machine (`nasiko agents discover`; catalog/discovered.rs). Like a
+ * harness it runs outside any Nasiko flow, so the MCP gateway has no approval to ask for its tool calls.
+ */
+export function isDiscovered(a: { metadata?: unknown }): boolean {
+  const meta = a.metadata as { source?: unknown } | null | undefined
+  return meta?.source === 'nasiko-cli-discovery'
+}
+
 export function displayStatus(raw: string | null | undefined, harness: boolean): DisplayStatus {
   if (harness) return 'harness'
   switch (raw) {

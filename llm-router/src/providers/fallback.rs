@@ -612,6 +612,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             platform_paid,
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
+            is_discovered_agent: primary.is_discovered_agent,
             compress_enabled: primary.compress_enabled,
             agent_id: primary.agent_id.clone(),
         });
@@ -657,6 +658,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         }
     }
@@ -965,6 +967,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =
@@ -1045,6 +1048,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =
@@ -1435,6 +1439,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest = serde_json::from_value(json!({
@@ -1486,6 +1491,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let req: ChatRequest =

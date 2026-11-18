@@ -313,6 +313,17 @@ fn main() -> Result<()> {
                 if agent_target && url.is_none() && name.is_none() {
                     return local_agents::connect(target.as_deref(), &coding_agent);
                 }
+                // A name that is not a coding agent may be an A2A agent running on this machine.
+                if !agent_target
+                    && url.is_none()
+                    && let Some(target) = target.as_deref()
+                    && let Some((agent, running)) = local_agents::running_a2a_agent(target)?
+                {
+                    if name.is_some() {
+                        anyhow::bail!("--name applies only when connecting a control-plane URL");
+                    }
+                    return local_agents::connect_a2a(&agent, &running, &coding_agent);
+                }
                 if coding_agent.is_set() {
                     anyhow::bail!(
                         "coding-agent flags apply only to `nasiko connect [claude|codex|opencode|cursor]`"
@@ -813,9 +824,9 @@ mod tests {
             assert!(!script.contains("__claude-token"), "{shell}");
         }
 
-        // Hidden subcommands are dropped at every level, not just the top: `agents discover`
-        // (hidden, renamed to `status`) is gone while its visible siblings stay. Checked on the
-        // tree rather than the scripts, where "discover" also appears in other commands' help.
+        // Hidden subcommands are dropped at every level, not just the top: `agents install`
+        // (hidden, renamed to `connect --reporting`) is gone while its visible siblings stay.
+        // Checked on the tree rather than the scripts, where "install" also appears elsewhere.
         let tree = without_hidden_subcommands(&Cli::command());
         let agents = tree
             .get_subcommands()
@@ -823,7 +834,8 @@ mod tests {
             .expect("agents command");
         let names: Vec<&str> = agents.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"list-uploaded"), "{names:?}");
-        assert!(!names.contains(&"discover"), "{names:?}");
+        assert!(names.contains(&"discover"), "{names:?}");
+        assert!(!names.contains(&"install"), "{names:?}");
         assert!(!names.contains(&"report"), "{names:?}");
     }
 

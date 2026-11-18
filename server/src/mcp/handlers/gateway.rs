@@ -5,10 +5,11 @@
 //! by `mcp::wiring` and stored hashed in `agent_gateway_tokens`), and the user
 //! identity is resolved server-side — from the request's `traceparent` via the
 //! `flows` row + `flow_participants` check, or, for a CLI-bound local
-//! coding-agent row with no flow (or none that resolves), from the row's own
-//! owner instead — see docs/MCP_GATEWAY_AGENT_AUTH.md §2.4 rule 3b. This
-//! handler is thin — identity, usage tracking, flow events — all protocol
-//! logic lives in `nasiko_mcp_gateway::protocol`.
+//! coding-agent row or a discovered A2A agent's row with no flow (or none
+//! that resolves), from the row's own owner instead — see
+//! docs/MCP_GATEWAY_AGENT_AUTH.md §2.4 rule 3b. This handler is thin —
+//! identity, usage tracking, flow events — all protocol logic lives in
+//! `nasiko_mcp_gateway::protocol`.
 
 use axum::{
     Json,
@@ -35,7 +36,8 @@ use crate::state::AppState;
 /// 2. `tools/list` (and initialize/ping) → allowed with agent-only identity
 /// 3. `tools/call` with no/unknown/dead-flow traceparent → 403
 /// 3b. …unless the agent's row is a CLI-bound local coding agent
-///     (`coding_agent_integration_id` set) — such a row is never
+///     (`coding_agent_integration_id` set) or an A2A agent the CLI discovered
+///     on the user's machine (`discovered_on` set) — such a row is never
 ///     dispatched through a flow, so a flow-less `tools/call` resolves to its
 ///     owner instead of 403 (`agent_owner`, below `dispatch`)
 /// 4. `tools/call` where the agent is not a recorded flow participant → 403
@@ -46,7 +48,7 @@ use crate::state::AppState;
     tag = "mcp",
     params(
         ("Authorization" = String, Header, description = "`Bearer <MCP_GATEWAY_TOKEN>` — the per-agent gateway credential injected into the container env at deploy time"),
-        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set) or a discovered A2A agent (`discovered_on` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
         ("MCP-Protocol-Version" = Option<String>, Header, description = "Negotiated MCP protocol version; an unsupported value is rejected with 400 on implemented methods"),
     ),
     request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
@@ -55,7 +57,7 @@ use crate::state::AppState;
         (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
         (status = 400, description = "Unsupported or undecodable `MCP-Protocol-Version` on a method this gateway implements"),
         (status = 401, description = "Missing/unknown/revoked gateway token"),
-        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row, which resolves to its owner instead), or identity store unavailable"),
+        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row or a discovered A2A agent, which resolves to its owner instead), or identity store unavailable"),
         (status = 413, description = "Request body over the configured `MCP_GATEWAY_MAX_BODY_BYTES` limit"),
     ),
 )]
@@ -94,7 +96,8 @@ pub async fn mcp_gateway(
 /// tool.
 ///
 /// That bound does NOT hold for a CLI-bound local coding-agent row
-/// (`coding_agent_integration_id` set): such a row has no
+/// (`coding_agent_integration_id` set) or a discovered A2A agent
+/// (`discovered_on` set, minted by `nasiko connect <agent>`): such a row has no
 /// flow to require, so a leaked connect URL for one CAN call tools —
 /// attributed to, and scoped to, that row's owner: exactly the connectors the
 /// owner can access (their own, plus anything shared to them) that are also
@@ -120,7 +123,7 @@ pub async fn mcp_gateway(
     tag = "mcp",
     params(
         ("token" = String, Path, description = "The per-agent `MCP_GATEWAY_TOKEN`, carried in the path for MCP clients that cannot set headers. Pre-composed as `MCP_GATEWAY_CONNECT_URL` in the container env."),
-        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
+        ("traceparent" = Option<String>, Header, description = "W3C trace context naming the flow this call belongs to — required for `tools/call`, except for a CLI-bound local coding-agent row (`coding_agent_integration_id` set) or a discovered A2A agent (`discovered_on` set), which resolves to its owner when the flow lookup fails; otherwise the user identity is resolved from the flow record"),
         ("MCP-Protocol-Version" = Option<String>, Header, description = "Negotiated MCP protocol version; an unsupported value is rejected with 400 on implemented methods"),
     ),
     request_body(content = Object, description = "JSON-RPC 2.0 request: `tools/list` or `tools/call`"),
@@ -129,7 +132,7 @@ pub async fn mcp_gateway(
         (status = 202, description = "Notification accepted (no `id` in request); empty object body", body = Object),
         (status = 400, description = "Unsupported or undecodable `MCP-Protocol-Version` on a method this gateway implements"),
         (status = 401, description = "Unknown/revoked gateway token"),
-        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row, which resolves to its owner instead), or identity store unavailable"),
+        (status = 403, description = "`tools/call` outside a live flow the agent participates in (except a local coding-agent row or a discovered A2A agent, which resolves to its owner instead), or identity store unavailable"),
         (status = 413, description = "Request body over the configured `MCP_GATEWAY_MAX_BODY_BYTES` limit"),
     ),
 )]
@@ -271,8 +274,9 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
             // Resolve the user identity. `tools/call` (rules 3+4) requires the
             // traceparent to name a live flow this agent was dispatched into —
             // the flow's user is the authorization subject — except for a
-            // CLI-bound local coding-agent row (rule 3b, `agent_owner` below),
-            // which has no flow to require and resolves to its owner instead.
+            // CLI-bound local coding-agent row or a discovered A2A agent (rule
+            // 3b, `agent_owner` below), which has no flow to require and
+            // resolves to its owner instead.
             // Read-only methods (initialize/ping/tools/list, rule 2) work
             // agent-only: the flow user when one resolves, else the agent's
             // owner (startup-time tool discovery happens outside any flow).
@@ -283,12 +287,14 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
                 Err(denial) => match agent_owner(state, agent_id).await {
                     // Deliberate policy (MCP_GATEWAY_AGENT_AUTH.md §5, rule
                     // 3b): a local coding agent — a row the CLI bound with
-                    // `coding_agent_integration_id` — is never dispatched
+                    // `coding_agent_integration_id` — or an A2A agent the CLI
+                    // discovered (`discovered_on`) is never dispatched
                     // through the proxy, so it never has a flow; it acts as
                     // its owner instead, even for `tools/call`. Same
                     // predicate the LLM router uses for the same rows
                     // (`oss/llm-router/src/resolver/mod.rs`,
-                    // `coding_agent_integration_id IS NOT NULL`), so the
+                    // `coding_agent_integration_id IS NOT NULL` /
+                    // `discovered_on IS NOT NULL`), so the
                     // gateway and the router agree on which rows count as
                     // "personal desks" — though not on how they're billed:
                     // the router always attributes these rows to their
@@ -633,16 +639,18 @@ fn synth_traceparent(flow_id: &str) -> String {
     ctx.to_traceparent()
 }
 
-/// `(owner_id, is_coding_agent)` for a live (non-deleted) agent — one query
+/// `(owner_id, is_local)` for a live (non-deleted) agent — one query
 /// where there used to be two (a plain `agent_owner` for the read-only
 /// fallback, a separate `coding_agent_owner` for rule 3b), because the
 /// `Err(denial)` arm above always needs both facts about the very same row at
-/// once. `is_coding_agent` is `coding_agent_integration_id IS NOT NULL`
-/// (`oss/migrations/0019_coding_agent_identity.sql`) — deliberately the
-/// column itself, never agent metadata or name — matching `is_coding_agent`
-/// in `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
+/// once. `is_local` is `coding_agent_integration_id IS NOT NULL`
+/// (`oss/migrations/0019_coding_agent_identity.sql`) or `discovered_on IS NOT
+/// NULL` (`oss/migrations/0110_discovered_agents.sql`) — deliberately the
+/// columns themselves, never agent metadata or name — matching
+/// `is_coding_agent` and `is_discovered_agent` in
+/// `oss/llm-router/src/resolver/mod.rs`, so the gateway and the LLM router
 /// agree on which rows this policy covers. Such a row is single-owner by
-/// construction (the CLI only binds rows the login owns;
+/// construction (the CLI only binds or registers rows the login owns;
 /// `agent_owner_or_reject` gates every mint), so "the owner" is unambiguous.
 ///
 /// `Ok(None)` means the agent is genuinely gone (401, stale credential);
@@ -653,7 +661,8 @@ async fn agent_owner(
     agent_id: Uuid,
 ) -> Result<Option<(Uuid, bool)>, sqlx::Error> {
     sqlx::query_as(
-        "SELECT owner_id, coding_agent_integration_id IS NOT NULL
+        "SELECT owner_id,
+                coding_agent_integration_id IS NOT NULL OR discovered_on IS NOT NULL
          FROM agents WHERE id = $1 AND deleted_at IS NULL",
     )
     .bind(agent_id)

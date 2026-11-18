@@ -506,6 +506,10 @@ where
     let llm_ctx = nasiko_llm_router::LlmRouterCtx {
         ledger: state.usage_tracker.ledger(),
         payer: state.shared_call_payer.clone(),
+        // A discovered A2A agent's calls become turns of its chat session, so it shows in Sessions.
+        turn_recorder: std::sync::Arc::new(chat::discovered_turns::DiscoveredAgentSessions::new(
+            state.db.clone(),
+        )),
         ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
             .with_config_cache(state.llm_config_cache.clone())
             .with_attachment_store(state.attachment_store.clone())

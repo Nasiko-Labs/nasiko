@@ -121,6 +121,13 @@ build-harness-images TAG="0.1.0" REPO="nasiko":
       {{docker}} build --platform linux/amd64 ${args[$h]} -t {{REPO}}/harness-$h:{{TAG}} "$ctx"
     done
 
+# End-to-end check of local A2A agents against a real CrewAI agent and a real LangGraph server:
+# `nasiko agents discover`, then registration and LLM routing through a real nasiko-server
+# (`nasiko connect`/`disconnect`). Needs python3 (3.10+) and `just infra`; the first run installs
+# both frameworks. `just test-discovery --discovery-only` skips the server half.
+test-discovery *args:
+    scripts/a2a-discovery-e2e/run.sh {{args}}
+
 # Phase II — library-crate integration tests that need Postgres (run `just infra` first).
 # Serial for the same reason `test-server` is: they share one database, and `nasiko-hitl`'s own
 # `tests/store.rs` truncates `hitl_requests` on entry. Kept a separate recipe from `test-server`

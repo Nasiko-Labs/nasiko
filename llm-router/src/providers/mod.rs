@@ -614,6 +614,7 @@ mod tests {
                 dialect,
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
         }
     }
 
