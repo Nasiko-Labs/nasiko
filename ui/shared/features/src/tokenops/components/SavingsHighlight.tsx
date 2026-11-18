@@ -47,8 +47,15 @@ export function SavingsHighlight({
           </h3>
           <p className="text-xs text-muted-foreground">
             {fmtTokens(data.tokensSaved)} tokens never sent
-            {data.topCategory ? <> — mostly {inSentence(data.topCategory.label)}</> : null}. Across{' '}
-            {data.optimisedCount} of {data.totalAgents} agents.
+            {data.topCategory ? <> — mostly {inSentence(data.topCategory.label)}</> : null}.
+            {/* Chat-context savings are per user, not an agent switch: "Across 0 of 7 agents" beside
+                a real saving reads as a contradiction (user feedback, 2026-11-18). */}
+            {data.optimisedCount > 0 ? (
+              <>
+                {' '}
+                Across {data.optimisedCount} of {data.totalAgents} agents.
+              </>
+            ) : null}
           </p>
         </div>
       </div>

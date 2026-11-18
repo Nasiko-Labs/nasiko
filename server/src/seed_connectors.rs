@@ -175,6 +175,7 @@ async fn find_or_register(
     match nasiko_mcp_gateway::repo::get_owned_connector_by_name(&state.db, owner_id, &name).await {
         Ok(Some(existing)) => {
             info!(connector = %name, "connector already registered, not re-registering");
+            repair_description(state, &existing, spec.description).await;
             return Some(existing.id);
         }
         Ok(None) => {}
@@ -190,6 +191,38 @@ async fn find_or_register(
             None
         }
     }
+}
+
+/// Replace a description registration copied from the server's MCP
+/// `instructions` with the seed's own.
+///
+/// Registration used to fall back to `instructions`, which are written for
+/// the model, so a seeded Firecrawl card showed its prompt text. A
+/// description still equal to the stored `instructions` was never edited by
+/// anyone, so overwriting it loses nothing; any other description is left alone.
+async fn repair_description(
+    state: &AppState,
+    existing: &nasiko_mcp_gateway::repo::McpConnector,
+    seeded: Option<String>,
+) {
+    if !copied_from_instructions(existing) {
+        return;
+    }
+    let Some(description) = seeded else {
+        return;
+    };
+    let update = nasiko_mcp_gateway::repo::UpdateConnector {
+        description: Some(description),
+        ..Default::default()
+    };
+    match nasiko_mcp_gateway::repo::update_connector(&state.db, existing.id, &update).await {
+        Ok(_) => info!(connector = %existing.name, "seed connector description replaced"),
+        Err(e) => warn!(connector = %existing.name, %e, "seed connector description repair failed"),
+    }
+}
+
+fn copied_from_instructions(c: &nasiko_mcp_gateway::repo::McpConnector) -> bool {
+    c.description.is_some() && c.description == c.instructions
 }
 
 fn into_input(spec: SeedConnectorSpec) -> NewConnectorInput {

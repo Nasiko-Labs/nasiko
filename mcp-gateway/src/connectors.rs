@@ -418,10 +418,11 @@ pub async fn register_connector(
     // stored verbatim as its own column (0054_workspace.sql) regardless of
     // whether the caller supplied a description, since it's a distinct value
     // the gateway's own `initialize` forwards later, not a description
-    // substitute. The description itself keeps its original precedence:
-    // the caller's own description always wins; only a missing one falls
-    // back to the probed value (preferring `instructions`, else
-    // `serverInfo.description` — see `ProbedMetadata::description_fallback`).
+    // substitute. The description itself: the caller's own always wins; a
+    // missing one falls back to `serverInfo.description`, never to
+    // `instructions` — those are written for the model ("If Firecrawl
+    // reports that credits ran out…"), and shown on a connector card they
+    // read as a leaked prompt (user feedback, 2026-11-18).
     // Never blocks or fails registration — a server requiring auth even for
     // `initialize` (e.g. Notion) or one that simply doesn't set `instructions`
     // just leaves both `None`, same as before this existed.
@@ -430,7 +431,9 @@ pub async fn register_connector(
         .map(|(_, _, metadata)| metadata)
         .unwrap_or_default();
     let instructions = probed.instructions.clone();
-    let mut description = input.description.or_else(|| probed.description_fallback());
+    let mut description = input
+        .description
+        .or_else(|| probed.server_description.clone());
 
     // LLM fallback — only reached when the server's own `initialize` response
     // (just above) didn't publish a description either. No tool list is
