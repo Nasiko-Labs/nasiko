@@ -7,20 +7,40 @@
 //!
 //! This registry closes that gap without coupling the two together. `deliver()` (and its
 //! orchestrator-turn helper) append the *actual* bytes they already read from the agent into a
-//! small in-memory buffer, keyed by the `hitl_requests.id` that was just resolved — the same id
-//! the frontend already holds, since it's the one it just POSTed to `/resolve`. A reconnecting
-//! request (routed through the existing `POST /api/orchestrator/a2a`, gated on
-//! `metadata.reconnect_after_hitl_id` — see `a2a_dispatch.rs::reconnect_stream`) replays whatever
-//! is already buffered, then live-tails anything appended after that, closing once the buffer is
-//! marked terminal. Because replay reads from a durable-for-the-duration-of-the-execution buffer
-//! rather than subscribing to a transient broadcast, a reconnect that arrives after the resume
-//! already finished still gets the complete sequence — there is no "arrived too late" case.
+//! small buffer, keyed by the `hitl_requests.id` that was just resolved — the same id the frontend
+//! already holds, since it's the one it just POSTed to `/resolve`. A reconnecting request (routed
+//! through the existing `POST /api/orchestrator/a2a`, gated on `metadata.reconnect_after_hitl_id`
+//! — see `a2a_dispatch.rs::reconnect_stream`) replays whatever is already buffered, then
+//! live-tails anything appended after that, closing once the buffer is marked terminal. Because
+//! replay reads from a durable-for-the-duration-of-the-execution buffer rather than subscribing to
+//! a transient broadcast, a reconnect that arrives after the resume already finished still gets
+//! the complete sequence — there is no "arrived too late" case.
+//!
+//! # Across replicas
+//!
+//! The resume runs on whichever replica claimed the row; the browser's reconnect lands on any
+//! replica. So the buffer is a Redis Stream per id ([`stream_key`]), not process memory:
+//!
+//! - Each entry has a kind field: an event (`ev`, with the SSE data), the terminal marker
+//!   (`end`), or the marker that creates the stream (`open`, skipped by readers).
+//! - The stream is created only by [`OPEN_SCRIPT`], with a [`STALE_NON_TERMINAL_TTL`] expiry, by
+//!   whichever comes first: `deliver()`'s guard, an alias, or a `watch`. Appends use `NOMKSTREAM`,
+//!   so no key ever exists without an expiry. The terminal marker shortens it to [`BUFFER_TTL`].
+//!   Expiry replaces the in-memory sweep.
+//! - An alias is a key ([`alias_key`]) holding the target id, with the stale expiry.
+//! - `watch` replays from the start with `XREAD`, then tails with `XREAD BLOCK` on a connection
+//!   of its own (a blocking read holds its connection; see `nasiko_redis`).
+//! - `deliver()`'s appends go through a queue to one writer task per resume, in order, so the
+//!   resume never waits on Redis.
 
-use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::Mutex;
+use std::time::Duration;
 
+use futures::Stream;
+use nasiko_redis::SharedRedis;
+use redis::AsyncCommands;
+use redis::streams::{StreamReadOptions, StreamReadReply};
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Maximum events retained per buffer. In practice a HITL resume produces at most a handful of
@@ -38,6 +58,9 @@ const MAX_BUFFERED_EVENTS: usize = 500;
 /// chunks) could otherwise exceed a reasonable memory bound while staying under
 /// `MAX_BUFFERED_EVENTS`.
 const MAX_BUFFERED_BYTES: usize = 1 << 20; // 1 MiB
+/// Backstop length for the stream (`XADD MAXLEN ~`). The per-resume cap above keeps a stream far
+/// shorter; this only bounds one written to by several delivery attempts.
+const STREAM_MAX_LEN: usize = 2 * MAX_BUFFERED_EVENTS;
 
 /// Appended once, in place of any further events, when a buffer hits `MAX_BUFFERED_EVENTS`/
 /// `MAX_BUFFERED_BYTES` — a normal `working`-status SSE payload (the same wire shape every other
@@ -45,119 +68,75 @@ const MAX_BUFFERED_BYTES: usize = 1 << 20; // 1 MiB
 /// show, so no new client-side parsing is required to surface the truncation.
 const TRUNCATION_MARKER: &str = r#"{"result":{"statusUpdate":{"status":{"state":"working","message":{"parts":[{"text":"[replay truncated: this resume produced more events than can be buffered; some output was dropped]"}]}}}}}"#;
 
-struct BufferedEvents {
-    /// Each element is exactly the string that would go into an SSE `data:` line — already
-    /// normalized to the same wire shape `agent_stream()`/`orchestrator_stream()` emit on a live
-    /// connection (see `normalize_agent_event`), so a reconnecting client's existing SSE-parsing
-    /// logic needs no special case for "this came from a reconnect."
-    events: Vec<String>,
-    total_bytes: usize,
-    /// Set once `TRUNCATION_MARKER` has been appended — further `append` calls become no-ops
-    /// rather than growing the vec past the cap that was just hit.
-    truncated: bool,
+/// How long a finished buffer is kept around for a late reconnect before it expires.
+/// Generous on purpose: a human reading a final response and only then closing/reloading the tab
+/// should still find it there a few minutes later.
+const BUFFER_TTL: Duration = Duration::from_secs(10 * 60);
+/// Backstop only — no real `deliver()` call should ever take this long. Long enough that it never
+/// fires on a genuinely slow-but-live delivery, short enough that a bug reintroducing an
+/// un-terminated buffer still gets cleaned up rather than living forever.
+const STALE_NON_TERMINAL_TTL: Duration = Duration::from_secs(60 * 60);
+/// How long one `XREAD BLOCK` in `watch()` waits before re-checking whether its buffer has expired
+/// out from under it. Short enough that a stream whose buffer expired unwedges soon after, long
+/// enough that it never fires spuriously on a genuinely slow-but-live delivery.
+const WATCH_NOTIFY_TIMEOUT: Duration = Duration::from_secs(90);
+/// Entries `watch()` reads per round trip.
+const READ_BATCH: usize = 100;
+
+/// Stream entry field naming the entry's kind, and the kinds a reader acts on (it skips any other,
+/// such as [`OPEN_SCRIPT`]'s `open`).
+const KIND_FIELD: &str = "k";
+const DATA_FIELD: &str = "d";
+const KIND_EVENT: &str = "ev";
+const KIND_TERMINAL: &str = "end";
+
+/// Creates `KEYS[1]` with an `open` entry and an expiry of `ARGV[1]` seconds, unless it exists.
+/// Atomic, so a stream never exists without an expiry and an existing one's expiry (shortened
+/// once terminal) is never reset.
+const OPEN_SCRIPT: &str = r"
+if redis.call('EXISTS', KEYS[1]) == 0 then
+    redis.call('XADD', KEYS[1], '*', 'k', 'open')
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+return 1
+";
+
+/// The Redis Stream holding `id`'s buffer.
+fn stream_key(id: Uuid) -> String {
+    format!("nasiko:hitl:continuation:{id}")
 }
 
-/// One resumed execution's captured event sequence, capped by `MAX_BUFFERED_EVENTS`/
-/// `MAX_BUFFERED_BYTES` (see their own doc comments) so a single chatty or looping resume can't
-/// grow this buffer unboundedly; the registry's TTL sweep (`sweep_expired`) is what keeps overall
-/// memory bounded *across* executions, which is a separate concern from any one buffer's own size.
-struct ExecutionBuffer {
-    buffered: Mutex<BufferedEvents>,
-    /// Registered *before* re-checking `events`/`terminal` in the wait loop (see
-    /// `ContinuationRegistry::watch`) — Tokio's `Notify::notified()` future is guaranteed to
-    /// observe any `notify_waiters()` call made after the future was created, even if that call
-    /// happens before the future is actually polled. That ordering is what makes the
-    /// check-then-wait loop race-free without a lock held across the await.
-    notify: tokio::sync::Notify,
-    /// Set once `deliver()` (or `deliver_maf`'s A2A-driving sibling, if ever extended) has fully
-    /// classified the resume's outcome — completed, failed, or paused again. A reconnect that
-    /// finds this already `true` on its very first read still replays every buffered event first;
-    /// it just never blocks waiting for more.
-    terminal: AtomicBool,
-    created_at: Instant,
+/// The key that makes `alias` resolve to another id's buffer.
+fn alias_key(alias: Uuid) -> String {
+    format!("nasiko:hitl:continuation:{alias}:alias")
 }
 
-impl ExecutionBuffer {
-    fn new() -> Self {
-        Self {
-            buffered: Mutex::new(BufferedEvents {
-                events: Vec::new(),
-                total_bytes: 0,
-                truncated: false,
-            }),
-            notify: tokio::sync::Notify::new(),
-            terminal: AtomicBool::new(false),
-            created_at: Instant::now(),
-        }
-    }
-
-    /// Snapshot every event from `from` onward, plus whether the buffer is (now) terminal.
-    fn snapshot_from(&self, from: usize) -> (Vec<String>, bool) {
-        let buffered = self
-            .buffered
-            .lock()
-            .expect("continuation buffer lock poisoned");
-        let from = from.min(buffered.events.len());
-        (
-            buffered.events[from..].to_vec(),
-            self.terminal.load(Ordering::SeqCst),
-        )
-    }
-
-    /// Push one event unless the cap was already hit (or this push would hit it), in which case
-    /// `TRUNCATION_MARKER` is pushed once instead and every later call becomes a silent no-op.
-    fn push(&self, data: String) {
-        let mut buffered = self
-            .buffered
-            .lock()
-            .expect("continuation buffer lock poisoned");
-        if buffered.truncated {
-            return;
-        }
-        if buffered.events.len() >= MAX_BUFFERED_EVENTS
-            || buffered.total_bytes + data.len() > MAX_BUFFERED_BYTES
-        {
-            buffered.truncated = true;
-            buffered.events.push(TRUNCATION_MARKER.to_string());
-            return;
-        }
-        buffered.total_bytes += data.len();
-        buffered.events.push(data);
-    }
-}
-
-/// Process-wide registry of in-flight/recently-finished continuation buffers, one per resolved
-/// `hitl_requests.id`. Mirrors `nasiko_flow::FlowEventBus`'s exact shape (a `RwLock`-guarded map,
-/// entries created lazily via `entry(...).or_insert_with(...)`) — a proven pattern in this
-/// codebase, just re-keyed and re-typed for this purpose rather than reused directly, since
-/// `FlowEventBus` is keyed by `flow_id` and carries call-graph telemetry, not agent content.
+/// Every resolved `hitl_requests.id`'s continuation buffer, in Redis (see the module docs).
 #[derive(Clone)]
 pub struct ContinuationRegistry {
-    buffers: Arc<RwLock<HashMap<Uuid, Arc<ExecutionBuffer>>>>,
+    redis: SharedRedis,
 }
 
 impl ContinuationRegistry {
-    pub fn new() -> Self {
-        Self {
-            buffers: Arc::new(RwLock::new(HashMap::new())),
-        }
+    pub fn new(redis: SharedRedis) -> Self {
+        Self { redis }
     }
 
-    fn get_or_create(&self, id: Uuid) -> Arc<ExecutionBuffer> {
-        if let Some(existing) = self
-            .buffers
-            .read()
-            .expect("continuation registry lock poisoned")
-            .get(&id)
-        {
-            return existing.clone();
-        }
-        self.buffers
-            .write()
-            .expect("continuation registry lock poisoned")
-            .entry(id)
-            .or_insert_with(|| Arc::new(ExecutionBuffer::new()))
-            .clone()
+    /// The id whose buffer `id` reads and writes: the target of an alias, else `id` itself.
+    async fn resolve(&self, id: Uuid) -> redis::RedisResult<Uuid> {
+        let mut conn = self.redis.connection().await?;
+        let target: Option<String> = conn.get(alias_key(id)).await?;
+        Ok(target.and_then(|t| t.parse().ok()).unwrap_or(id))
+    }
+
+    /// Create `id`'s buffer unless it exists (see [`OPEN_SCRIPT`]).
+    async fn open(&self, id: Uuid) -> redis::RedisResult<()> {
+        let mut conn = self.redis.connection().await?;
+        redis::Script::new(OPEN_SCRIPT)
+            .key(stream_key(id))
+            .arg(STALE_NON_TERMINAL_TTL.as_secs())
+            .invoke_async(&mut conn)
+            .await
     }
 
     /// Whether a buffer for `id` already exists — i.e. whether *something* (a `ContinuationGuard`
@@ -165,11 +144,17 @@ impl ContinuationRegistry {
     /// one: it's the caller's way to tell "in flight or already finished" (a buffer exists) apart
     /// from "nothing has ever been dispatched for this id, and nothing ever will be until it is"
     /// (no buffer, and `watch` would otherwise conjure one up that nothing ever terminates).
-    pub fn exists(&self, id: Uuid) -> bool {
-        self.buffers
-            .read()
-            .expect("continuation registry lock poisoned")
-            .contains_key(&id)
+    /// Redis being unreachable reads as no buffer.
+    pub async fn exists(&self, id: Uuid) -> bool {
+        let found = async {
+            let key = stream_key(self.resolve(id).await?);
+            let mut conn = self.redis.connection().await?;
+            conn.exists::<_, bool>(key).await
+        };
+        found.await.unwrap_or_else(|e| {
+            tracing::warn!(%id, error = %e, "could not check for a hitl continuation in redis");
+            false
+        })
     }
 
     /// Makes `alias` resolve to the exact same buffer as `target`. Needed for the MCP-mirror pause
@@ -180,166 +165,259 @@ impl ContinuationRegistry {
     /// trigger the resume. Without this, a reconnect for the real row's id watches a buffer nothing
     /// ever writes to or terminates. Call site sets this up before the dispatcher can possibly
     /// finish delivering, so a reconnect racing ahead of `deliver()` still lands on the shared
-    /// buffer either way — `get_or_create` is what makes the two insertion orders equivalent.
-    pub fn alias(&self, alias: Uuid, target: Uuid) {
-        let buffer = self.get_or_create(target);
-        self.buffers
-            .write()
-            .expect("continuation registry lock poisoned")
-            .insert(alias, buffer);
-    }
-
-    /// Append one real, already-normalized SSE `data:` payload for `id`'s resume. Infallible and
-    /// non-blocking (a `Mutex` around a `Vec` push, no I/O) by design — this must never be able to
-    /// affect `deliver()`'s own retry/completion logic.
-    pub fn append(&self, id: Uuid, data: String) {
-        let buffer = self.get_or_create(id);
-        buffer.push(data);
-        buffer.notify.notify_waiters();
-    }
-
-    /// Marks `id`'s resume as fully classified — no more events will ever be appended. Called
-    /// exactly once per resume, from `deliver()`'s `ContinuationGuard::drop` (so every early
-    /// return, not just the success path, still terminates the buffer a reconnecting client might
-    /// be waiting on).
-    fn mark_terminal(&self, id: Uuid) {
-        let buffer = self.get_or_create(id);
-        buffer.terminal.store(true, Ordering::SeqCst);
-        buffer.notify.notify_waiters();
+    /// buffer either way — opening the target here is what makes the two insertion orders
+    /// equivalent. Best effort: a Redis failure is logged.
+    pub async fn alias(&self, alias: Uuid, target: Uuid) {
+        let linked = async {
+            let target = self.resolve(target).await?;
+            self.open(target).await?;
+            let mut conn = self.redis.connection().await?;
+            conn.set_ex::<_, _, ()>(
+                alias_key(alias),
+                target.to_string(),
+                STALE_NON_TERMINAL_TTL.as_secs(),
+            )
+            .await
+        };
+        if let Err(e) = linked.await {
+            tracing::warn!(%alias, %target, error = %e, "could not alias a hitl continuation in redis");
+        }
     }
 
     /// Replay-then-live-tail `id`'s buffer as a plain async generator of already-normalized SSE
     /// data strings. The caller (`a2a_dispatch.rs::reconnect_stream`) wraps each yielded string in
     /// an `Event::default().data(...)`, identical to how a live turn's own generator does — this
-    /// function only knows about the buffer, not the HTTP/SSE framing around it.
-    pub fn watch(&self, id: Uuid) -> impl futures::Stream<Item = String> + 'static {
-        let buffer = self.get_or_create(id);
+    /// function only knows about the buffer, not the HTTP/SSE framing around it. Ends once every
+    /// entry is read and the terminal marker was among them, when the buffer has expired, or when
+    /// Redis fails.
+    pub fn watch(&self, id: Uuid) -> impl Stream<Item = String> + 'static {
         let registry = self.clone();
         async_stream::stream! {
-            let mut cursor = 0usize;
+            let opened = async {
+                let id = registry.resolve(id).await?;
+                registry.open(id).await?;
+                let reader = registry.redis.client().get_multiplexed_async_connection().await?;
+                redis::RedisResult::Ok((stream_key(id), reader))
+            };
+            let (key, mut reader) = match opened.await {
+                Ok(opened) => opened,
+                Err(e) => {
+                    tracing::warn!(%id, error = %e, "could not watch a hitl continuation in redis");
+                    return;
+                }
+            };
+            let mut cursor = "0-0".to_string();
+            let mut terminal = false;
             loop {
-                // Register the waiter BEFORE snapshotting — see `ExecutionBuffer::notify`'s doc
-                // comment for why this ordering is what makes the loop race-free.
-                let notified = buffer.notify.notified();
-                let (new_events, terminal) = buffer.snapshot_from(cursor);
-                if !new_events.is_empty() {
-                    cursor += new_events.len();
-                    for event in new_events {
-                        yield event;
+                // Once the terminal marker is read, only drain what is left: never block.
+                let wait = (!terminal).then_some(WATCH_NOTIFY_TIMEOUT);
+                let entries = match read_after(&mut reader, &key, &cursor, wait).await {
+                    Ok(entries) => entries,
+                    Err(e) => {
+                        tracing::warn!(%id, error = %e, "reading a hitl continuation from redis failed");
+                        break;
+                    }
+                };
+                if entries.is_empty() {
+                    if terminal || !registry.stream_exists(&key).await {
+                        break;
                     }
                     continue;
                 }
-                if terminal {
-                    break;
-                }
-                // `sweep_expired` removes `id`'s entry from the registry's map, but this stream
-                // holds its own `Arc<ExecutionBuffer>` independently — if that happens, nothing
-                // will ever call `notify_waiters()` on THIS instance again (`append`/
-                // `mark_terminal` would `get_or_create` a brand-new buffer under the same id
-                // instead), and an untimed `.await` here would block the client's SSE connection
-                // forever. Bounding the wait and checking `exists` lets that case terminate
-                // instead; a still-live, merely slow delivery just loops back around.
-                if tokio::time::timeout(WATCH_NOTIFY_TIMEOUT, notified).await.is_err()
-                    && !registry.exists(id)
-                {
-                    break;
+                for entry in entries {
+                    cursor = entry.id.clone();
+                    match entry_kind(&entry).as_deref() {
+                        Some(KIND_EVENT) => {
+                            if let Some(data) = entry.get::<String>(DATA_FIELD) {
+                                yield data;
+                            }
+                        }
+                        Some(KIND_TERMINAL) => terminal = true,
+                        _ => {}
+                    }
                 }
             }
         }
     }
 
-    /// Drops any buffer that reached `terminal` more than `ttl` ago, plus (defense-in-depth) any
-    /// buffer that's been sitting non-terminal for far longer than any real delivery should ever
-    /// take — `reconnect_stream`'s own checks (still-`pending`, unmirrored `mcp_tool`) close the
-    /// known ways to create one of these, but a buffer that somehow never gets marked terminal
-    /// would otherwise sit in the registry, and be watchable, forever. Spawned once at startup
-    /// (`state.rs`) on a fixed interval, same shape as the build worker's own stuck-job sweep —
-    /// this is what keeps total memory bounded across many executions, since an individual
-    /// buffer's own size is already small by construction (one HITL resume's worth of events).
-    fn sweep_expired(&self, ttl: Duration) {
-        let mut buffers = self
-            .buffers
-            .write()
-            .expect("continuation registry lock poisoned");
-        buffers.retain(|_, buffer| {
-            let terminal = buffer.terminal.load(Ordering::SeqCst);
-            let age = buffer.created_at.elapsed();
-            !((terminal && age > ttl) || (!terminal && age > STALE_NON_TERMINAL_TTL))
-        });
+    /// Whether `key` still exists. A failed check reads as gone, which ends a watch rather than
+    /// leaving it to block on a Redis it cannot reach.
+    async fn stream_exists(&self, key: &str) -> bool {
+        match self.redis.connection().await {
+            Ok(mut conn) => conn.exists(key).await.unwrap_or(false),
+            Err(_) => false,
+        }
     }
 }
 
-impl Default for ContinuationRegistry {
-    fn default() -> Self {
-        Self::new()
+/// Entries of `key` after `cursor`, waiting up to `wait` for one when there are none yet.
+async fn read_after(
+    reader: &mut redis::aio::MultiplexedConnection,
+    key: &str,
+    cursor: &str,
+    wait: Option<Duration>,
+) -> redis::RedisResult<Vec<redis::streams::StreamId>> {
+    let mut options = StreamReadOptions::default().count(READ_BATCH);
+    if let Some(wait) = wait {
+        options = options.block(wait.as_millis() as usize);
+    }
+    let reply: Option<StreamReadReply> = reader.xread_options(&[key], &[cursor], &options).await?;
+    Ok(reply
+        .into_iter()
+        .flat_map(|reply| reply.keys)
+        .flat_map(|stream| stream.ids)
+        .collect())
+}
+
+fn entry_kind(entry: &redis::streams::StreamId) -> Option<String> {
+    entry.get(KIND_FIELD)
+}
+
+/// What one resume may still append: `MAX_BUFFERED_EVENTS` events and `MAX_BUFFERED_BYTES`, then
+/// one `TRUNCATION_MARKER`, then nothing.
+#[derive(Default)]
+struct AppendBudget {
+    events: usize,
+    bytes: usize,
+    truncated: bool,
+}
+
+impl AppendBudget {
+    /// What to append for `data`: `data` itself, the truncation marker the first time the cap is
+    /// hit (or would be by this event), or nothing once truncated.
+    fn admit(&mut self, data: String) -> Option<String> {
+        if self.truncated {
+            return None;
+        }
+        if self.events >= MAX_BUFFERED_EVENTS || self.bytes + data.len() > MAX_BUFFERED_BYTES {
+            self.truncated = true;
+            return Some(TRUNCATION_MARKER.to_string());
+        }
+        self.events += 1;
+        self.bytes += data.len();
+        Some(data)
     }
 }
 
 /// RAII guard tying a continuation buffer's lifetime to `deliver()`'s own call frame. `deliver()`
 /// has many early-return paths (agent lookup failure, flow-guard rejection, HTTP error, ...) —
-/// rather than adding a `mark_terminal` call to each one, this guard's `Drop` impl marks the
-/// buffer terminal unconditionally once `deliver()` returns by any path, including an unwind.
-/// `push` is the only other operation exposed — appending is the one thing `deliver()`'s
-/// consumption helpers need mid-flight.
+/// rather than adding a terminal write to each one, dropping this guard closes its writer's queue,
+/// and the writer appends the terminal marker after the last queued event, once `deliver()`
+/// returns by any path, including an unwind. `push` is the only other operation exposed —
+/// appending is the one thing `deliver()`'s consumption helpers need mid-flight.
 pub struct ContinuationGuard {
-    registry: ContinuationRegistry,
-    id: Uuid,
+    queue: mpsc::UnboundedSender<String>,
+    budget: Mutex<AppendBudget>,
 }
 
 impl ContinuationGuard {
-    pub fn new(registry: ContinuationRegistry, id: Uuid) -> Self {
-        registry.get_or_create(id);
-        Self { registry, id }
+    /// Open `id`'s buffer and start its writer. A Redis failure is logged; the resume goes on
+    /// without a buffer.
+    pub async fn open(registry: &ContinuationRegistry, id: Uuid) -> Self {
+        let id = match registry.resolve(id).await {
+            Ok(target) => target,
+            Err(_) => id,
+        };
+        if let Err(e) = registry.open(id).await {
+            tracing::warn!(%id, error = %e, "could not open a hitl continuation in redis");
+        }
+        let (queue, events) = mpsc::unbounded_channel();
+        tokio::spawn(write_loop(registry.redis.clone(), id, events));
+        Self {
+            queue,
+            budget: Mutex::new(AppendBudget::default()),
+        }
     }
 
+    /// Append one real, already-normalized SSE `data:` payload. Non-blocking (a queue send, no
+    /// I/O) by design — this must never be able to affect `deliver()`'s own retry/completion
+    /// logic. The budget bounds what is queued.
     pub fn push(&self, data: String) {
-        self.registry.append(self.id, data);
+        let admitted = self
+            .budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .admit(data);
+        if let Some(data) = admitted {
+            let _ = self.queue.send(data);
+        }
     }
 }
 
-impl Drop for ContinuationGuard {
-    fn drop(&mut self) {
-        self.registry.mark_terminal(self.id);
+/// Appends one resume's events to its stream in order, then the terminal marker once the guard is
+/// dropped. After a failed append the remaining events are skipped (best effort; the resume itself
+/// is unaffected), but the terminal marker is still attempted so a watcher ends.
+async fn write_loop(redis: SharedRedis, id: Uuid, mut events: mpsc::UnboundedReceiver<String>) {
+    let key = stream_key(id);
+    let mut failed = false;
+    while let Some(data) = events.recv().await {
+        if failed {
+            continue;
+        }
+        if let Err(e) = append(
+            &redis,
+            &key,
+            &[(KIND_FIELD, KIND_EVENT), (DATA_FIELD, &data)],
+        )
+        .await
+        {
+            tracing::warn!(%id, error = %e, "appending to a hitl continuation in redis failed");
+            failed = true;
+        }
+    }
+    if let Err(e) = append_terminal(&redis, &key).await {
+        tracing::warn!(%id, error = %e, "marking a hitl continuation terminal in redis failed");
     }
 }
 
-/// How long a finished buffer is kept around for a late reconnect before the sweep evicts it.
-/// Generous on purpose: a human reading a final response and only then closing/reloading the tab
-/// should still find it there a few minutes later.
-const BUFFER_TTL: Duration = Duration::from_secs(10 * 60);
-/// Backstop only — no real `deliver()` call should ever take this long. Long enough that it never
-/// fires on a genuinely slow-but-live delivery, short enough that a bug reintroducing an
-/// un-terminated buffer still gets cleaned up rather than growing the registry forever.
-const STALE_NON_TERMINAL_TTL: Duration = Duration::from_secs(60 * 60);
-const SWEEP_INTERVAL: Duration = Duration::from_secs(60);
-/// How long `watch()` waits for a notification before re-checking whether its buffer has been
-/// swept out from under it. Short enough that a stream orphaned by `sweep_expired` unwedges soon
-/// after eviction rather than hanging forever; long enough (well above `SWEEP_INTERVAL`) that it
-/// never fires spuriously on a genuinely slow-but-live delivery.
-const WATCH_NOTIFY_TIMEOUT: Duration = Duration::from_secs(90);
-
-/// Spawned once at server startup (`state.rs`), same shape as every other periodic sweep in this
-/// codebase (e.g. the build worker's stuck-job recovery).
-pub async fn sweep_loop(registry: ContinuationRegistry) {
-    loop {
-        tokio::time::sleep(SWEEP_INTERVAL).await;
-        registry.sweep_expired(BUFFER_TTL);
+/// `XADD key NOMKSTREAM MAXLEN ~ STREAM_MAX_LEN * fields`: never creates the stream, so an
+/// expired buffer stays gone instead of coming back without an expiry.
+fn xadd(key: &str, fields: &[(&str, &str)]) -> redis::Cmd {
+    let mut cmd = redis::cmd("XADD");
+    cmd.arg(key)
+        .arg("NOMKSTREAM")
+        .arg("MAXLEN")
+        .arg("~")
+        .arg(STREAM_MAX_LEN)
+        .arg("*");
+    for (field, value) in fields {
+        cmd.arg(*field).arg(*value);
     }
+    cmd
+}
+
+async fn append(redis: &SharedRedis, key: &str, fields: &[(&str, &str)]) -> redis::RedisResult<()> {
+    let mut conn = redis.connection().await?;
+    xadd(key, fields).query_async(&mut conn).await
+}
+
+/// The terminal marker and the shorter expiry, together.
+async fn append_terminal(redis: &SharedRedis, key: &str) -> redis::RedisResult<()> {
+    let mut conn = redis.connection().await?;
+    redis::pipe()
+        .atomic()
+        .add_command(xadd(key, &[(KIND_FIELD, KIND_TERMINAL)]))
+        .ignore()
+        .expire(key, BUFFER_TTL.as_secs() as i64)
+        .ignore()
+        .query_async(&mut conn)
+        .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn admitted(budget: &mut AppendBudget, data: String) -> Vec<String> {
+        budget.admit(data).into_iter().collect()
+    }
+
     #[test]
     fn append_past_the_event_cap_truncates_with_a_marker_and_stops_growing() {
-        let registry = ContinuationRegistry::new();
-        let id = Uuid::new_v4();
-        for i in 0..MAX_BUFFERED_EVENTS + 10 {
-            registry.append(id, format!("event-{i}"));
-        }
-        let buffer = registry.get_or_create(id);
-        let (events, _) = buffer.snapshot_from(0);
+        let mut budget = AppendBudget::default();
+        let events: Vec<String> = (0..MAX_BUFFERED_EVENTS + 10)
+            .flat_map(|i| admitted(&mut budget, format!("event-{i}")))
+            .collect();
         assert_eq!(
             events.len(),
             MAX_BUFFERED_EVENTS + 1,
@@ -354,15 +432,11 @@ mod tests {
 
     #[test]
     fn append_past_the_byte_cap_truncates_even_under_the_event_count_cap() {
-        let registry = ContinuationRegistry::new();
-        let id = Uuid::new_v4();
+        let mut budget = AppendBudget::default();
         let big = "x".repeat(MAX_BUFFERED_BYTES / 2 + 1);
-        registry.append(id, big.clone());
-        registry.append(id, big);
-        registry.append(id, "should be dropped".to_string());
-
-        let buffer = registry.get_or_create(id);
-        let (events, _) = buffer.snapshot_from(0);
+        let mut events = admitted(&mut budget, big.clone());
+        events.extend(admitted(&mut budget, big));
+        events.extend(admitted(&mut budget, "should be dropped".to_string()));
         assert_eq!(
             events.len(),
             2,
@@ -373,19 +447,43 @@ mod tests {
 
     #[test]
     fn truncation_is_a_permanent_state_not_just_a_one_time_threshold_crossing() {
-        let registry = ContinuationRegistry::new();
-        let id = Uuid::new_v4();
+        let mut budget = AppendBudget::default();
         for i in 0..MAX_BUFFERED_EVENTS + 1 {
-            registry.append(id, format!("event-{i}"));
+            budget.admit(format!("event-{i}"));
         }
-        let after_first_truncation = registry.get_or_create(id).snapshot_from(0).0.len();
         for i in 0..50 {
-            registry.append(id, format!("late-event-{i}"));
+            assert!(
+                budget.admit(format!("late-event-{i}")).is_none(),
+                "once truncated, further appends must be silent no-ops, not grow the buffer again"
+            );
         }
-        let after_more_appends = registry.get_or_create(id).snapshot_from(0).0.len();
+    }
+
+    #[test]
+    fn appends_never_create_the_stream_and_are_capped() {
+        let cmd = xadd("k", &[(KIND_FIELD, KIND_EVENT), (DATA_FIELD, "x")]);
+        let args: Vec<String> = cmd
+            .args_iter()
+            .filter_map(|arg| match arg {
+                redis::Arg::Simple(bytes) => Some(String::from_utf8_lossy(bytes).into_owned()),
+                redis::Arg::Cursor => None,
+            })
+            .collect();
         assert_eq!(
-            after_first_truncation, after_more_appends,
-            "once truncated, further appends must be silent no-ops, not grow the buffer again"
+            args,
+            [
+                "XADD",
+                "k",
+                "NOMKSTREAM",
+                "MAXLEN",
+                "~",
+                &STREAM_MAX_LEN.to_string(),
+                "*",
+                "k",
+                "ev",
+                "d",
+                "x"
+            ]
         );
     }
 }

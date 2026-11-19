@@ -407,7 +407,9 @@ impl AppState {
             flow_state_ttl_secs: nasiko_flow::state_ttl_for(config.flow_timeout_secs as u64),
         };
         let flow_guard = FlowGuard::new(redis.clone(), flow_config);
-        let flow_events = FlowEventBus::new();
+        // Over Redis: a flow's events are published wherever the causing request lands (an
+        // agent's /api/mcp call, a proxy hop), not where the user's chat stream is subscribed.
+        let flow_events = FlowEventBus::with_redis(redis.clone());
         // A parked agent with no workload gets one from a worker that holds the state, spawned
         // below once the state exists.
         let (workload_deployer, workload_deploys) = crate::agents::catalog_deploy::deployer();
@@ -469,7 +471,9 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
         let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
-        let continuation_events = crate::hitl::continuation::ContinuationRegistry::new(); // Pauses and resume outcomes are written from several places (the store, the MCP
+        let continuation_events =
+            crate::hitl::continuation::ContinuationRegistry::new(redis.clone());
+        // Pauses and resume outcomes are written from several places (the store, the MCP
         // gateway's inserts, both resume dispatchers); each reports through this one observer. A
         // second AppState in the same process (tests) keeps the first one's: the instruments sit
         // on the process-wide meter either way.
@@ -580,12 +584,6 @@ impl AppState {
         tokio::spawn(crate::telemetry::agent_replicas::run(
             state.genai_metrics.agent_ready_replicas(),
             state.runtime.clone(),
-        ));
-
-        // Periodic eviction for finished continuation buffers — same shape as every other
-        // periodic sweep in this file.
-        tokio::spawn(crate::hitl::continuation::sweep_loop(
-            state.continuation_events.clone(),
         ));
 
         // The `mcp_tool`-origin resume dispatcher (AuthRequired's auto-resume nudge, and any

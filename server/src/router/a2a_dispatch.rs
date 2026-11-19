@@ -455,7 +455,9 @@ async fn reconnect_stream(
     // dedicated `mcp_tool` resume dispatcher (`oss/hitl::dispatcher`) never touches
     // `continuation_events` at all. A standalone, never-mirrored `mcp_tool` row's id would
     // otherwise `watch()` the same kind of buffer nothing will ever terminate.
-    if row.origin == nasiko_hitl::HitlOrigin::McpTool && !state.continuation_events.exists(row.id) {
+    if row.origin == nasiko_hitl::HitlOrigin::McpTool
+        && !state.continuation_events.exists(row.id).await
+    {
         return Err(A2aDispatchError::InvalidRequest(
             "this HITL request has no agent-visible continuation to reconnect to — poll GET /api/hitl/pending instead"
                 .into(),

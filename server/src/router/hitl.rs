@@ -776,7 +776,7 @@ async fn auto_resolve_linked_direct_chat_row(
             // The frontend reconnects using `mcp_row.id` (what `resolve_display_row` showed it),
             // but `deliver()` only ever runs on `linked.id` — alias the two so either id finds the
             // same continuation buffer (see `ContinuationRegistry::alias`'s own doc comment).
-            state.continuation_events.alias(mcp_row.id, linked.id);
+            state.continuation_events.alias(mcp_row.id, linked.id).await;
             let _ = state.hitl_resume_tx.try_send(());
             // `linked` is the real resume now — never let the `mcp_tool` dispatcher also fire
             // `mcp_row`'s own task_id-less nudge on top of it (see this function's own doc comment).
