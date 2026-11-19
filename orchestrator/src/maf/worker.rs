@@ -601,6 +601,7 @@ async fn process_job(
         agent_calls: &agent_calls.meter,
         targets: agent_calls.targets.as_ref(),
         outbound: agent_calls.outbound.as_ref(),
+        clock: agent_calls.clock,
         db,
         flow_guard,
         llm: &owner_llm,

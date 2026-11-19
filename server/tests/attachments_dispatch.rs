@@ -837,7 +837,14 @@ async fn a_turn_without_files_gets_no_attachment_line() {
 
     let (status, body) = send_turn(&server, &user, Some(agent_id), &sid, &[], vec![]).await;
     assert_eq!(status, 200, "{body}");
-    assert_eq!(text_parts_seen(&agent).len(), 1);
+    // Only the user's text, besides the current time the platform tells every agent.
+    let texts = text_parts_seen(&agent);
+    let own: Vec<&String> = texts
+        .iter()
+        .filter(|t| !t.starts_with(nasiko_types::agent_clock::NOTE_LEAD))
+        .collect();
+    assert_eq!(own.len(), 1, "{texts:?}");
+    assert!(!own[0].contains("nasiko-file://"), "{texts:?}");
 
     server.cleanup().await;
 }
