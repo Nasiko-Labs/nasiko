@@ -236,7 +236,7 @@ pub enum LoginRefusal {
 }
 
 impl LoginRefusal {
-    /// The reason as the log line and the audit row write it.
+    /// The reason as the log line and any recorder write it.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::UnknownName => "unknown_name",
