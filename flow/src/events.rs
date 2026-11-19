@@ -19,13 +19,13 @@
 //!   subscribers of that flow and ignores the ones this bus published itself, which it already
 //!   delivered. It is opened by the first `subscribe` and reconnects with a backoff after a drop.
 //!
-//! One pattern subscription per process rather than a `SUBSCRIBE` per flow: flow events are rare
-//! (a few per turn at most), so receiving every flow's and dropping the ones with no local
-//! subscriber costs nothing, while a per-flow subscription would put a Redis round trip on every
+//! One pattern listener (`PSUBSCRIBE`) per process rather than a `SUBSCRIBE` per flow: flow events
+//! are rare (a few per turn at most), so receiving every flow's and dropping the ones with no local
+//! subscriber costs nothing, while a `SUBSCRIBE` per flow would put a Redis round trip on every
 //! chat request and race a flow's subscribe against its `remove`. One connection per subscriber
 //! would cost a connection per open chat stream.
 //!
-//! `subscribe` returns once the pattern subscription is live, waiting at most
+//! `subscribe` returns once the pattern listener is live, waiting at most
 //! [`REDIS_CONNECT_TIMEOUT`] for the first connection, so an event another replica publishes after
 //! the chat stream subscribed is not missed. While Redis is down subscribers still get this
 //! process's own events. Delivery is best effort either way: the event's durable record (a
@@ -170,7 +170,7 @@ async fn deliver_locally(channels: &LocalChannels, flow_id: &str, event: FlowEve
     }
 }
 
-/// Whether the receiver's pattern subscription is live.
+/// Whether the receiver's pattern listener is live.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReceiverState {
     /// The first connection is being opened.
@@ -180,7 +180,7 @@ enum ReceiverState {
     Down,
 }
 
-/// The Redis side of a bus: an ordered outbound queue and one inbound pattern subscription.
+/// The Redis side of a bus: an ordered outbound queue and one inbound pattern listener.
 struct RedisFanout {
     redis: SharedRedis,
     /// Identifies this bus's own events when they come back from Redis.
@@ -287,7 +287,7 @@ async fn receive_loop(
                     };
                     relay(&channels, &origin, msg.get_channel_name(), &payload).await;
                 }
-                tracing::warn!("flow event subscription closed; reconnecting");
+                tracing::warn!("flow event listener closed; reconnecting");
             }
             Err(e) => tracing::warn!(error = %e, "could not subscribe to flow events in redis"),
         }

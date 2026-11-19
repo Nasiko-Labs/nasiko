@@ -11,8 +11,8 @@
 //! # Delivery
 //!
 //! Best effort, like every pub/sub message. Publishing never makes its caller wait on Redis: it is
-//! spawned onto the shared connection. A replica whose subscription was down may have missed
-//! messages, so on every subscription after the first it runs each handler once with
+//! spawned onto the shared connection. A replica whose listener was down may have missed
+//! messages, so each time it resubscribes after the first it runs each handler once with
 //! [`Invalidated::All`] (a resync). When Redis cannot be reached at all, local invalidation still
 //! happens and each cache's own TTL or poll bounds how stale the others get; the failure is
 //! logged at warn at most once a minute.
@@ -210,8 +210,8 @@ fn decode(payload: &str) -> Option<(&str, &str, &str)> {
     Some((parts.next()?, parts.next()?, parts.next()?))
 }
 
-/// Holds a subscription for as long as the bus lives, resubscribing with backoff whenever it
-/// drops. Every subscription after the first attempt resyncs, since messages published while it
+/// Keeps a listener for as long as the bus lives, resubscribing with backoff whenever it
+/// drops. Every resubscribe after the first attempt resyncs, since messages published while it
 /// was down are gone.
 async fn run_subscriber(bus: Weak<Inner>, client: redis::Client) {
     let warning = WarnThrottle::default();
@@ -241,9 +241,7 @@ async fn run_subscriber(bus: Weak<Inner>, client: redis::Client) {
                     }
                 }
                 if warning.allow() {
-                    tracing::warn!(
-                        "lost the cross-replica invalidation subscription; resubscribing"
-                    );
+                    tracing::warn!("lost the cross-replica invalidation listener; resubscribing");
                 }
             }
             Ok(Err(e)) => {

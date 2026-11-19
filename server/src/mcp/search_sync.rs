@@ -9,7 +9,7 @@
 //! rebuild.
 //!
 //! No periodic rebuild: a rebuild reads every tool and embedding, and the one way a replica can
-//! miss a change, its subscription being down, already triggers a rebuild when it resubscribes
+//! miss a change, its listener being down, already triggers a rebuild when it resubscribes
 //! (the `invalidation` resync).
 
 use std::sync::Arc;
