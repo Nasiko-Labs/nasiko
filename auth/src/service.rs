@@ -16,13 +16,38 @@ const LOGIN_LOCKOUT_THRESHOLD: i32 = 3;
 /// longer.
 // An empty fallback is safe: `verify_password` is false for anything that is not a
 // bcrypt hash. Only the timing match would be lost, and hashing a uuid at cost 12 does
-// not fail.
-static DUMMY_HASH: LazyLock<String> =
-    LazyLock::new(|| crate::hash_password(&uuid::Uuid::new_v4().to_string()).unwrap_or_default());
+// not fail; if it ever did, this logs it once.
+static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
+    crate::hash_password(&uuid::Uuid::new_v4().to_string()).unwrap_or_else(|e| {
+        tracing::error!(
+            error = ?e,
+            "could not build the dummy password hash: an unknown-name login now answers faster than a known one"
+        );
+        String::new()
+    })
+});
 
 /// The hash to verify a login password against: the account's own, or the dummy.
 fn hash_for(stored: Option<&str>) -> &str {
     stored.unwrap_or(DUMMY_HASH.as_str())
+}
+
+/// One line per login attempt under `nasiko::auth`, for the log pipeline. Never the name
+/// typed (people type passwords into that field), and not a hash of it either: an unknown
+/// name is only flagged.
+fn log_login_ok(user_id: &str) {
+    tracing::info!(target: "nasiko::auth", event = "login", outcome = "ok", user_id, unknown_name = false);
+}
+
+fn log_login_refused(reason: LoginRefusal, user_id: Option<&str>) {
+    tracing::info!(
+        target: "nasiko::auth",
+        event = "login",
+        outcome = "refused",
+        reason = reason.as_str(),
+        user_id,
+        unknown_name = reason == LoginRefusal::UnknownName,
+    );
 }
 
 /// The `jti` of a token this service just signed. Every token it issues
@@ -323,14 +348,20 @@ impl AuthService for AuthServiceImpl {
         .await;
 
         let Some(row) = row else {
+            log_login_refused(LoginRefusal::UnknownName, None);
             return Err(AuthError::InvalidCredentials {
                 reason: LoginRefusal::UnknownName,
                 user_id: None,
             });
         };
-        let refused = |reason| AuthError::InvalidCredentials {
-            reason,
-            user_id: Some(row.id.to_string()),
+        // Every refusal of a known account is built here, so each logs its one line.
+        let user_id = row.id.to_string();
+        let refused = |reason| {
+            log_login_refused(reason, Some(&user_id));
+            AuthError::InvalidCredentials {
+                reason,
+                user_id: Some(user_id.clone()),
+            }
         };
 
         if !row.is_active {
@@ -393,6 +424,7 @@ impl AuthService for AuthServiceImpl {
 
         // issue_token now records the token itself, so no explicit record here.
         let token = self.issue_token(&identity).await?;
+        log_login_ok(&identity.user_id);
 
         Ok(LoginResult {
             token,

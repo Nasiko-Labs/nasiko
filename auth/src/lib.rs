@@ -235,6 +235,18 @@ pub enum LoginRefusal {
     Locked,
 }
 
+impl LoginRefusal {
+    /// The reason as the log line and the audit row write it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownName => "unknown_name",
+            Self::WrongPassword => "wrong_password",
+            Self::Deactivated => "deactivated",
+            Self::Locked => "locked",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("missing token")]
