@@ -918,6 +918,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
 
     Config {
         bind: "127.0.0.1:0".into(),
+        shutdown_drain_delay_secs: 0,
+        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,

@@ -1,9 +1,10 @@
 //! Run work on one server replica at a time.
 //!
 //! The server runs as several replicas, and every rollout briefly runs two even at one. Work that
-//! must not run twice at once (a boot reconcile, a periodic sweep that calls the container runtime,
-//! a loop that creates clusters) takes a Postgres advisory lock first: whichever replica gets it
-//! does the work, the others skip it.
+//! must not run twice at once (a boot reconcile, a loop that creates clusters) takes a Postgres
+//! advisory lock first with [`single_flight`]: whichever replica gets it does the work, the others
+//! skip it. A periodic job that should run once a period across all replicas (a sweep that calls
+//! the container runtime, a materializer) runs under [`every`], which elects one replica to lead it.
 //!
 //! An advisory lock rather than a Redis lease because the work it guards is database work and the
 //! lock must end with its holder: a replica killed mid-pass loses its session, and Postgres releases
@@ -133,8 +134,18 @@ where
     Some(out)
 }
 
-/// Run `job` every `period` on whichever replica takes `key` for that tick. The first tick runs
-/// at once. Never returns.
+/// Run `job` every `period` on one replica: the leader for `key`. The first tick runs at once.
+/// Never returns.
+///
+/// A replica that takes `key` keeps it, and runs every tick, for as long as its connection lives;
+/// the others try again each period, so when the leader stops (its session ends and Postgres
+/// releases the lock) one of them takes over within a period. Holding the lock across ticks,
+/// rather than taking it per tick, is what keeps the job to once a period: per-tick locks only
+/// stop two runs overlapping, and N replicas ticking at different moments would still run it N
+/// times a period.
+///
+/// Before each tick the leader checks its connection is alive, since a dropped session has
+/// already released the lock to someone else.
 pub async fn every<F, Fut>(pool: PgPool, key: LockKey, period: Duration, mut job: F)
 where
     F: FnMut() -> Fut,
@@ -142,9 +153,38 @@ where
 {
     let mut ticker = tokio::time::interval(period);
     ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut leading: Option<Held> = None;
     loop {
         ticker.tick().await;
-        single_flight(&pool, key, &mut job).await;
+        leading = match leading.take() {
+            Some(held) => still_held(held).await,
+            None => match try_lock(&pool, key).await {
+                Ok(Some(held)) => {
+                    tracing::info!(lock = key.name, "leading this job on this replica");
+                    Some(held)
+                }
+                Ok(None) => None,
+                Err(e) => {
+                    tracing::warn!(lock = key.name, error = %e, "advisory lock unavailable; skipping");
+                    None
+                }
+            },
+        };
+        if leading.is_some() {
+            job().await;
+        }
+    }
+}
+
+/// `held` back if its session is still alive (and so still holds the lock), else `None`.
+async fn still_held(mut held: Held) -> Option<Held> {
+    let conn = held.conn.as_mut()?;
+    match sqlx::query("SELECT 1").execute(&mut **conn).await {
+        Ok(_) => Some(held),
+        Err(e) => {
+            tracing::warn!(lock = held.key.name, error = %e, "lost the connection holding this lock; no longer leading");
+            None
+        }
     }
 }
 

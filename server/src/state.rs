@@ -18,6 +18,14 @@ use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
+use nasiko_leader::LockKey;
+
+/// Boot seeding (`SEED_AGENTS`, workflows, harness agents, toolkits), one replica at a time.
+const BOOT_SEED_LOCK: LockKey = LockKey::named("server.boot_seed");
+/// The startup agent reconcile, one replica at a time.
+const STARTUP_RECONCILE_LOCK: LockKey = LockKey::named("server.startup_reconcile");
+/// The hourly materialized-view refresh, on one replica per period.
+const MATVIEW_REFRESH_LOCK: LockKey = LockKey::named("server.matview_refresh");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -152,6 +160,9 @@ pub struct AppState {
     /// prefix with its own login page. Both editions serve the root mount only;
     /// the slice exists so another frontend can be mounted under its own prefix.
     pub ui_mounts: &'static [crate::auth::UiMount],
+    /// Set when this replica is asked to stop: `/ready` answers 503 and workers stop claiming
+    /// work. See `shutdown.rs`.
+    pub shutdown: crate::shutdown::ShutdownSignal,
 }
 
 impl AppState {
@@ -526,6 +537,7 @@ impl AppState {
             hitl_resume_tx,
             continuation_events,
             ui_mounts: &[crate::auth::UiMount::ROOT],
+            shutdown: crate::shutdown::ShutdownSignal::new(),
         };
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
@@ -716,17 +728,23 @@ impl AppState {
             tokio::spawn(crate::agents::rehost::retry_until_drained(self.clone()));
         }
 
+        // One replica seeds at a time: a replica that starts while another is seeding (a rolling
+        // update starts the new pod beside the old) skips it rather than register and deploy the
+        // same agents alongside it.
         let state = self.clone();
         tokio::spawn(async move {
-            crate::seed::seed_agents_if_configured(&state).await;
-            // After the agents: each step binds to a seed agent's row, which
-            // the line above registers (its deploy may still be in progress;
-            // a step finds its agent's endpoint when it runs).
-            crate::seed_workflows::seed_workflows_if_configured(&state).await;
-            crate::seed::seed_harness_agents_if_enabled(&state).await;
-            crate::seed::seed_toolkits_if_configured(&state).await;
-            // After both: it pairs the seed agents' rows with the registered toolkits.
-            crate::seed::grant_toolkits_to_seed_agents(&state).await;
+            nasiko_leader::single_flight(&state.db.clone(), BOOT_SEED_LOCK, || async {
+                crate::seed::seed_agents_if_configured(&state).await;
+                // After the agents: each step binds to a seed agent's row, which
+                // the line above registers (its deploy may still be in progress;
+                // a step finds its agent's endpoint when it runs).
+                crate::seed_workflows::seed_workflows_if_configured(&state).await;
+                crate::seed::seed_harness_agents_if_enabled(&state).await;
+                crate::seed::seed_toolkits_if_configured(&state).await;
+                // After both: it pairs the seed agents' rows with the registered toolkits.
+                crate::seed::grant_toolkits_to_seed_agents(&state).await;
+            })
+            .await;
         });
 
         // Lakehouse tiering (docs/LAKEHOUSE_TRD.md §8). Every replica spawns the
@@ -770,16 +788,19 @@ impl AppState {
         // `agents::reconcile`'s module doc.
         let state = self.clone();
         tokio::spawn(async move {
-            crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
+            nasiko_leader::single_flight(&state.db.clone(), STARTUP_RECONCILE_LOCK, || {
+                crate::agents::reconcile::reconcile_agents_on_startup(&state)
+            })
+            .await;
         });
 
-        // Periodic refresh of materialized views (agent_selection_stats).
+        // Periodic refresh of materialized views (agent_selection_stats), on one replica.
         let db = self.db.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
-            interval.tick().await; // first tick fires immediately — skip it to avoid startup load
-            loop {
-                interval.tick().await;
+            const PERIOD: std::time::Duration = std::time::Duration::from_secs(3600);
+            // Not at startup: the first refresh waits a full period.
+            tokio::time::sleep(PERIOD).await;
+            nasiko_leader::every(db.clone(), MATVIEW_REFRESH_LOCK, PERIOD, || async {
                 let views = ["REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats"];
                 for sql in views {
                     if let Err(e) = sqlx::query(sql).execute(&db).await {
@@ -787,7 +808,8 @@ impl AppState {
                     }
                 }
                 tracing::debug!("materialized views refreshed");
-            }
+            })
+            .await;
         });
     }
 

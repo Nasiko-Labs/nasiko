@@ -429,7 +429,15 @@ pub struct InternalAgentSeed {
 ///
 /// Designed to run as a background task — does not block server startup, and
 /// returns quietly when the agent is already running on the same image.
+///
+/// One replica seeds at a time; one that starts while another is seeding skips it.
 pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
+    const LOCK: nasiko_leader::LockKey =
+        nasiko_leader::LockKey::named("server.seed_internal_agent");
+    nasiko_leader::single_flight(&state.db, LOCK, || seed_internal_agent_now(state, seed)).await;
+}
+
+async fn seed_internal_agent_now(state: &AppState, seed: InternalAgentSeed) {
     let InternalAgentSeed {
         name: agent_name,
         image,
@@ -734,17 +742,20 @@ async fn stored_writable(
 
 const INTERNAL_AGENT_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The internal-agent watch runs on one replica, so two never redeploy the same dead agent.
+const INTERNAL_AGENT_WATCH_LOCK: nasiko_leader::LockKey =
+    nasiko_leader::LockKey::named("server.internal_agent_watch");
+
 pub fn spawn_internal_agent_watch(state: AppState) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval_at(
-            tokio::time::Instant::now() + INTERNAL_AGENT_WATCH_INTERVAL,
+        tokio::time::sleep(INTERNAL_AGENT_WATCH_INTERVAL).await;
+        nasiko_leader::every(
+            state.db.clone(),
+            INTERNAL_AGENT_WATCH_LOCK,
             INTERNAL_AGENT_WATCH_INTERVAL,
-        );
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            redeploy_dead_internal_agents(&state).await;
-        }
+            || redeploy_dead_internal_agents(&state),
+        )
+        .await;
     });
 }
 

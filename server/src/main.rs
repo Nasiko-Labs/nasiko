@@ -160,12 +160,21 @@ async fn main() {
     tokio::spawn(nasiko_server::coding::revocation::sweep_loop(
         state.db.clone(),
     ));
+    let shutdown = state.shutdown.clone();
+    let drain_delay = std::time::Duration::from_secs(state.config.shutdown_drain_delay_secs);
+    let grace = std::time::Duration::from_secs(state.config.shutdown_grace_secs);
+    tokio::spawn(nasiko_server::shutdown::drain_on_terminate(
+        shutdown.clone(),
+        drain_delay,
+    ));
     let app = nasiko_server::build_app(state, static_handler);
 
     let listener = tokio::net::TcpListener::bind(&bind).await.unwrap();
     tracing::info!("nasiko-server (OSS) listening on {bind}");
-    // Peer addresses (for per-address limits) and an idle-connection limit: see `serve`.
-    nasiko_server::serve::serve(listener, app).await;
+    // Peer addresses (for per-address limits), an idle-connection limit and a drain on SIGTERM:
+    // see `serve` and `shutdown`.
+    nasiko_server::serve::serve(listener, app, shutdown, grace).await;
+    tracing::info!("nasiko-server stopped");
 }
 
 /// The open-source shell loads no third-party script; its inline scripts are pinned by hash from

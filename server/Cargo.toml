@@ -69,6 +69,7 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
 nasiko-redis = { workspace = true }
+nasiko-leader = { workspace = true }
 rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }

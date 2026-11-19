@@ -67,6 +67,7 @@ pub mod seed_workflows;
 pub mod serve;
 pub mod sessions;
 pub mod settings;
+pub mod shutdown;
 /// The SPA serving shared by every binary that embeds a UI bundle.
 pub use nasiko_spa as spa;
 pub mod spend_gate;
@@ -564,6 +565,7 @@ where
 
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .merge(observability::router())
         .merge(openapi::router())
         .merge(auth::login::non_login_public_router(non_login_limiter))
@@ -812,6 +814,18 @@ fn extract_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Readiness, separate from `/health` (liveness): 503 once this replica is draining, so the load
+/// balancer moves its traffic to the others before it stops accepting connections.
+async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, &'static str) {
+    if state.shutdown.is_draining() {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    } else {
+        (axum::http::StatusCode::OK, "ok")
+    }
 }
 
 async fn me(claims: Claims) -> Json<Claims> {
