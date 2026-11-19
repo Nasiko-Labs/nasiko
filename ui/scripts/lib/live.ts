@@ -151,8 +151,8 @@ export interface LoginResult {
 }
 
 /**
- * Log in once. A failed login is never retried: nasiko-server locks the account after repeated
- * failures (429 `account_locked` with `retry_after_secs`; a 401 carries `remaining_attempts`).
+ * Log in once. A failed login is never retried: nasiko-server locks the account after three wrong
+ * passwords, and answers a locked account with the same 401 as a wrong password.
  */
 export async function login(
   base: string,
@@ -183,20 +183,12 @@ export async function login(
   } catch {
     // Plain-text body: keep the text for the message.
   }
-  if (res.status === 429 && body.code === 'account_locked') {
-    const e = ERRORS.accountLocked(username, Number(body.retry_after_secs) || undefined)
-    throw new Failure('login', e.problem, EXIT.notReady, e.fix)
-  }
   if (res.status === 429) {
     const e = ERRORS.rateLimited()
     throw new Failure('login', e.problem, EXIT.notReady, e.fix)
   }
   if (!res.ok) {
-    const left =
-      typeof body.remaining_attempts === 'number'
-        ? ` (${body.remaining_attempts} attempts left before the account locks)`
-        : ''
-    const e = ERRORS.loginFailed(username, res.status, left)
+    const e = ERRORS.loginFailed(username, res.status)
     throw new Failure('login', e.problem, EXIT.notReady, e.fix)
   }
   if (typeof body.token !== 'string')
@@ -254,15 +246,11 @@ export const ERRORS = {
     cause: 'fixtures would claim a server SHA the running code does not match',
     fix: `git -C ${repo} stash   (or re-run with --allow-dirty)`,
   }),
-  loginFailed: (user: string, status: number, left: string): ErrorEntry => ({
-    problem: `login as ${user} failed: HTTP ${status}${left}`,
-    cause: 'wrong ADMIN_USERNAME/ADMIN_PASSWORD for this server',
+  loginFailed: (user: string, status: number): ErrorEntry => ({
+    problem: `login as ${user} failed: HTTP ${status}`,
+    cause:
+      'wrong ADMIN_USERNAME/ADMIN_PASSWORD for this server, or the account is locked (three wrong passwords lock it for 15 minutes, and the server answers a lock like a wrong password)',
     fix: 'ADMIN_USERNAME=admin ADMIN_PASSWORD=<password> npm run record:live',
-  }),
-  accountLocked: (user: string, retryAfter?: number): ErrorEntry => ({
-    problem: `account ${user} is locked after too many failed logins${retryAfter ? ` (retry in ${retryAfter} s)` : ''}`,
-    cause: 'nasiko-server locks an account after repeated failures',
-    fix: `sleep ${retryAfter ?? 60} && npm run record:live   (with the right ADMIN_PASSWORD)`,
   }),
   rateLimited: (): ErrorEntry => ({
     problem: 'login rate-limited',

@@ -39,7 +39,7 @@ specs, not this document; where a protocol dictates a shape, the protocol wins.
 ```
 
 - Always JSON. Never plain text, never an empty body (a 204 is the only bodyless response).
-- `code` is a stable slug clients switch on (`account_locked`, `version_conflict`,
+- `code` is a stable slug clients switch on (`version_conflict`,
   `agent_not_shareable`, `harness_sessions_disabled`);
   the message may be reworded freely, the code may not change once shipped.
 - 5xx bodies never carry internal error text — raw `e.to_string()` is a log line, not a

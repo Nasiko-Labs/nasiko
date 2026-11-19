@@ -224,6 +224,17 @@ pub trait AuthService: Send + Sync + 'static {
     }
 }
 
+/// Why `AuthService::authenticate` refused a password login. Recorded, never
+/// shown: every variant is answered with the same 401.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginRefusal {
+    UnknownName,
+    WrongPassword,
+    Deactivated,
+    /// The account is locked, or this wrong password is the one that locked it.
+    Locked,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("missing token")]
@@ -235,20 +246,21 @@ pub enum AuthError {
     Expired,
     #[error("token revoked")]
     Revoked,
-    /// Bad username/access-key or wrong secret. Maps to 401.
-    /// `remaining_attempts` is `Some` when login lockout is approaching.
+    /// A refused password login: an unknown name, a wrong password, a deactivated
+    /// account or a locked one. Maps to one 401 with one body, so the answer never
+    /// says which. `reason` and `user_id` (`None` for an unknown name) are for the
+    /// server's own recorders and must never reach a response.
     #[error("invalid credentials")]
-    InvalidCredentials { remaining_attempts: Option<i32> },
+    InvalidCredentials {
+        reason: LoginRefusal,
+        user_id: Option<String>,
+    },
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,
     /// Sign-in is members-only and this account has not been invited. Maps to 403.
     #[error("this account has not been invited")]
     NotInvited,
-    /// Too many failed login attempts — account temporarily locked.
-    /// `retry_after_secs` is the number of seconds until the lockout expires.
-    #[error("account locked")]
-    AccountLocked { retry_after_secs: u64 },
     /// Requested user/agent/record does not exist. Maps to 404.
     #[error("not found")]
     NotFound,

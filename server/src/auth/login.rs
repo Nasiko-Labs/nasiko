@@ -174,23 +174,9 @@ async fn login(
             )
                 .into_response()
         }
-        Err(nasiko_auth::AuthError::Disabled) => (
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "account disabled"})),
-        )
-            .into_response(),
         Err(nasiko_auth::AuthError::NotInvited) => (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({"error": "this account has not been invited"})),
-        )
-            .into_response(),
-        Err(nasiko_auth::AuthError::AccountLocked { retry_after_secs }) => (
-            StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({
-                "error": "account temporarily locked due to too many failed login attempts",
-                "code": "account_locked",
-                "retry_after_secs": retry_after_secs,
-            })),
         )
             .into_response(),
         // A backend failure must surface as 500 — never as an auth rejection (AUTH-10).
@@ -203,13 +189,9 @@ async fn login(
             )
                 .into_response()
         }
-        Err(nasiko_auth::AuthError::InvalidCredentials { remaining_attempts }) => {
-            let mut body = serde_json::json!({"error": "invalid credentials"});
-            if let Some(remaining) = remaining_attempts {
-                body["remaining_attempts"] = serde_json::json!(remaining);
-            }
-            (StatusCode::UNAUTHORIZED, Json(body)).into_response()
-        }
+        // Every refused login (`InvalidCredentials`: unknown name, wrong password, deactivated,
+        // locked) lands here, so none can be told from another. Its private reason is never
+        // serialised.
         Err(_) => (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "invalid credentials"})),

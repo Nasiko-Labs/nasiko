@@ -1,14 +1,29 @@
+use std::sync::LazyLock;
+
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
 
 use crate::DelegatedIdentity;
-use crate::{AuthError, AuthService, Identity, LoginResult, TOKEN_EXPIRY_SECS};
+use crate::{AuthError, AuthService, Identity, LoginRefusal, LoginResult, TOKEN_EXPIRY_SECS};
 
 /// Lock account after this many consecutive failed login attempts.
 const LOGIN_LOCKOUT_THRESHOLD: i32 = 3;
-/// Lockout duration in seconds (15 minutes).
-const LOGIN_LOCKOUT_DURATION_SECS: u64 = 15 * 60;
+
+/// What a login is verified against when no account has the name, so an unknown name
+/// costs the same bcrypt work as a known one. A cost-12 hash of a random string nobody
+/// holds, built on first use: the first unknown-name login after a start takes one hash
+/// longer.
+// An empty fallback is safe: `verify_password` is false for anything that is not a
+// bcrypt hash. Only the timing match would be lost, and hashing a uuid at cost 12 does
+// not fail.
+static DUMMY_HASH: LazyLock<String> =
+    LazyLock::new(|| crate::hash_password(&uuid::Uuid::new_v4().to_string()).unwrap_or_default());
+
+/// The hash to verify a login password against: the account's own, or the dummy.
+fn hash_for(stored: Option<&str>) -> &str {
+    stored.unwrap_or(DUMMY_HASH.as_str())
+}
 
 /// The `jti` of a token this service just signed. Every token it issues
 /// carries one, so a missing `jti` is an internal fault, not a bad credential.
@@ -299,22 +314,34 @@ impl AuthService for AuthServiceImpl {
         .fetch_optional(&self.db)
         .await?;
 
-        let row = row.ok_or(AuthError::InvalidCredentials {
-            remaining_attempts: None,
-        })?;
+        // One bcrypt check for every attempt, before anything is decided, so how long a
+        // refusal takes never says whether the name exists, is deactivated or is locked.
+        let password_ok = crate::verify_password_async(
+            password,
+            hash_for(row.as_ref().map(|r| r.access_secret_hash.as_str())),
+        )
+        .await;
+
+        let Some(row) = row else {
+            return Err(AuthError::InvalidCredentials {
+                reason: LoginRefusal::UnknownName,
+                user_id: None,
+            });
+        };
+        let refused = |reason| AuthError::InvalidCredentials {
+            reason,
+            user_id: Some(row.id.to_string()),
+        };
 
         if !row.is_active {
-            return Err(AuthError::Disabled);
+            return Err(refused(LoginRefusal::Deactivated));
         }
 
-        // Check lockout: 3 consecutive failures → locked for 15 minutes.
+        // Check lockout: 3 consecutive failures → locked for 15 minutes. Even a correct
+        // password is refused until it ends, and a wrong one neither counts nor extends it.
         if let Some(locked_until) = row.locked_until {
-            let now = chrono::Utc::now();
-            if now < locked_until {
-                let remaining = (locked_until - now).num_seconds().max(0) as u64;
-                return Err(AuthError::AccountLocked {
-                    retry_after_secs: remaining,
-                });
+            if Utc::now() < locked_until {
+                return Err(refused(LoginRefusal::Locked));
             }
             // Lockout expired — clear it so the attempt proceeds.
             let _ = sqlx::query(
@@ -325,7 +352,7 @@ impl AuthService for AuthServiceImpl {
             .await;
         }
 
-        if !crate::verify_password_async(password, &row.access_secret_hash).await {
+        if !password_ok {
             let attempts = row.failed_login_attempts + 1;
             if attempts >= LOGIN_LOCKOUT_THRESHOLD {
                 let _ = sqlx::query(
@@ -336,19 +363,14 @@ impl AuthService for AuthServiceImpl {
                 .bind(attempts)
                 .execute(&self.db)
                 .await;
-                return Err(AuthError::AccountLocked {
-                    retry_after_secs: LOGIN_LOCKOUT_DURATION_SECS,
-                });
+                return Err(refused(LoginRefusal::Locked));
             }
             let _ = sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
                 .bind(row.id)
                 .bind(attempts)
                 .execute(&self.db)
                 .await;
-            let remaining = LOGIN_LOCKOUT_THRESHOLD - attempts;
-            return Err(AuthError::InvalidCredentials {
-                remaining_attempts: Some(remaining),
-            });
+            return Err(refused(LoginRefusal::WrongPassword));
         }
 
         // Successful login — reset failed attempts and update last_login.
@@ -743,5 +765,26 @@ impl AuthService for AuthServiceImpl {
         .fetch_one(&self.db)
         .await
         .unwrap_or(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DUMMY_HASH, hash_for};
+
+    #[test]
+    fn hash_for_nothing_is_the_dummy_hash_and_the_dummy_hash_verifies_nothing_typed() {
+        assert_eq!(hash_for(None), DUMMY_HASH.as_str());
+        assert_eq!(hash_for(Some("$2b$12$stored")), "$2b$12$stored");
+
+        // Cost 12 and well formed, so verifying against it takes the same work as a real
+        // account's hash. An unparseable hash would answer `Err` here, and fast.
+        assert_eq!(DUMMY_HASH.split('$').nth(2), Some("12"));
+        for typed in ["", "password", "changeme", DUMMY_HASH.as_str()] {
+            assert!(
+                matches!(bcrypt::verify(typed, &DUMMY_HASH), Ok(false)),
+                "the dummy hash must verify no typed password"
+            );
+        }
     }
 }
