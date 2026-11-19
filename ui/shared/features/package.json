@@ -32,7 +32,7 @@
     "zustand": "5.0.15"
   },
   "devDependencies": {
-    "@storybook/react-vite": "10.6.0",
+    "@storybook/react-vite": "10.6.2",
     "@testing-library/react": "^16.3.3",
     "@testing-library/user-event": "^14.6.7",
     "axe-core": "^4.13.0",
