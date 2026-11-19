@@ -1,0 +1,177 @@
+//! Run work on one server replica at a time.
+//!
+//! The server runs as several replicas, and every rollout briefly runs two even at one. Work that
+//! must not run twice at once (a boot reconcile, a periodic sweep that calls the container runtime,
+//! a loop that creates clusters) takes a Postgres advisory lock first: whichever replica gets it
+//! does the work, the others skip it.
+//!
+//! An advisory lock rather than a Redis lease because the work it guards is database work and the
+//! lock must end with its holder: a replica killed mid-pass loses its session, and Postgres releases
+//! the lock with it, with no lease to expire.
+//!
+//! Keys are built with [`LockKey::named`] and use Postgres's two-`int4` lock form under one
+//! namespace, a key space separate from the single-`bigint` locks the rest of the code takes, so a
+//! name here can never collide with one of those.
+
+use std::future::Future;
+use std::time::Duration;
+
+use sqlx::PgPool;
+use sqlx::pool::PoolConnection;
+use sqlx::postgres::Postgres;
+
+/// The first half of every key: "nask".
+const NAMESPACE: i32 = 0x6e61_736b;
+
+/// An advisory lock key, named for the work it guards.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockKey {
+    name: &'static str,
+    id: i32,
+}
+
+impl LockKey {
+    /// The key for `name`. Two keys with the same name are the same lock.
+    pub const fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            id: fnv1a_32(name.as_bytes()) as i32,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        self.name
+    }
+}
+
+/// 32-bit FNV-1a, so a key's number is fixed by its name at compile time.
+const fn fnv1a_32(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c_9dc5;
+    let mut i = 0;
+    while i < bytes.len() {
+        hash ^= bytes[i] as u32;
+        hash = hash.wrapping_mul(0x0100_0193);
+        i += 1;
+    }
+    hash
+}
+
+/// A held lock. Releasing it is [`Self::release`]; dropping it without that returns its connection
+/// to the pool still holding the lock, so it closes the connection instead, which releases it.
+pub struct Held {
+    key: LockKey,
+    conn: Option<PoolConnection<Postgres>>,
+}
+
+impl Held {
+    pub async fn release(mut self) {
+        if let Some(conn) = self.conn.take() {
+            unlock(conn, self.key).await;
+        }
+    }
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Some(conn) = self.conn.take() {
+            // Not released: the session must end, or the pooled connection keeps the lock.
+            drop(conn.detach());
+        }
+    }
+}
+
+/// Take `key` if no other session holds it. `Ok(None)` when another replica has it.
+pub async fn try_lock(pool: &PgPool, key: LockKey) -> Result<Option<Held>, sqlx::Error> {
+    // An advisory lock belongs to the session that took it, so it is taken and released on one
+    // pinned connection: on two pooled connections the release would miss and the lock leak.
+    let mut conn = pool.acquire().await?;
+    let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1, $2)")
+        .bind(NAMESPACE)
+        .bind(key.id)
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(got.then_some(Held {
+        key,
+        conn: Some(conn),
+    }))
+}
+
+/// Wait until `key` is free and take it.
+///
+/// Polls [`try_lock`] instead of a blocking `pg_advisory_lock`: a session blocked in a statement
+/// holds a snapshot, and `CREATE INDEX CONCURRENTLY` on the lock holder waits for every older
+/// snapshot to end, so the two would wait on each other (migrations take this path).
+pub async fn lock(pool: &PgPool, key: LockKey, poll: Duration) -> Result<Held, sqlx::Error> {
+    loop {
+        if let Some(held) = try_lock(pool, key).await? {
+            return Ok(held);
+        }
+        tokio::time::sleep(poll).await;
+    }
+}
+
+/// Run `body` if this replica takes `key`; `None` (and `body` not run) when another holds it or
+/// the lock could not be asked for.
+pub async fn single_flight<F, Fut, T>(pool: &PgPool, key: LockKey, body: F) -> Option<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = T>,
+{
+    let held = match try_lock(pool, key).await {
+        Ok(Some(held)) => held,
+        Ok(None) => {
+            tracing::debug!(lock = key.name, "another replica holds this lock; skipping");
+            return None;
+        }
+        Err(e) => {
+            tracing::warn!(lock = key.name, error = %e, "advisory lock unavailable; skipping");
+            return None;
+        }
+    };
+    let out = body().await;
+    held.release().await;
+    Some(out)
+}
+
+/// Run `job` every `period` on whichever replica takes `key` for that tick. The first tick runs
+/// at once. Never returns.
+pub async fn every<F, Fut>(pool: PgPool, key: LockKey, period: Duration, mut job: F)
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = ()>,
+{
+    let mut ticker = tokio::time::interval(period);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        ticker.tick().await;
+        single_flight(&pool, key, &mut job).await;
+    }
+}
+
+async fn unlock(mut conn: PoolConnection<Postgres>, key: LockKey) {
+    let released: Result<bool, _> = sqlx::query_scalar("SELECT pg_advisory_unlock($1, $2)")
+        .bind(NAMESPACE)
+        .bind(key.id)
+        .fetch_one(&mut *conn)
+        .await;
+    if !matches!(released, Ok(true)) {
+        tracing::warn!(
+            lock = key.name,
+            "advisory lock not released; closing its connection"
+        );
+        drop(conn.detach());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keys_are_fixed_by_name() {
+        assert_eq!(LockKey::named("a"), LockKey::named("a"));
+        assert_ne!(LockKey::named("a").id, LockKey::named("b").id);
+        // FNV-1a test vector: "a" → 0xe40c292c.
+        assert_eq!(fnv1a_32(b"a"), 0xe40c_292c);
+    }
+}

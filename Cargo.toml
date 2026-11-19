@@ -24,6 +24,7 @@ members = [
     "oci",
     "flow",
     "redis",
+    "leader",
     "hitl",
     "agent-proxy",
     "llm-router",
