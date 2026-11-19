@@ -333,10 +333,12 @@ async fn deployment_statuses(server: &common::TestServer, agent: Uuid) -> Vec<St
 }
 
 /// Advisory locks held in the test database: a wake's lock must not outlive its transaction.
+/// Single-key advisory locks held, the kind the agent lock is (`objsubid` 1). The two-key kind
+/// (`objsubid` 2) is `nasiko_leader`'s, which a leader holds for its whole tenure by design.
 async fn advisory_locks_held(db: &PgPool) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM pg_locks \
-         WHERE locktype = 'advisory' AND granted \
+         WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
            AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
     )
     .fetch_one(db)
