@@ -3287,6 +3287,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
 
 [[package]]
+name = "llm-prices"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09782e21eed47b6364cd5b57577e984a9815f034ea217ea99ff4db73cf2a99ac"
+
+[[package]]
 name = "lock_api"
 version = "0.4.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3811,6 +3817,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "llm-prices",
  "rust_decimal",
  "serde_json",
  "sqlx",
