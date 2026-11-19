@@ -27,6 +27,7 @@ reqwest.workspace = true
 bytes.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
+futures.workspace = true
 nasiko-runtime.workspace = true
 tar.workspace = true
 flate2.workspace = true

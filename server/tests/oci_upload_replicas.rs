@@ -320,3 +320,83 @@ async fn a_manifest_cannot_claim_a_staged_chunk() {
 
     server.cleanup().await;
 }
+
+/// A blob larger than one multipart part is written in parts, from chunks two
+/// replicas staged, and reads back whole.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_blob_larger_than_one_part_is_streamed_into_place() {
+    let server = common::TestServer::start().await;
+    let (a, b) = (replica(&server).await, replica(&server).await);
+    let repo = repository();
+
+    // 12 MiB + 12 MiB + 1 MiB: crosses the 16 MiB part size, and the last part is short.
+    let first = Bytes::from((0..12 * 1024 * 1024).map(|i| i as u8).collect::<Vec<_>>());
+    let second = Bytes::from(vec![5u8; 12 * 1024 * 1024]);
+    let last = Bytes::from(vec![6u8; 1024 * 1024]);
+    let whole = [first.as_ref(), second.as_ref(), last.as_ref()].concat();
+    let digest = ops::sha256_of(&whole);
+
+    let upload_id = ops::initiate_upload(&a, &repo).await.unwrap();
+    ops::append_chunk(&a, &repo, upload_id, first, None)
+        .await
+        .unwrap();
+    ops::append_chunk(&b, &repo, upload_id, second, None)
+        .await
+        .unwrap();
+    let done = ops::complete_upload(&a, &repo, upload_id, last, Some(&digest))
+        .await
+        .unwrap();
+    assert_eq!(done.digest, digest);
+
+    let stored = ops::get_blob_bytes(&b, &repo, &digest).await.unwrap();
+    assert_eq!(stored.len(), whole.len());
+    assert!(stored.as_ref() == whole.as_slice());
+
+    server.cleanup().await;
+}
+
+/// An upload whose bytes do not hash to the digest the PUT names is refused,
+/// and leaves what is stored under that digest as it was.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_wrong_digest_never_replaces_the_blob_it_names() {
+    let server = common::TestServer::start().await;
+    let a = replica(&server).await;
+    let repo = repository();
+
+    let genuine = Bytes::from(vec![1u8; 20 * 1024 * 1024]);
+    let digest = ops::sha256_of(&genuine);
+    ops::upload_blob_monolithic(&a, &repo, genuine.clone(), &digest)
+        .await
+        .unwrap();
+
+    let upload_id = ops::initiate_upload(&a, &repo).await.unwrap();
+    ops::append_chunk(
+        &a,
+        &repo,
+        upload_id,
+        Bytes::from(vec![2u8; 20 * 1024 * 1024]),
+        None,
+    )
+    .await
+    .unwrap();
+    let refused = ops::complete_upload(&a, &repo, upload_id, Bytes::new(), Some(&digest))
+        .await
+        .err()
+        .expect("bytes that do not match the digest are refused");
+    assert!(
+        matches!(refused, OciError::Oci(OciCode::DigestInvalid, _)),
+        "got {refused:?}"
+    );
+
+    let stored = ops::get_blob_bytes(&a, &repo, &digest).await.unwrap();
+    assert!(stored == genuine, "the stored blob is untouched");
+    assert_eq!(
+        ops::upload_offset(&a, &repo, upload_id).await.unwrap(),
+        20 * 1024 * 1024,
+        "a refused PUT leaves the session for the client to retry or cancel"
+    );
+
+    server.cleanup().await;
+}

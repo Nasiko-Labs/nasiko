@@ -1,10 +1,11 @@
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
+use futures::TryStreamExt;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::OciState;
 use crate::error::{OciCode, OciError, Result};
-use nasiko_runtime::{BlobStore, BlobStoreError};
+use nasiko_runtime::{BlobStore, BlobStoreError, BlobStream, BlobWriter};
 
 pub async fn blob_exists(state: &OciState, digest: &str) -> bool {
     state.storage.blob_exists(digest).await
@@ -329,11 +330,8 @@ pub struct ChunkResult {
 
 /// Hard cap on the total bytes one upload session may accumulate across all of
 /// its chunks. Each chunk is already bounded at the HTTP body-read layer, but
-/// nothing else stops an unbounded NUMBER of chunks. `complete_upload` also
-/// assembles the whole blob in memory before storing it (the `BlobStore` seam
-/// only takes whole objects), so this cap is that assembly's memory ceiling as
-/// well. A streaming put on the seam (S3 multipart, Azure block lists) would
-/// remove the ceiling and is a follow-up.
+/// nothing else stops an unbounded NUMBER of chunks. `complete_upload` streams
+/// the staged chunks into the blob, so the cap bounds storage, not memory.
 pub const MAX_UPLOAD_TOTAL_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
 
 /// How long an upload session may stay open before the abandoned-upload sweep treats it
@@ -635,19 +633,23 @@ async fn store_and_claim(
     }
 
     state.storage.put_blob(&computed, data).await?;
+    claim_stored(state, repository, &computed).await?;
+    Ok(computed)
+}
 
+/// Claim a blob just stored for `repository` (see [`store_and_claim`]).
+async fn claim_stored(state: &OciState, repository: &str, digest: &str) -> Result<()> {
     let mut tx = state.pool.begin().await?;
     claim_blob(
         &mut tx,
         state.storage.as_ref(),
         repository,
-        &computed,
+        digest,
         OciCode::BlobUnknown,
     )
     .await?;
     tx.commit().await?;
-
-    Ok(computed)
+    Ok(())
 }
 
 /// Monolithic upload: the whole blob arrives in one request, no session needed.
@@ -688,54 +690,128 @@ pub async fn complete_upload(
         return Err(abort_oversized(state, repository, upload_id).await);
     }
 
-    let data = assemble_upload(state, upload_id, &part_ids, offset_bytes, final_chunk).await?;
-    let digest = store_and_claim(state, repository, data, expected_digest).await?;
+    let digest = match expected_digest {
+        Some(expected) => check_sha256_digest(expected)?.to_owned(),
+        // Without a digest to write under, one pass only to learn it.
+        None => {
+            stream_upload(
+                state,
+                upload_id,
+                &part_ids,
+                offset_bytes,
+                &final_chunk,
+                None,
+            )
+            .await?
+        }
+    };
+    write_upload(
+        state,
+        upload_id,
+        &part_ids,
+        offset_bytes,
+        &final_chunk,
+        &digest,
+    )
+    .await?;
+    claim_stored(state, repository, &digest).await?;
 
     remove_session(state, repository, upload_id).await?;
 
     Ok(CompleteResult { digest })
 }
 
-/// The whole blob: the session's staged chunks read back in commit order, from
-/// whichever replicas took the PATCHes, then the PUT's own final chunk.
-///
-/// The blob is held in memory once (plus the chunk being read), because
-/// `store_and_claim` hashes and puts a single buffer; [`MAX_UPLOAD_TOTAL_BYTES`]
-/// bounds it. A session with one chunk and an empty PUT (how `docker push` sends
-/// a layer) is handed over without a copy. The assembled length must match the
-/// offset the session committed: a chunk missing from storage would otherwise
-/// surface only as a digest mismatch, or not at all when the client sent no
-/// digest.
-async fn assemble_upload(
+/// Writes the session's bytes under `digest`, committing them only if they hash
+/// to it. A blob store's piecewise write shows nothing under the key until it
+/// finishes, so a mismatch leaves whatever was there, and a concurrent push of
+/// the same digest can only ever write the same bytes.
+async fn write_upload(
     state: &OciState,
     upload_id: Uuid,
     part_ids: &[Uuid],
     staged_len: i64,
-    final_chunk: Bytes,
-) -> Result<Bytes> {
-    if let [part_id] = part_ids
-        && final_chunk.is_empty()
-    {
-        let part = read_upload_part(state, upload_id, *part_id).await?;
-        check_staged_len(upload_id, part.len(), staged_len)?;
-        return Ok(part);
+    final_chunk: &Bytes,
+    digest: &str,
+) -> Result<()> {
+    let mut writer = state.storage.blob_writer(digest).await?;
+    let streamed = stream_upload(
+        state,
+        upload_id,
+        part_ids,
+        staged_len,
+        final_chunk,
+        Some(writer.as_mut()),
+    )
+    .await;
+    match streamed {
+        Ok(computed) if computed == digest => {
+            writer.finish().await?;
+            Ok(())
+        }
+        Ok(computed) => {
+            writer.abort().await;
+            Err(OciError::digest_invalid(format!(
+                "digest mismatch: expected {digest}, got {computed}"
+            )))
+        }
+        Err(e) => {
+            writer.abort().await;
+            Err(e)
+        }
     }
-
-    let mut blob = BytesMut::with_capacity(staged_len.max(0) as usize + final_chunk.len());
-    for part_id in part_ids {
-        blob.extend_from_slice(&read_upload_part(state, upload_id, *part_id).await?);
-    }
-    check_staged_len(upload_id, blob.len(), staged_len)?;
-    blob.extend_from_slice(&final_chunk);
-    Ok(blob.freeze())
 }
 
-/// One staged chunk. Absence is the session's fault, not a missing blob, so it
-/// answers `BLOB_UPLOAD_INVALID` rather than `BLOB_UNKNOWN`.
-async fn read_upload_part(state: &OciState, upload_id: Uuid, part_id: Uuid) -> Result<Bytes> {
+/// The whole blob's digest: the session's staged chunks read back in commit
+/// order, from whichever replicas took the PATCHes, then the PUT's own final
+/// chunk, each piece also handed to `sink` when there is one.
+///
+/// Only one piece of a staged chunk is held at a time (plus the final chunk,
+/// which arrived as the PUT's body), so the blob's size is bounded by
+/// [`MAX_UPLOAD_TOTAL_BYTES`], not by memory. The bytes read back must be
+/// exactly the bytes the session committed: a chunk missing from storage would
+/// otherwise surface only as a digest mismatch, or not at all when the client
+/// sent no digest.
+async fn stream_upload(
+    state: &OciState,
+    upload_id: Uuid,
+    part_ids: &[Uuid],
+    staged_len: i64,
+    final_chunk: &Bytes,
+    mut sink: Option<&mut (dyn BlobWriter + '_)>,
+) -> Result<String> {
+    let mut hasher = Sha256::new();
+    let mut staged = 0i64;
+    for part_id in part_ids {
+        let mut pieces = open_upload_part(state, upload_id, *part_id).await?;
+        while let Some(piece) = pieces.try_next().await? {
+            staged += piece.len() as i64;
+            if staged > staged_len {
+                return Err(staged_len_mismatch(upload_id, staged, staged_len));
+            }
+            hasher.update(&piece);
+            if let Some(writer) = sink.as_deref_mut() {
+                writer.write(piece).await?;
+            }
+        }
+    }
+    if staged != staged_len {
+        return Err(staged_len_mismatch(upload_id, staged, staged_len));
+    }
+    hasher.update(final_chunk);
+    if let Some(writer) = sink
+        && !final_chunk.is_empty()
+    {
+        writer.write(final_chunk.clone()).await?;
+    }
+    Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
+}
+
+/// One staged chunk, as a stream. Absence is the session's fault, not a missing
+/// blob, so it answers `BLOB_UPLOAD_INVALID` rather than `BLOB_UNKNOWN`.
+async fn open_upload_part(state: &OciState, upload_id: Uuid, part_id: Uuid) -> Result<BlobStream> {
     state
         .storage
-        .get_blob(&upload_part_key(upload_id, part_id))
+        .get_blob_stream(&upload_part_key(upload_id, part_id))
         .await
         .map_err(|e| match e {
             BlobStoreError::NotFound(_) => OciError::Oci(
@@ -747,14 +823,27 @@ async fn read_upload_part(state: &OciState, upload_id: Uuid, part_id: Uuid) -> R
 }
 
 /// The bytes read back must be exactly the bytes the session committed.
-fn check_staged_len(upload_id: Uuid, held: usize, staged_len: i64) -> Result<()> {
-    if held as i64 == staged_len {
-        return Ok(());
-    }
-    Err(OciError::Oci(
+fn staged_len_mismatch(upload_id: Uuid, held: i64, staged_len: i64) -> OciError {
+    OciError::Oci(
         OciCode::BlobUploadInvalid,
         format!("upload {upload_id} holds {held} of the {staged_len} bytes it recorded"),
-    ))
+    )
+}
+
+/// A completed upload is always stored as SHA-256, so any other digest the
+/// client names could never match; refusing it up front also keeps it from
+/// naming the key a write goes to.
+fn check_sha256_digest(digest: &str) -> Result<&str> {
+    let well_formed = digest.strip_prefix("sha256:").is_some_and(|hex| {
+        hex.len() == 64 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    });
+    if well_formed {
+        Ok(digest)
+    } else {
+        Err(OciError::digest_invalid(format!(
+            "unsupported digest {digest}: expected sha256:<64 lowercase hex>"
+        )))
+    }
 }
 
 #[cfg(test)]
@@ -781,12 +870,23 @@ mod tests {
     }
 
     #[test]
-    fn assembled_length_must_match_the_committed_offset() {
-        let id = Uuid::new_v4();
-        assert!(check_staged_len(id, 5, 5).is_ok());
-        assert!(matches!(
-            check_staged_len(id, 0, 5),
-            Err(OciError::Oci(OciCode::BlobUploadInvalid, _))
-        ));
+    fn only_a_sha256_digest_can_name_a_completed_upload() {
+        let good = sha256_of(b"layer");
+        assert!(check_sha256_digest(&good).is_ok());
+        for bad in [
+            "sha512:abcd",
+            "sha256:ABCD",
+            "uploads:x:y",
+            &good[..good.len() - 1],
+            &good.to_uppercase(),
+        ] {
+            assert!(
+                matches!(
+                    check_sha256_digest(bad),
+                    Err(OciError::Oci(OciCode::DigestInvalid, _))
+                ),
+                "{bad}"
+            );
+        }
     }
 }
