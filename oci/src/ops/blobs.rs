@@ -336,7 +336,7 @@ pub struct ChunkResult {
 /// remove the ceiling and is a follow-up.
 pub const MAX_UPLOAD_TOTAL_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GiB
 
-/// How long an upload session may stay open before the startup sweep treats it
+/// How long an upload session may stay open before the abandoned-upload sweep treats it
 /// as abandoned and removes it with its staged chunks. A layer push takes
 /// minutes; a day leaves room for any real one.
 const ABANDONED_UPLOAD_HOURS: i32 = 24;
@@ -378,14 +378,16 @@ async fn delete_upload_parts(state: &OciState, upload_id: Uuid, part_ids: &[Uuid
     }
 }
 
-/// Delete a session and then its staged chunks; `false` when there was no such
-/// session. The row goes first and hands back its chunk list in the same
-/// statement, so a chunk a racing PATCH commits is either in that list or
-/// refused by its own conditional update (which then removes it), never
-/// stranded.
+/// Delete a session and then its chunks, committed and staged; `false` when
+/// there was no such session. The row goes first and hands back its chunk list
+/// in the same statement, so a chunk a racing PATCH commits is either in that
+/// list or refused by its own conditional update (which then removes it), never
+/// stranded. A staged chunk whose replica died before committing it is in the
+/// list too.
 async fn remove_session(state: &OciState, repository: &str, upload_id: Uuid) -> Result<bool> {
     let part_ids: Option<Vec<Uuid>> = sqlx::query_scalar(
-        "DELETE FROM oci_uploads WHERE uuid = $1 AND repository = $2 RETURNING part_ids",
+        "DELETE FROM oci_uploads WHERE uuid = $1 AND repository = $2
+         RETURNING part_ids || staged_part_ids",
     )
     .bind(upload_id)
     .bind(repository)
@@ -399,7 +401,7 @@ async fn remove_session(state: &OciState, repository: &str, upload_id: Uuid) -> 
 }
 
 /// Abandon a session, removing its staged chunks now instead of leaving them
-/// for the startup sweep.
+/// for the abandoned-upload sweep.
 pub async fn cancel_upload(state: &OciState, repository: &str, upload_id: Uuid) -> Result<()> {
     if !remove_session(state, repository, upload_id).await? {
         return Err(OciError::upload_unknown("upload session not found"));
@@ -408,13 +410,13 @@ pub async fn cancel_upload(state: &OciState, repository: &str, upload_id: Uuid) 
 }
 
 /// Remove sessions open longer than [`ABANDONED_UPLOAD_HOURS`], with their
-/// staged chunks. Runs at startup beside the blob reclaim sweep: a client that
-/// never finishes or cancels an upload would otherwise leave its chunks in
-/// storage for good.
+/// chunks, committed and staged. The server runs it at startup and hourly (the
+/// artifact registry at startup): a client that never finishes or cancels an
+/// upload would otherwise leave its chunks in storage for good.
 pub async fn sweep_abandoned_uploads(state: &OciState) {
     let abandoned: Vec<(Uuid, Vec<Uuid>)> = match sqlx::query_as(
         "DELETE FROM oci_uploads WHERE created_at < now() - make_interval(hours => $1)
-         RETURNING uuid, part_ids",
+         RETURNING uuid, part_ids || staged_part_ids",
     )
     .bind(ABANDONED_UPLOAD_HOURS)
     .fetch_all(&state.pool)
@@ -498,19 +500,30 @@ pub async fn append_chunk(
         return Err(abort_oversized(state, repository, upload_id).await);
     }
 
+    // Recorded as staged before the object is written: the store cannot be listed, so an object
+    // no row names could never be found again if this replica died before committing it. Removing
+    // the session deletes staged chunks along with committed ones.
     let part_id = Uuid::new_v4();
-    state
+    stage_part(state, repository, upload_id, part_id).await?;
+    if let Err(e) = state
         .storage
         .put_blob(&upload_part_key(upload_id, part_id), chunk)
-        .await?;
+        .await
+    {
+        unstage_part(state, upload_id, part_id).await;
+        return Err(e.into());
+    }
 
     loop {
         // A database error here leaves the staged object in place: the update
         // may have committed with only the reply lost, and deleting a committed
-        // chunk would corrupt the session. At worst the object is stray storage.
+        // chunk would corrupt the session. The id stays staged, so the object
+        // goes when the session does.
         let committed: Option<i64> = sqlx::query_scalar(
             "UPDATE oci_uploads
-                SET offset_bytes = offset_bytes + $1, part_ids = array_append(part_ids, $2)
+                SET offset_bytes = offset_bytes + $1,
+                    part_ids = array_append(part_ids, $2),
+                    staged_part_ids = array_remove(staged_part_ids, $2)
               WHERE uuid = $3 AND repository = $4 AND offset_bytes = $5
              RETURNING offset_bytes",
         )
@@ -543,7 +556,46 @@ pub async fn append_chunk(
             }
         };
         delete_upload_parts(state, upload_id, &[part_id]).await;
+        unstage_part(state, upload_id, part_id).await;
         return Err(refusal);
+    }
+}
+
+/// Record `part_id` as staged on the session before its object is written. Fails
+/// when the session is gone, so nothing is written for it.
+async fn stage_part(
+    state: &OciState,
+    repository: &str,
+    upload_id: Uuid,
+    part_id: Uuid,
+) -> Result<()> {
+    let staged = sqlx::query(
+        "UPDATE oci_uploads SET staged_part_ids = array_append(staged_part_ids, $1)
+          WHERE uuid = $2 AND repository = $3",
+    )
+    .bind(part_id)
+    .bind(upload_id)
+    .bind(repository)
+    .execute(&state.pool)
+    .await?;
+    if staged.rows_affected() == 0 {
+        return Err(OciError::upload_unknown("upload session not found"));
+    }
+    Ok(())
+}
+
+/// Forget a staged chunk whose object was never written or has been removed. Best
+/// effort: a leftover id only costs a delete of a missing object later.
+async fn unstage_part(state: &OciState, upload_id: Uuid, part_id: Uuid) {
+    if let Err(e) = sqlx::query(
+        "UPDATE oci_uploads SET staged_part_ids = array_remove(staged_part_ids, $1) WHERE uuid = $2",
+    )
+    .bind(part_id)
+    .bind(upload_id)
+    .execute(&state.pool)
+    .await
+    {
+        tracing::warn!("could not unstage chunk {part_id} of upload {upload_id}: {e}");
     }
 }
 

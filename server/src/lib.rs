@@ -460,12 +460,23 @@ where
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
     // and nothing else ever revisits a stranded tombstone. Upload sessions a client
-    // abandoned a day or more ago go in the same pass, with their staged chunks.
+    // abandoned a day or more ago are removed with their staged chunks, at boot and
+    // then hourly on one replica: a long-lived replica would otherwise hold them
+    // until it next restarts.
     {
+        const ABANDONED_UPLOAD_SWEEP: nasiko_leader::LockKey =
+            nasiko_leader::LockKey::named("oci.abandoned_upload_sweep");
         let sweep_state = oci_state.clone();
+        let db = state.db.clone();
         tokio::spawn(async move {
             nasiko_oci::ops::blobs::sweep_pending_blob_gc(&sweep_state).await;
-            nasiko_oci::ops::blobs::sweep_abandoned_uploads(&sweep_state).await;
+            nasiko_leader::every(
+                db,
+                ABANDONED_UPLOAD_SWEEP,
+                std::time::Duration::from_secs(3600),
+                || nasiko_oci::ops::blobs::sweep_abandoned_uploads(&sweep_state),
+            )
+            .await;
         });
     }
     let oci_pull_limiter = RateLimiter::new(&rate_limits, "oci-agent", 300, minute);

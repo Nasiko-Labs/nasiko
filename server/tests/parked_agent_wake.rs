@@ -22,8 +22,8 @@ use nasiko_runtime::{
     RuntimeError, RuntimeState,
 };
 use nasiko_server::agent_resolver::{Caller, ResolveError, resolve_target};
-use nasiko_server::agent_wake::AgentWake;
 use nasiko_server::agent_wake::parked::{ParkedAgentWake, WakeDeps, WorkloadDeployer};
+use nasiko_server::agent_wake::{AGENT_LOCK_KEY_SQL, AgentWake};
 use nasiko_server::agents::catalog_deploy;
 use serde_json::json;
 use serial_test::serial;
@@ -332,15 +332,21 @@ async fn deployment_statuses(server: &common::TestServer, agent: Uuid) -> Vec<St
     .expect("read deployments")
 }
 
-/// Advisory locks held in the test database: a wake's lock must not outlive its transaction.
-/// Single-key advisory locks held, the kind the agent lock is (`objsubid` 1). The two-key kind
-/// (`objsubid` 2) is `nasiko_leader`'s, which a leader holds for its whole tenure by design.
-async fn advisory_locks_held(db: &PgPool) -> i64 {
-    sqlx::query_scalar(
-        "SELECT count(*) FROM pg_locks \
+/// How many sessions hold `agent`'s lock: a wake's lock must not outlive its transaction.
+///
+/// That one key only (a single-key lock's 64 bits are `classid` high and `objid` low): background
+/// work in the test server (the reaper, erasure retries, `nasiko_leader`'s leaders) takes advisory
+/// locks of its own at any moment, and counting every lock made these assertions flaky.
+async fn agent_locks_held(db: &PgPool, agent: Uuid) -> i64 {
+    sqlx::query_scalar(&format!(
+        "WITH k AS (SELECT {AGENT_LOCK_KEY_SQL} AS key) \
+         SELECT count(*) FROM pg_locks, k \
          WHERE locktype = 'advisory' AND granted AND objsubid = 1 \
-           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())",
-    )
+           AND classid = ((k.key >> 32) & 4294967295)::oid \
+           AND objid = (k.key & 4294967295)::oid \
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
+    ))
+    .bind(agent.to_string())
     .fetch_one(db)
     .await
     .expect("read pg_locks")
@@ -529,7 +535,12 @@ async fn a_parked_agent_whose_missing_workload_cannot_be_deployed_is_refused_and
         status_and_fresh_stamp(&server, agent).await,
         ("parked".to_owned(), false)
     );
-    assert_eq!(advisory_locks_held(&server.db).await, 0);
+    // The failed wake's undo re-parks in the background under the agent's lock
+    // (`ParkAgainUnlessWoken`), so the lock is released shortly after the refusal, not at it.
+    eventually("the failed wake's lock to be released", || async {
+        agent_locks_held(&server.db, agent).await == 0
+    })
+    .await;
     server.cleanup().await;
 }
 
@@ -585,7 +596,7 @@ async fn a_wake_dropped_mid_flight_releases_the_lock_and_keeps_the_row() {
     })
     .await;
     assert_eq!(
-        advisory_locks_held(&server.db).await,
+        agent_locks_held(&server.db, agent).await,
         1,
         "precondition: the wake holds the agent's lock"
     );
@@ -594,7 +605,7 @@ async fn a_wake_dropped_mid_flight_releases_the_lock_and_keeps_the_row() {
     assert!(waking.await.unwrap_err().is_cancelled());
 
     eventually("the dropped wake to release the agent's lock", || async {
-        advisory_locks_held(&server.db).await == 0
+        agent_locks_held(&server.db, agent).await == 0
     })
     .await;
     assert_eq!(

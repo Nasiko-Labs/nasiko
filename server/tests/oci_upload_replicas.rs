@@ -178,6 +178,74 @@ async fn cancel_on_another_replica_removes_staged_chunks() {
     server.cleanup().await;
 }
 
+/// A replica that died between writing a chunk and committing it leaves the chunk staged on the
+/// session row and its object in the store; removing the session must find and delete it, since
+/// the store cannot be listed.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_chunk_staged_by_a_replica_that_died_goes_with_its_session() {
+    let server = common::TestServer::start().await;
+    let a = replica(&server).await;
+    let repo = repository();
+    let upload_id = ops::initiate_upload(&a, &repo).await.unwrap();
+
+    // What `append_chunk` does before its commit: stage the id, then write the object.
+    let orphan = Uuid::new_v4();
+    sqlx::query(
+        "UPDATE oci_uploads SET staged_part_ids = array_append(staged_part_ids, $1) \
+         WHERE uuid = $2",
+    )
+    .bind(orphan)
+    .bind(upload_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    a.storage
+        .put_blob(&part_key(upload_id, orphan), Bytes::from_static(b"lost"))
+        .await
+        .unwrap();
+    // A committed chunk from a later, healthy PATCH beside it.
+    ops::append_chunk(&a, &repo, upload_id, Bytes::from_static(b"kept"), None)
+        .await
+        .unwrap();
+    let committed = part_ids(&server, upload_id).await;
+    assert_eq!(committed.len(), 1, "the orphan was never committed");
+
+    ops::cancel_upload(&a, &repo, upload_id).await.unwrap();
+
+    assert!(!a.storage.blob_exists(&part_key(upload_id, orphan)).await);
+    assert!(
+        !a.storage
+            .blob_exists(&part_key(upload_id, committed[0]))
+            .await
+    );
+    server.cleanup().await;
+}
+
+/// A committed chunk leaves the staged list, so only a chunk that never committed is in it.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_committed_chunk_is_no_longer_staged() {
+    let server = common::TestServer::start().await;
+    let a = replica(&server).await;
+    let repo = repository();
+    let upload_id = ops::initiate_upload(&a, &repo).await.unwrap();
+
+    ops::append_chunk(&a, &repo, upload_id, Bytes::from_static(b"chunk"), None)
+        .await
+        .unwrap();
+
+    let staged: Vec<Uuid> =
+        sqlx::query_scalar("SELECT staged_part_ids FROM oci_uploads WHERE uuid = $1")
+            .bind(upload_id)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert!(staged.is_empty(), "{staged:?}");
+    assert_eq!(part_ids(&server, upload_id).await.len(), 1);
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial_test::serial]
 async fn startup_sweep_removes_abandoned_sessions_and_their_chunks() {
