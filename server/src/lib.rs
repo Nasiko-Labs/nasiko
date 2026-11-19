@@ -458,11 +458,13 @@ where
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
-    // and nothing else ever revisits a stranded tombstone.
+    // and nothing else ever revisits a stranded tombstone. Upload sessions a client
+    // abandoned a day or more ago go in the same pass, with their staged chunks.
     {
         let sweep_state = oci_state.clone();
         tokio::spawn(async move {
             nasiko_oci::ops::blobs::sweep_pending_blob_gc(&sweep_state).await;
+            nasiko_oci::ops::blobs::sweep_abandoned_uploads(&sweep_state).await;
         });
     }
     let oci_pull_limiter = RateLimiter::new(&rate_limits, "oci-agent", 300, minute);

@@ -482,7 +482,8 @@ pub enum BlobStoreError {
 /// One implementation per storage protocol, selected once at the composition
 /// root and handed to `AppState` — exactly as [`ContainerRuntime`] is. This
 /// crate and `nasiko-oci` provide the S3-compatible one (RustFS/MinIO/AWS/any
-/// S3 API); an edition that offers more wires its own. Keys are digests; the
+/// S3 API); an edition that offers more wires its own. Keys are digests, plus
+/// the OCI registry's staged upload chunks (`uploads:<upload>:<part>`); the
 /// store never interprets them beyond a shared prefix, so the same bucket
 /// layout is readable by either backend and a migration is a plain object
 /// copy.

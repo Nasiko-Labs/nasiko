@@ -115,7 +115,7 @@ pub fn router(state: OciState) -> Router {
                 .put(blobs::complete_upload)
                 // end-13: resume a partial upload after losing local bookkeeping.
                 .get(blobs::upload_status)
-                // Abandon a session and free its buffer immediately.
+                // Abandon a session and remove its staged chunks immediately.
                 .delete(blobs::cancel_upload),
         )
         .route("/v2/{owner}/{repo}/tags/list", get(tags::list_tags))
