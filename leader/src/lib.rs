@@ -17,9 +17,7 @@
 use std::future::Future;
 use std::time::Duration;
 
-use sqlx::PgPool;
-use sqlx::pool::PoolConnection;
-use sqlx::postgres::Postgres;
+use sqlx::{Connection, PgConnection, PgPool};
 
 /// The first half of every key: "nask".
 const NAMESPACE: i32 = 0x6e61_736b;
@@ -57,11 +55,11 @@ const fn fnv1a_32(bytes: &[u8]) -> u32 {
     hash
 }
 
-/// A held lock. Releasing it is [`Self::release`]; dropping it without that returns its connection
-/// to the pool still holding the lock, so it closes the connection instead, which releases it.
+/// A held lock, on a connection of its own. Released by [`Self::release`], or by dropping it, which
+/// closes the connection and so ends the session that holds the lock.
 pub struct Held {
     key: LockKey,
-    conn: Option<PoolConnection<Postgres>>,
+    conn: Option<PgConnection>,
 }
 
 impl Held {
@@ -72,26 +70,25 @@ impl Held {
     }
 }
 
-impl Drop for Held {
-    fn drop(&mut self) {
-        if let Some(conn) = self.conn.take() {
-            // Not released: the session must end, or the pooled connection keeps the lock.
-            drop(conn.detach());
-        }
-    }
-}
-
 /// Take `key` if no other session holds it. `Ok(None)` when another replica has it.
+///
+/// The lock is taken on a new connection made with the pool's settings, not one of the pool's:
+/// an advisory lock belongs to the session that took it, so its connection is pinned for as long
+/// as the lock is held (a migration run, a leader's whole tenure). Drawn from the pool, that would
+/// take a connection away from requests for that long, and with a pool of one (tests) the work it
+/// guards could never get a connection at all.
 pub async fn try_lock(pool: &PgPool, key: LockKey) -> Result<Option<Held>, sqlx::Error> {
-    // An advisory lock belongs to the session that took it, so it is taken and released on one
-    // pinned connection: on two pooled connections the release would miss and the lock leak.
-    let mut conn = pool.acquire().await?;
+    let mut conn = PgConnection::connect_with(&pool.connect_options()).await?;
     let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1, $2)")
         .bind(NAMESPACE)
         .bind(key.id)
-        .fetch_one(&mut *conn)
+        .fetch_one(&mut conn)
         .await?;
-    Ok(got.then_some(Held {
+    if !got {
+        let _ = conn.close().await;
+        return Ok(None);
+    }
+    Ok(Some(Held {
         key,
         conn: Some(conn),
     }))
@@ -179,7 +176,7 @@ where
 /// `held` back if its session is still alive (and so still holds the lock), else `None`.
 async fn still_held(mut held: Held) -> Option<Held> {
     let conn = held.conn.as_mut()?;
-    match sqlx::query("SELECT 1").execute(&mut **conn).await {
+    match sqlx::query("SELECT 1").execute(&mut *conn).await {
         Ok(_) => Some(held),
         Err(e) => {
             tracing::warn!(lock = held.key.name, error = %e, "lost the connection holding this lock; no longer leading");
@@ -188,19 +185,21 @@ async fn still_held(mut held: Held) -> Option<Held> {
     }
 }
 
-async fn unlock(mut conn: PoolConnection<Postgres>, key: LockKey) {
+/// Unlock, then close the connection; closing ends the session, which releases the lock even if
+/// the unlock failed.
+async fn unlock(mut conn: PgConnection, key: LockKey) {
     let released: Result<bool, _> = sqlx::query_scalar("SELECT pg_advisory_unlock($1, $2)")
         .bind(NAMESPACE)
         .bind(key.id)
-        .fetch_one(&mut *conn)
+        .fetch_one(&mut conn)
         .await;
     if !matches!(released, Ok(true)) {
         tracing::warn!(
             lock = key.name,
             "advisory lock not released; closing its connection"
         );
-        drop(conn.detach());
     }
+    let _ = conn.close().await;
 }
 
 #[cfg(test)]
