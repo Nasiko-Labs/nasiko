@@ -651,7 +651,7 @@ pub(crate) async fn update_llm_config(
     Json(req): Json<AttachLlmConfigRequest>,
 ) -> impl IntoResponse {
     let response = apply_llm_config_update(&state, claims, agent_id, req).await;
-    state.llm_config_cache.invalidate(agent_id);
+    state.agent_llm_config_changed(agent_id);
     response
 }
 
@@ -839,7 +839,7 @@ pub(crate) async fn delete_llm_config(
     {
         return db_error("delete", e);
     }
-    state.llm_config_cache.invalidate(agent_id);
+    state.agent_llm_config_changed(agent_id);
     ApiResponse::ok(json!(null), "Agent LLM config removed successfully").into_response()
 }
 

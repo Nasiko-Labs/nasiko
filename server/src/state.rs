@@ -42,6 +42,9 @@ pub struct AppState {
     pub sandbox: Arc<dyn SandboxProvider>,
     pub db: PgPool,
     pub redis: nasiko_redis::SharedRedis,
+    /// Tells other replicas what this one changed, and runs this one's handlers for theirs
+    /// (`invalidation`).
+    pub invalidations: crate::invalidation::Invalidations,
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
@@ -174,6 +177,60 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// After any `llm_configs` write: drop every cached resolution here and on every replica.
+    pub fn llm_configs_changed(&self) {
+        self.llm_config_cache.clear();
+        self.invalidations
+            .publish(crate::invalidation::topic::LLM_CONFIG);
+    }
+
+    /// After an agent's own LLM config binding changes: drop its cached resolution here and on
+    /// every replica.
+    pub fn agent_llm_config_changed(&self, agent_id: uuid::Uuid) {
+        self.llm_config_cache.invalidate(agent_id);
+        self.invalidations
+            .publish_key(crate::invalidation::topic::LLM_CONFIG, agent_id.to_string());
+    }
+
+    /// A build job was queued: wake the build worker here and on every replica. Latency only;
+    /// each worker's poll is the delivery guarantee.
+    pub async fn wake_build_worker(&self) {
+        let _ = self.build_tx.send(()).await;
+        self.invalidations
+            .publish(crate::invalidation::topic::BUILD_QUEUE);
+    }
+
+    /// A HITL request was resolved: wake the resume dispatcher here and on every replica.
+    /// Latency only; each dispatcher's poll is the delivery guarantee.
+    pub fn wake_hitl_resume(&self) {
+        let _ = self.hitl_resume_tx.try_send(());
+        self.invalidations
+            .publish(crate::invalidation::topic::HITL_RESUME);
+    }
+
+    /// What this replica does when another one publishes an OSS invalidation (the tool-search
+    /// handler is installed with its index, `mcp::search_sync`).
+    fn register_invalidation_handlers(&self) {
+        use crate::invalidation::{Invalidated, topic};
+        let cache = self.llm_config_cache.clone();
+        self.invalidations
+            .register(topic::LLM_CONFIG, move |what| match what {
+                Invalidated::Key(key) => match uuid::Uuid::parse_str(key) {
+                    Ok(agent_id) => cache.invalidate(agent_id),
+                    Err(_) => cache.clear(),
+                },
+                Invalidated::All => cache.clear(),
+            });
+        let build_tx = self.build_tx.clone();
+        self.invalidations.register(topic::BUILD_QUEUE, move |_| {
+            let _ = build_tx.try_send(());
+        });
+        let hitl_resume_tx = self.hitl_resume_tx.clone();
+        self.invalidations.register(topic::HITL_RESUME, move |_| {
+            let _ = hitl_resume_tx.try_send(());
+        });
+    }
+
     /// Whether agent messages carry the current date and time (`AGENT_CONTEXT_CURRENT_TIME`).
     pub fn agent_clock(&self) -> nasiko_types::agent_clock::AgentClock {
         nasiko_types::agent_clock::AgentClock::new(self.config.agent_current_time)
@@ -503,6 +560,9 @@ impl AppState {
         if let Err(e) = mcp.search_index.rebuild(&db).await {
             tracing::warn!(%e, "initial search index build failed — search will return empty until next sync");
         }
+        // From here on, a rebuild on this replica also has every other replica rebuild.
+        let invalidations = crate::invalidation::Invalidations::start(redis.clone());
+        crate::mcp::search_sync::install(&mut mcp, db.clone(), &invalidations);
 
         let coding_agent_ingest = crate::coding_agent_ingest_guard::IngestGuard::new(
             &config.coding_agent_ingest,
@@ -515,6 +575,7 @@ impl AppState {
             sandbox,
             db,
             redis,
+            invalidations,
             oci_storage,
             usage_tracker,
             resource_stats,
@@ -559,6 +620,8 @@ impl AppState {
             ui_mounts: &[crate::auth::UiMount::ROOT],
             shutdown: crate::shutdown::ShutdownSignal::new(),
         };
+
+        state.register_invalidation_handlers();
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();

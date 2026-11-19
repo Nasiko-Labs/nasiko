@@ -40,6 +40,7 @@ pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
 pub mod hitl;
+pub mod invalidation;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;

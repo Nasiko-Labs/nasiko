@@ -280,6 +280,6 @@ window is not converted into an immediate reset — the stuck-job sweep covers i
 2. Write an executor function (async, takes `AppState` or individual fields).
 3. Add a match arm in `execute_claimed_job` that calls the executor.
 4. In the HTTP handler that triggers the build: `INSERT INTO build_jobs` then
-   `state.build_tx.send(()).await`.
+   `state.wake_build_worker().await` (also wakes the workers on the other replicas).
 
 No changes needed to the worker loop itself.
