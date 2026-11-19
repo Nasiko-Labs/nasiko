@@ -642,6 +642,8 @@ where
         // Outermost, so the request's Sentry transaction is the parent of the span above. A
         // pass-through unless this server reports to Sentry (see `error_reporting`).
         .layer(middleware::from_fn(error_reporting::trace_requests))
+        // The server's in-flight count, which its autoscaler reads (`telemetry::server_load`).
+        .layer(middleware::from_fn(telemetry::server_load::track))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error

@@ -3,6 +3,7 @@ pub mod agent_request;
 mod context_report;
 mod flow_span;
 pub mod genai;
+pub mod server_load;
 mod setup;
 mod tool_result_savings;
 

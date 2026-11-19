@@ -240,6 +240,7 @@ anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
 http = "1"
+http-body = "1"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }

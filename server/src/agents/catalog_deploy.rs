@@ -236,15 +236,41 @@ fn join_or_start(
 /// Deploys a parked agent's workload and, once the runtime accepted it, refreshes its card in the
 /// background: the image may be newer than the card the catalog stores (a deploy that parked an
 /// agent fetched none). The cause of a failure is logged; the message carries no internal detail.
+///
+/// The dedupe in [`serve`] covers one replica. Across replicas the deploy runs under a lock of its
+/// own, held until the deploy returns (it can outlast the wake that asked for it): a second
+/// replica's request waits for it, then finds the workload there and deploys nothing.
 async fn deploy_missing_workload(state: &AppState, agent_id: Uuid) -> DeployOutcome {
+    let db_error = |e: sqlx::Error| logged(agent_id, &CatalogDeployError::Db(e));
+    let mut tx = state.db.begin().await.map_err(db_error)?;
+    sqlx::query("SELECT set_config('lock_timeout', $1, true)")
+        .bind(format!("{}s", state.config.agent_startup_budget_secs))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('nasiko.deploy_missing:' || $1))")
+        .bind(agent_id.to_string())
+        .execute(&mut *tx)
+        .await
+        .map_err(db_error)?;
+    if state
+        .runtime
+        .status(&nasiko_runtime::ContainerId::from_uuid(agent_id))
+        .await
+        .is_ok()
+    {
+        tracing::info!(%agent_id, "agent wake: another replica deployed the missing workload");
+        return Ok(());
+    }
     let agent = match load(&state.db, agent_id).await {
         Ok(Some(agent)) => agent,
         Ok(None) => return Err("the agent no longer exists".to_owned()),
-        Err(e) => return Err(logged(agent_id, &CatalogDeployError::Db(e))),
+        Err(e) => return Err(db_error(e)),
     };
     let deployed = deploy(state, &agent)
         .await
         .map_err(|e| logged(agent_id, &e))?;
+    let _ = tx.commit().await;
     tracing::info!(%agent_id, image = %deployed.image, "agent wake: deployed a parked agent's missing workload");
     tokio::spawn(crate::agents::utils::fetch_agent_card_with_retry(
         state.db.clone(),

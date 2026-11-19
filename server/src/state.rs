@@ -26,6 +26,14 @@ const BOOT_SEED_LOCK: LockKey = LockKey::named("server.boot_seed");
 const STARTUP_RECONCILE_LOCK: LockKey = LockKey::named("server.startup_reconcile");
 /// The hourly materialized-view refresh, on one replica per period.
 const MATVIEW_REFRESH_LOCK: LockKey = LockKey::named("server.matview_refresh");
+/// Held while a replica migrates (both editions' migrations, and the extensions before them).
+///
+/// Taken by polling, never by a blocking `pg_advisory_lock`: a session waiting inside a statement
+/// holds a snapshot, and a `CREATE INDEX CONCURRENTLY` in the holder's migration waits for every
+/// older snapshot to end, so a blocked waiter and the holder would wait on each other. sqlx's own
+/// migration lock is that blocking kind; under this one no other replica ever waits on it.
+pub const MIGRATIONS_LOCK: LockKey = LockKey::named("server.migrations");
+pub const MIGRATIONS_LOCK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -232,7 +240,11 @@ impl AppState {
         Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
     }
 
+    /// Runs under [`MIGRATIONS_LOCK`], so replicas starting together migrate one at a time.
     pub async fn run_migrations(db: &PgPool) {
+        let held = nasiko_leader::lock(db, MIGRATIONS_LOCK, MIGRATIONS_LOCK_POLL)
+            .await
+            .expect("could not take the migrations lock");
         ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
@@ -243,6 +255,7 @@ impl AppState {
         // and pricing-sync history always win. Code (not a migration) so price
         // updates ship with the binary.
         nasiko_observability::pricing::seed_model_pricing(db).await;
+        held.release().await;
     }
 
     /// `oci_storage` is received, not constructed, for the same reason `auth`

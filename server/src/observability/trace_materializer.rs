@@ -30,7 +30,6 @@ use chrono::{DateTime, Utc};
 use nasiko_observability::provider::SessionIdResolver;
 use nasiko_observability::{ObservabilityProvider, TraceUsageRow};
 use sqlx::PgPool;
-use tokio::time::MissedTickBehavior;
 
 /// How far back a pass ever looks. A cursor older than this (a fresh database's
 /// 2020 default, or one left behind by an outage) is read as this long ago:
@@ -45,6 +44,9 @@ const SETTLE_SECS: i64 = 30;
 const SEARCH_LIMIT: usize = 1000;
 
 /// Run the trace-usage materializer loop. Exits only on shutdown (task drop).
+///
+/// Runs on one replica (the leader for [`LOCK`]): the passes are idempotent, but each replica
+/// would otherwise search and fetch the same traces from Tempo.
 pub async fn run(
     db: PgPool,
     provider: Arc<dyn ObservabilityProvider>,
@@ -54,15 +56,11 @@ pub async fn run(
     max_window: Duration,
     batch_size: usize,
 ) {
-    let mut tick = tokio::time::interval(interval);
-    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
-
-    // Skip the immediate first tick to avoid startup load (same pattern as
-    // the materialized-view refresh in state.rs).
-    tick.tick().await;
-
-    loop {
-        tick.tick().await;
+    const LOCK: nasiko_leader::LockKey = nasiko_leader::LockKey::named("server.trace_materializer");
+    // Not at startup, to avoid startup load (same pattern as the materialized-view refresh in
+    // state.rs): the first pass waits a full interval.
+    tokio::time::sleep(interval).await;
+    nasiko_leader::every(db.clone(), LOCK, interval, || async {
         if let Err(error) = super::receipt_materializer::materialize_once(
             &db,
             provider.as_ref(),
@@ -84,7 +82,8 @@ pub async fn run(
         {
             tracing::warn!(error = %e, "trace_materializer: pass failed");
         }
-    }
+    })
+    .await;
 }
 
 /// The window one pass searches, `[start, end)`, or `None` when there is
