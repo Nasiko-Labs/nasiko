@@ -500,6 +500,11 @@ impl AppState {
             tracing::warn!(%e, "initial search index build failed — search will return empty until next sync");
         }
 
+        let coding_agent_ingest = crate::coding_agent_ingest_guard::IngestGuard::new(
+            &config.coding_agent_ingest,
+            &crate::rate_limit::RateLimitStore::Redis(redis.clone()),
+        );
+
         let state = Self {
             pricing,
             runtime,
@@ -516,9 +521,7 @@ impl AppState {
             flow_guard,
             flow_events,
             genai_metrics,
-            coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard::new(
-                &config.coding_agent_ingest,
-            ),
+            coding_agent_ingest,
             config: Arc::new(config),
             routing_engine,
             llm_backend: routing_backend,

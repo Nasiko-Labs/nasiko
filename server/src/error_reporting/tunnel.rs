@@ -17,7 +17,7 @@ use sentry::types::Dsn;
 use serde_json::json;
 
 use super::ErrorReportingConfig;
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{RateLimitStore, RateLimiter};
 
 /// A replay segment is the largest envelope the browser SDK sends; it compresses a few
 /// seconds of DOM changes and stays well under this.
@@ -47,6 +47,7 @@ struct BrowserSettings {
 pub fn router<S: Clone + Send + Sync + 'static>(
     config: &ErrorReportingConfig,
     http: reqwest::Client,
+    rate_limits: &RateLimitStore,
 ) -> Router<S> {
     let browser = config.browser_dsn.clone().map(|dsn| BrowserSettings {
         body: json!({ "data": {
@@ -65,7 +66,12 @@ pub fn router<S: Clone + Send + Sync + 'static>(
     let tunnel = Arc::new(Tunnel {
         browser,
         http,
-        limiter: RateLimiter::new(ENVELOPES_PER_MINUTE, Duration::from_secs(60)),
+        limiter: RateLimiter::new(
+            rate_limits,
+            "sentry-tunnel",
+            ENVELOPES_PER_MINUTE,
+            Duration::from_secs(60),
+        ),
     });
     Router::new()
         .route("/api/telemetry/config", get(browser_config))
@@ -102,7 +108,7 @@ async fn forward_envelope(State(tunnel): State<Arc<Tunnel>>, body: Bytes) -> Res
     if let Err(reason) = check_addressed_to(&body, &browser.dsn) {
         return error(StatusCode::BAD_REQUEST, "envelope_rejected", reason);
     }
-    if let Err(wait) = tunnel.limiter.check("global") {
+    if let Err(wait) = tunnel.limiter.check("global").await {
         let mut response = error(
             StatusCode::TOO_MANY_REQUESTS,
             "rate_limited",
@@ -200,7 +206,7 @@ mod tests {
             browser_dsn: browser_dsn.map(|d| d.parse().unwrap()),
             ..ErrorReportingConfig::disabled()
         };
-        router(&config, reqwest::Client::new())
+        router(&config, reqwest::Client::new(), &RateLimitStore::Local)
     }
 
     async fn call(
@@ -260,7 +266,7 @@ mod tests {
             logs: super::super::LogsLevel::Off,
             ..ErrorReportingConfig::disabled()
         };
-        let app = router(&config, reqwest::Client::new());
+        let app = router(&config, reqwest::Client::new(), &RateLimitStore::Local);
         let (_, body) = call(app, "GET", "/api/telemetry/config", String::new()).await;
         assert_eq!(body["data"]["workspace"], "t-123");
         assert_eq!(body["data"]["logs"], false);
