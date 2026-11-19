@@ -59,8 +59,5 @@ e2e/.sweep/
 # Storybook
 storybook-static/
 
-# Desktop app (desktop/README.md): the copied web build and electron-builder output.
-desktop/web/
-desktop/release/
 # Turbo's local cache (turbo.json).
 .turbo/

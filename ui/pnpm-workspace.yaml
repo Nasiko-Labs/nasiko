@@ -16,11 +16,9 @@ overrides:
   d3-scale>d3-format: 3.1.2
 
 # A dependency's install script runs only if it is decided here (pnpm 12 refuses an install with an undecided one).
-#   electron-winstaller  picks the 7-Zip binary the Windows desktop installer uses; npm ran it too
 #   esbuild              only re-checks its native binary, which its platform package already provides
 #   msw                  copies its worker into ui/public, which nothing serves (the app's copy is common/public)
 allowBuilds:
-  electron-winstaller: true
   esbuild: false
   msw: false
 

@@ -467,8 +467,6 @@ export default tseslint.config(
       'scripts/**',
       '*/scripts/**',
       '*/*/scripts/**',
-      // The desktop shell's build script (its .js sources are ignored above; this is .mjs).
-      'desktop/scripts/**',
       'vite.shared.ts',
       'vitest.config.ts',
       '**/vite.config.ts',
