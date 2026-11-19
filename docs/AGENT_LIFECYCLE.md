@@ -579,6 +579,10 @@ Test the full deploy flow locally before pushing to production:
 (`--password` only skips SSO, it does not take a value). In CI, sign in once on a machine with a
 terminal and make that session available to the job, or run the job with a TTY.
 
+Three wrong passwords in a row lock an account for 15 minutes. A refused sign-in never says why: an
+unknown name, a wrong password, a deactivated account and a locked account all answer the same
+`401 invalid credentials`. If you are sure of the password, wait 15 minutes and try again.
+
 ---
 
 ## Command Reference

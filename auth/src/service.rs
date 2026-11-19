@@ -339,11 +339,15 @@ impl AuthService for AuthServiceImpl {
 
         // Check lockout: 3 consecutive failures → locked for 15 minutes. Even a correct
         // password is refused until it ends, and a wrong one neither counts nor extends it.
+        let mut failures_before = row.failed_login_attempts;
         if let Some(locked_until) = row.locked_until {
             if Utc::now() < locked_until {
                 return Err(refused(LoginRefusal::Locked));
             }
-            // Lockout expired — clear it so the attempt proceeds.
+            // Lockout expired: clear it so the attempt proceeds, and count from zero: the
+            // stored count is the one that set the lock, so a typo after the wait would
+            // otherwise lock the account again at once.
+            failures_before = 0;
             let _ = sqlx::query(
                 "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
             )
@@ -353,7 +357,7 @@ impl AuthService for AuthServiceImpl {
         }
 
         if !password_ok {
-            let attempts = row.failed_login_attempts + 1;
+            let attempts = failures_before + 1;
             if attempts >= LOGIN_LOCKOUT_THRESHOLD {
                 let _ = sqlx::query(
                     "UPDATE users SET failed_login_attempts = $2, \

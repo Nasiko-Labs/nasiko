@@ -1602,3 +1602,25 @@ async fn a_correct_password_still_signs_in_and_clears_the_count() {
 
     server.cleanup().await;
 }
+
+#[tokio::test]
+#[serial]
+async fn a_wrong_password_after_the_lock_ends_counts_as_the_first() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let alice = create_alice(&server, admin["user_id"].as_str().unwrap()).await;
+
+    // A lock that has ended, with the count that set it still stored: the deadline moves into
+    // the past instead of the test sleeping.
+    set_lock(&server, &alice, 3, Some(-1)).await;
+    assert_eq!(lock_state(&server, &alice).await.0, 3);
+
+    assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+    assert_eq!(
+        lock_state(&server, &alice).await,
+        (1, None),
+        "one typo after the wait is the first failure, not a fourth"
+    );
+
+    server.cleanup().await;
+}
