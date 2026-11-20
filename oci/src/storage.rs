@@ -378,25 +378,55 @@ impl BlobWriter for S3BlobWriter<'_> {
             .send()
             .await
             .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
+        // Completed: nothing left for `Drop` to abort.
+        self.upload_id = None;
         Ok(self.size)
     }
 
-    async fn abort(self: Box<Self>) {
-        let Some(upload_id) = &self.upload_id else {
+    async fn abort(mut self: Box<Self>) {
+        if let Some(upload_id) = self.upload_id.take() {
+            abort_multipart(
+                self.storage.client.clone(),
+                self.storage.bucket.clone(),
+                self.key.clone(),
+                upload_id,
+            )
+            .await;
+        }
+    }
+}
+
+/// A writer dropped before it finished — its request cancelled when the client
+/// went away, or a failed `finish` — aborts its multipart upload, since S3 keeps
+/// an incomplete upload's parts (and bills them) until something aborts it.
+impl Drop for S3BlobWriter<'_> {
+    fn drop(&mut self) {
+        let Some(upload_id) = self.upload_id.take() else {
             return;
         };
-        if let Err(e) = self
-            .storage
-            .client
-            .abort_multipart_upload()
-            .bucket(&self.storage.bucket)
-            .key(&self.key)
-            .upload_id(upload_id)
-            .send()
-            .await
-        {
-            tracing::warn!(key = %self.key, error = %s3_error(&e), "abort multipart write");
-        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(key = %self.key, "multipart write dropped outside a runtime; parts left");
+            return;
+        };
+        runtime.spawn(abort_multipart(
+            self.storage.client.clone(),
+            self.storage.bucket.clone(),
+            self.key.clone(),
+            upload_id,
+        ));
+    }
+}
+
+async fn abort_multipart(client: Client, bucket: String, key: String, upload_id: String) {
+    if let Err(e) = client
+        .abort_multipart_upload()
+        .bucket(bucket)
+        .key(&key)
+        .upload_id(upload_id)
+        .send()
+        .await
+    {
+        tracing::warn!(key = %key, error = %s3_error(&e), "abort multipart write");
     }
 }
 
@@ -425,5 +455,52 @@ mod tests {
         assert!(parse_force_path_style(Some("garbage")));
         assert!(!parse_force_path_style(Some("false")));
         assert!(!parse_force_path_style(Some("0")));
+    }
+}
+
+/// Against a real S3 endpoint (the local RustFS is enough):
+/// `cargo test -p nasiko-oci --lib -- --ignored dropped_writer`
+#[cfg(test)]
+mod s3_tests {
+    use super::*;
+
+    async fn open_uploads(storage: &S3Storage, key: &str) -> usize {
+        storage
+            .client
+            .list_multipart_uploads()
+            .bucket(&storage.bucket)
+            .prefix(key)
+            .send()
+            .await
+            .expect("list multipart uploads")
+            .uploads
+            .unwrap_or_default()
+            .len()
+    }
+
+    #[tokio::test]
+    #[ignore = "needs an S3 endpoint (S3_* env)"]
+    async fn a_dropped_writer_aborts_its_multipart_upload() {
+        let storage = S3Storage::from_env("nasiko-test-artifacts".into()).await;
+        storage.ensure_bucket(false).await.unwrap();
+        let digest = format!("test:dropped-{}", std::process::id());
+        let key = S3Storage::blob_key(&digest);
+
+        let mut writer = storage.blob_writer(&digest).await.unwrap();
+        writer
+            .write(Bytes::from(vec![7u8; MULTIPART_PART_BYTES + 1]))
+            .await
+            .unwrap();
+        assert_eq!(open_uploads(&storage, &key).await, 1, "a part was uploaded");
+
+        drop(writer);
+        for _ in 0..50 {
+            if open_uploads(&storage, &key).await == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(open_uploads(&storage, &key).await, 0);
+        assert!(!storage.blob_exists(&digest).await);
     }
 }
