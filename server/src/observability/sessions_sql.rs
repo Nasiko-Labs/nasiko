@@ -129,6 +129,10 @@ impl ListLevel {
 #[derive(Debug, Clone)]
 pub struct SessionListQuery {
     pub caller: Option<uuid::Uuid>,
+    /// The signed-in caller, always — unlike `caller`, never `None` for a superuser. Rows a
+    /// superuser can list but does not own still get their content redacted (see `Row::into_summary`):
+    /// a session's own conversation belongs to the person who had it, not to whoever can see the row exists.
+    pub viewer: uuid::Uuid,
     pub start: DateTime<Utc>,
     pub end: Option<DateTime<Utc>>,
     pub status: Option<StatusFilter>,
@@ -159,6 +163,7 @@ pub fn decode_cursor(s: &str) -> Option<(DateTime<Utc>, String)> {
 #[derive(sqlx::FromRow)]
 struct Row {
     session_id: String,
+    user_id: uuid::Uuid,
     agent_name: Option<String>,
     created_at: DateTime<Utc>,
     trace_count: Option<i64>,
@@ -234,7 +239,14 @@ fn prefer_receipt<T>(is_coding: bool, receipt: Option<T>, traced: Option<T>) -> 
 }
 
 impl Row {
-    fn into_summary(self) -> SessionSummary {
+    /// `viewer` decides only whether this row's own conversation content is readable — a
+    /// superuser still gets every row (ops/cost triage needs the whole fleet), but `first_input`/
+    /// `last_output` are what someone actually said, and that belongs to the session's own user,
+    /// not to anyone who can see the row exists. Non-superusers never reach this with someone
+    /// else's row (`scope_clause` already restricts them to `user_id = caller`), so this is a no-op
+    /// for them; it only ever redacts rows a superuser's unfiltered query pulled in.
+    fn into_summary(self, viewer: uuid::Uuid) -> SessionSummary {
+        let mine = self.user_id == viewer;
         let status = derive_status(&self);
         let is_coding = self.turn_count.unwrap_or(0) > 0;
         let started = prefer_receipt(is_coding, self.turn_started, self.first_started)
@@ -257,8 +269,8 @@ impl Row {
             start_time: Some(super::service::fmt_ts(started)),
             end_time: Some(super::service::fmt_ts(ended)),
             duration_ms: (duration_ms > 0).then_some(duration_ms),
-            first_input: self.first_input,
-            last_output: self.last_output,
+            first_input: mine.then_some(self.first_input).flatten(),
+            last_output: mine.then_some(self.last_output).flatten(),
             token_usage: TokenUsageSummary {
                 total: total_tokens.filter(|&t| t > 0).map(|t| t as u64),
             },
@@ -399,6 +411,7 @@ WITH page AS (
      LIMIT $7
 )
 SELECT p.session_id,
+       p.user_id,
        COALESCE(a.name, {ran_agent}) AS agent_name,
        p.created_at,
        tr.trace_count,
@@ -555,7 +568,10 @@ SELECT p.session_id,
         .flatten();
 
     let matching_count = matching_count(db, q, &scope).await?;
-    let sessions: Vec<SessionSummary> = rows.into_iter().map(Row::into_summary).collect();
+    let sessions: Vec<SessionSummary> = rows
+        .into_iter()
+        .map(|row| row.into_summary(q.viewer))
+        .collect();
     let successful_agents = sessions.iter().filter(|s| s.num_traces.is_some()).count();
     let total_agents = total_agents(db).await;
 
@@ -618,6 +634,7 @@ mod tests {
     fn row(flow: i64, failed: i64, running: i64) -> Row {
         Row {
             session_id: "s".into(),
+            user_id: uuid::Uuid::nil(),
             agent_name: None,
             created_at: Utc::now(),
             trace_count: None,
@@ -722,7 +739,7 @@ mod tests {
             turn_ended: Some(end),
             ..coding_row(4, false)
         }
-        .into_summary();
+        .into_summary(uuid::Uuid::nil());
         assert_eq!(summary.num_traces, Some(4));
         assert_eq!(summary.token_usage.total, Some(3000));
         assert_eq!(summary.cost_summary.total.cost, Some(1.25));
@@ -735,8 +752,33 @@ mod tests {
             total_cost: Some(0.5),
             ..coding_row(2, false)
         }
-        .into_summary();
+        .into_summary(uuid::Uuid::nil());
         assert_eq!(summary.cost_summary.total.cost, Some(0.5));
+    }
+
+    #[test]
+    fn content_is_redacted_for_a_viewer_who_is_not_the_sessions_own_user() {
+        let someone_elses = Row {
+            first_input: Some("secret question".into()),
+            last_output: Some("secret answer".into()),
+            ..row(1, 0, 0)
+        };
+        let summary = someone_elses.into_summary(uuid::Uuid::new_v4());
+        assert_eq!(summary.first_input, None);
+        assert_eq!(summary.last_output, None);
+    }
+
+    #[test]
+    fn content_stays_for_the_sessions_own_user() {
+        let mine = Row {
+            user_id: uuid::Uuid::nil(),
+            first_input: Some("secret question".into()),
+            last_output: Some("secret answer".into()),
+            ..row(1, 0, 0)
+        };
+        let summary = mine.into_summary(uuid::Uuid::nil());
+        assert_eq!(summary.first_input.as_deref(), Some("secret question"));
+        assert_eq!(summary.last_output.as_deref(), Some("secret answer"));
     }
 
     #[test]
@@ -747,7 +789,7 @@ mod tests {
             turn_tokens: Some(999),
             ..row(1, 0, 0)
         }
-        .into_summary();
+        .into_summary(uuid::Uuid::nil());
         assert_eq!(summary.num_traces, Some(2));
         assert_eq!(summary.token_usage.total, Some(10));
     }
@@ -856,7 +898,7 @@ mod tests {
             subagent_cost: Some(3.5),
             ..coding_row(1, false)
         }
-        .into_summary();
+        .into_summary(uuid::Uuid::nil());
         assert_eq!(summary.token_usage.total, Some(100));
         assert_eq!(summary.cost_summary.total.cost, Some(1.0));
         assert_eq!(summary.parent_session_id.as_deref(), Some("p"));

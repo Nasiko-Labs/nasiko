@@ -386,7 +386,7 @@ pub async fn get_session_details(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     if let Err(error) = svc(&state)
-        .authorize_session_access(&session_id, &claims.sub, claims.is_superuser)
+        .authorize_session_access(&session_id, &claims.sub)
         .await
     {
         return obs_err(error);
@@ -395,7 +395,7 @@ pub async fn get_session_details(
     // `trace_usage`) and Tempo only enriches it, skipped when it fails, so a server with no
     // trace store still opens every session it lists.
     match svc(&state)
-        .get_session_details(&session_id, &claims.sub, claims.is_superuser)
+        .get_session_details(&session_id, &claims.sub)
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -404,7 +404,8 @@ pub async fn get_session_details(
 }
 
 /// Per-turn tokens + cost for a chat session, from the `token_usage` ledger
-/// (authoritative; no Tempo dependency). Scoped to the caller unless superuser.
+/// (authoritative; no Tempo dependency). Scoped to the session's own user, always —
+/// a turn's `title` is conversation content, so there is no superuser bypass.
 #[utoipa::path(
     get,
     path = "/api/observability/session/{session_id}/turns",
@@ -417,7 +418,7 @@ pub async fn get_session_turns(
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     match svc(&state)
-        .get_session_turns(&session_id, &claims.sub, claims.is_superuser)
+        .get_session_turns(&session_id, &claims.sub)
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -449,7 +450,7 @@ pub async fn get_trace_details(
     Path(trace_id): Path<String>,
 ) -> impl IntoResponse {
     let resp = match svc(&state)
-        .get_trace_details(&trace_id, &claims.sub, claims.is_superuser)
+        .get_trace_details(&trace_id, &claims.sub)
         .await
     {
         Ok(resp) => resp,
@@ -555,7 +556,7 @@ pub async fn get_span_details(
     Path((trace_id, span_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     match svc(&state)
-        .get_span_details(&trace_id, &span_id, &claims.sub, claims.is_superuser)
+        .get_span_details(&trace_id, &span_id, &claims.sub)
         .await
     {
         Ok(resp) => Json(resp).into_response(),
@@ -1771,7 +1772,7 @@ pub async fn get_session_tool_calls(
     Path(session_id): Path<String>,
 ) -> Response {
     if let Err(error) = svc(&state)
-        .authorize_session_access(&session_id, &claims.sub, claims.is_superuser)
+        .authorize_session_access(&session_id, &claims.sub)
         .await
     {
         return obs_err(error);

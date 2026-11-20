@@ -92,7 +92,7 @@ export const copy = {
   noAccess: "You don't have access to this.",
   noAccessFix: 'Ask an admin or the owner for access.',
   notFoundSession:
-    "This session isn't available: it doesn't exist, or it belongs to another user (non-superusers see only their own sessions).",
+    "This session isn't available: it doesn't exist, or it belongs to someone else. A session's content is private to the person who had it — not even an admin can open it.",
   serverDown: (apiUrl: string) =>
     `Is nasiko-server running at ${apiUrl}? Run \`just run-stack\` in nasiko-cloud-rs.`,
 

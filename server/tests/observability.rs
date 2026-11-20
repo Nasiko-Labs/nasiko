@@ -336,6 +336,41 @@ async fn session_detail_returns_404_for_another_users_session() {
     server.cleanup().await;
 }
 
+/// A session's own conversation belongs to the person who had it — not to anyone who can see the
+/// row exists, superuser included. Session content (detail, turns, trace, span) has no superuser
+/// bypass; only `session/list`'s ops/cost view does, and even there the content fields are
+/// redacted (see `session_list_shows_another_users_row_to_a_superuser_but_redacts_its_content`).
+#[tokio::test]
+#[serial]
+async fn session_detail_returns_404_for_a_superuser_who_is_not_the_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_uid = admin["user_id"].as_str().unwrap();
+    let owner = seed_user(&server, "session-detail-owner-2").await;
+    let agent = seed_agent(&server, owner, "session-detail-agent-2").await;
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ($1, $2, $3, 'Private')",
+    )
+    .bind("private-observability-session-2")
+    .bind(owner)
+    .bind(agent)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let response = server
+        .client
+        .get(server.url("/api/observability/session/private-observability-session-2"))
+        .bearer_auth(common::sign_token(admin_uid, "admin", true, "admin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    assert_eq!(response.text().await.unwrap(), "session not found");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn session_and_trace_detail_fall_back_to_receipts_when_tempo_has_nothing() {
@@ -1406,6 +1441,44 @@ async fn session_list_never_shows_another_users_sessions() {
     assert!(ids.contains(&"ses-mine"));
     assert!(!ids.contains(&"ses-theirs"));
     assert_eq!(body["data"]["matching_count"], 1);
+
+    server.cleanup().await;
+}
+
+/// Ops/cost triage needs the whole fleet, so a superuser's `session/list` still lists a row it
+/// doesn't own — but that row's conversation content is not the superuser's to read, so
+/// `first_input`/`last_output` come back null even though every ops field (status, agent, cost)
+/// is there. Reading the actual content still needs the session's own detail/turns endpoints,
+/// which 404 for a non-owner regardless of role (`session_detail_returns_404_for_a_superuser_who_is_not_the_owner`).
+#[tokio::test]
+#[serial]
+async fn session_list_shows_another_users_row_to_a_superuser_but_redacts_its_content() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_uid = admin["user_id"].as_str().unwrap();
+    let owner = seed_user(&server, "list-redaction-owner").await;
+    let agent = seed_agent(&server, owner, "list-redaction-agent").await;
+    seed_session_with_flows(&server, owner, agent, "ses-not-mine", &["completed"]).await;
+    sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES \
+         ('ses-not-mine', 'user', 'a private question'), \
+         ('ses-not-mine', 'assistant', 'a private answer')",
+    )
+    .execute(&server.db)
+    .await
+    .expect("seed chat_messages");
+
+    let body = list_sessions(&server, admin_uid, "?limit=100").await;
+    let row = body["data"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == "ses-not-mine")
+        .expect("a superuser's unscoped list still carries another user's row");
+
+    assert_eq!(row["status"], "ok", "ops metadata is unaffected");
+    assert!(row["first_input"].is_null(), "content is redacted: {row}");
+    assert!(row["last_output"].is_null(), "content is redacted: {row}");
 
     server.cleanup().await;
 }
