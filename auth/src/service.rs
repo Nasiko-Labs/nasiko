@@ -1,5 +1,3 @@
-use std::sync::LazyLock;
-
 use async_trait::async_trait;
 use chrono::Utc;
 use sqlx::PgPool;
@@ -11,25 +9,17 @@ use crate::{AuthError, AuthService, Identity, LoginRefusal, LoginResult, TOKEN_E
 const LOGIN_LOCKOUT_THRESHOLD: i32 = 3;
 
 /// What a login is verified against when no account has the name, so an unknown name
-/// costs the same bcrypt work as a known one. A cost-12 hash of a random string nobody
-/// holds, built on first use: the first unknown-name login after a start takes one hash
-/// longer.
-// An empty fallback is safe: `verify_password` is false for anything that is not a
-// bcrypt hash. Only the timing match would be lost, and hashing a uuid at cost 12 does
-// not fail; if it ever did, this logs it once.
-static DUMMY_HASH: LazyLock<String> = LazyLock::new(|| {
-    crate::hash_password(&uuid::Uuid::new_v4().to_string()).unwrap_or_else(|e| {
-        tracing::error!(
-            error = ?e,
-            "could not build the dummy password hash: an unknown-name login now answers faster than a known one"
-        );
-        String::new()
-    })
-});
+/// costs the same bcrypt work as a known one. A cost-12 hash (`hash_password`'s cost) of
+/// a random string that was thrown away when the hash was made, so no password matches
+/// it. A constant rather than a hash built at run time: hashing at cost 12 is blocking
+/// work that belongs on the blocking pool, and one built on first use would make the
+/// first unknown-name login after a start slower than the rest. The test below keeps it
+/// well formed at cost 12.
+const DUMMY_HASH: &str = "$2b$12$nUYnav7XHaAjjWOPq.UHzus3g9wflHitJOghjyswdO5LSq6fkx0xi";
 
 /// The hash to verify a login password against: the account's own, or the dummy.
 fn hash_for(stored: Option<&str>) -> &str {
-    stored.unwrap_or(DUMMY_HASH.as_str())
+    stored.unwrap_or(DUMMY_HASH)
 }
 
 /// One line per login attempt under `nasiko::auth`, for the log pipeline. Never the name
@@ -339,8 +329,13 @@ impl AuthService for AuthServiceImpl {
         .fetch_optional(&self.db)
         .await?;
 
-        // One bcrypt check for every attempt, before anything is decided, so how long a
-        // refusal takes never says whether the name exists, is deactivated or is locked.
+        // One bcrypt check for every attempt, before anything is decided, so the bcrypt cost
+        // of a refusal never says whether the name exists, is deactivated or is locked. One
+        // difference in duration remains: a wrong password on a live account, and the first
+        // login after a lock ends, also write to `users` (one or two `UPDATE` round trips,
+        // small next to bcrypt), and the other refusals write nothing. No write is added to
+        // the others to match: it would make the cheapest request to send, an unknown name,
+        // cost the database a write each.
         let password_ok = crate::verify_password_async(
             password,
             hash_for(row.as_ref().map(|r| r.access_secret_hash.as_str())),
@@ -810,17 +805,29 @@ mod tests {
 
     #[test]
     fn hash_for_nothing_is_the_dummy_hash_and_the_dummy_hash_verifies_nothing_typed() {
-        assert_eq!(hash_for(None), DUMMY_HASH.as_str());
+        assert_eq!(hash_for(None), DUMMY_HASH);
         assert_eq!(hash_for(Some("$2b$12$stored")), "$2b$12$stored");
 
         // Cost 12 and well formed, so verifying against it takes the same work as a real
         // account's hash. An unparseable hash would answer `Err` here, and fast.
         assert_eq!(DUMMY_HASH.split('$').nth(2), Some("12"));
-        for typed in ["", "password", "changeme", DUMMY_HASH.as_str()] {
+        for typed in ["", "password", "changeme", DUMMY_HASH] {
             assert!(
-                matches!(bcrypt::verify(typed, &DUMMY_HASH), Ok(false)),
+                matches!(bcrypt::verify(typed, DUMMY_HASH), Ok(false)),
                 "the dummy hash must verify no typed password"
             );
         }
+    }
+
+    #[test]
+    fn the_dummy_hash_has_the_cost_of_a_real_account_hash() {
+        // `hash_password` is what makes a real account's hash. If its cost changes, the dummy
+        // must follow, or an unknown name would answer faster (or slower) than a known one.
+        let real = crate::hash_password("any password").expect("a hash");
+        assert_eq!(
+            DUMMY_HASH.split('$').nth(2),
+            real.split('$').nth(2),
+            "the dummy hash's cost differs from hash_password's"
+        );
     }
 }
