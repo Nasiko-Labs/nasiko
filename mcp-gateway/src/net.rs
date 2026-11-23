@@ -144,26 +144,50 @@ fn guarded_redirect_policy() -> reqwest::redirect::Policy {
 
 /// Why a guarded request may not follow a redirect to `url`, if it may not.
 fn redirect_hop_refusal(url: &reqwest::Url) -> Option<String> {
+    target_refusal(url).map(|why| format!("refused a redirect to {why}"))
+}
+
+/// Why the gateway may not send a request to `url`, if it may not: what
+/// [`GuardedResolver`] can't see. A hostname is resolved, and checked, when the
+/// request connects; an IP literal or `localhost` never is.
+fn target_refusal(url: &reqwest::Url) -> Option<String> {
     if !matches!(url.scheme(), "http" | "https") {
-        return Some(format!("refused a redirect to a '{}' URL", url.scheme()));
+        return Some(format!("a '{}' URL", url.scheme()));
     }
     if private_urls_allowed() {
         return None;
     }
     let Some(host) = url.host_str() else {
-        return Some("refused a redirect to a URL with no host".to_string());
+        return Some("a URL with no host".to_string());
     };
     let lower = host.to_ascii_lowercase();
     if lower == "localhost" || lower.ends_with(".localhost") {
-        return Some("refused a redirect to a loopback address".to_string());
+        return Some("a loopback address".to_string());
     }
     // `host_str` keeps an IPv6 literal's brackets.
     let literal = lower.trim_start_matches('[').trim_end_matches(']');
     match literal.parse::<IpAddr>() {
-        Ok(ip) if is_blocked_ip(ip) => {
-            Some("refused a redirect to a private or internal address".to_string())
-        }
+        Ok(ip) if is_blocked_ip(ip) => Some("a private or internal address".to_string()),
         _ => None,
+    }
+}
+
+/// Refuse a URL that another server handed the gateway (an OAuth server's
+/// metadata names its token and registration endpoints, a `401` names its
+/// resource metadata) when it points at a private or internal IP literal or
+/// `localhost`. Those requests go through the guarded client, whose resolver
+/// checks hostnames but never sees an IP literal (NAS-1770).
+///
+/// The crate's own tests run OAuth servers on `127.0.0.1` with a plain client,
+/// so this check is off in them; [`target_refusal`] has its own tests.
+pub fn check_remote_endpoint(raw: &str) -> std::result::Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid url: {e}"))?;
+    match target_refusal(&url) {
+        Some(why) => Err(format!("refused a request to {why}")),
+        None => Ok(()),
     }
 }
 
