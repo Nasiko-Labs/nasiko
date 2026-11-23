@@ -775,8 +775,12 @@ pub struct NestedCostSummary {
     pub total: CostOnly,
     pub prompt: CostOnly,
     pub completion: CostOnly,
-    pub cache_read: CostOnly,
-    pub cache_creation: CostOnly,
+    /// Absent when it cannot be narrowed to the caller's own calls (see `get_agent_stats`), so a
+    /// missing figure never reads as a real $0.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read: Option<CostOnly>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CostOnly>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1473,13 +1477,14 @@ pub struct FinopsUserAgentSpend {
 impl ObservabilityService {
     /// Per-turn tokens + cost for a chat session (its A2A contextId), read from
     /// the `token_usage` ledger joined to `flows`, grouped by flow (one row per
-    /// turn). Scoped to `user_id` unless `is_superuser`. This is the authoritative
-    /// per-turn view and does not depend on the Tempo materializer.
+    /// turn). `title` is drawn from the turn's own prompt (`flows.title`), so this is
+    /// conversation content, not an aggregate: scoped to the session's own user,
+    /// never a superuser bypass — same rule as `authorize_session`. This is the
+    /// authoritative per-turn view and does not depend on the Tempo materializer.
     pub async fn get_session_turns(
         &self,
         context_id: &str,
         user_id: &str,
-        is_superuser: bool,
     ) -> Result<SessionTurnsResponse, ObservabilityError> {
         let turns = sqlx::query_as::<_, TurnUsage>(
             r#"SELECT f.title                         AS title,
@@ -1501,13 +1506,12 @@ impl ObservabilityService {
                        FROM trace_totals) t
                JOIN flows f ON f.flow_id = t.session_id
                WHERE f.session_id = $1
-                 AND ($3 OR f.user_id = $2::uuid)
+                 AND f.user_id = $2::uuid
                GROUP BY f.flow_id, f.title, t.session_id
                ORDER BY turn_start"#,
         )
         .bind(context_id)
         .bind(user_id)
-        .bind(is_superuser)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
@@ -1834,11 +1838,16 @@ impl ObservabilityService {
         })
     }
 
+    /// A session's own conversation (detail, trace, span, turns) is readable only by the user who
+    /// had it — never a superuser bypass. This is deliberately stricter than `session/list`'s
+    /// scope (`sessions_sql::scope_clause`), which a superuser still queries unscoped for
+    /// ops/cost triage: that endpoint reports `first_input`/`last_output` as "(private)" for a row
+    /// it doesn't own, rather than refusing the row outright, because the fleet-wide status/cost
+    /// view has to keep listing it. This one has nothing to show but that content, so it 404s.
     async fn authorize_session(
         &self,
         session_id: &str,
         user_id: &str,
-        is_superuser: bool,
         resource: &str,
     ) -> Result<(DateTime<Utc>, DateTime<Utc>), ObservabilityError> {
         let caller: uuid::Uuid = user_id
@@ -1846,11 +1855,9 @@ impl ObservabilityService {
             .map_err(|_| ObservabilityError::Internal("invalid user id in claims".into()))?;
         sqlx::query_as(
             r#"SELECT created_at, updated_at FROM chat_sessions
-               WHERE session_id = $1 AND deleted_at IS NULL
-                 AND ($2 OR user_id = $3)"#,
+               WHERE session_id = $1 AND deleted_at IS NULL AND user_id = $2"#,
         )
         .bind(session_id)
-        .bind(is_superuser)
         .bind(caller)
         .fetch_optional(&self.db)
         .await
@@ -1862,9 +1869,8 @@ impl ObservabilityService {
         &self,
         session_id: &str,
         user_id: &str,
-        is_superuser: bool,
     ) -> Result<(), ObservabilityError> {
-        self.authorize_session(session_id, user_id, is_superuser, "session")
+        self.authorize_session(session_id, user_id, "session")
             .await
             .map(|_| ())
     }
@@ -1953,14 +1959,13 @@ impl ObservabilityService {
         cursor: Option<&str>,
         parent: Option<&str>,
     ) -> Result<SessionListResponse, ObservabilityError> {
-        let caller =
-            if is_superuser {
-                None
-            } else {
-                Some(user_id.parse::<uuid::Uuid>().map_err(|_| {
-                    ObservabilityError::Internal("invalid user id in claims".into())
-                })?)
-            };
+        let viewer = user_id
+            .parse::<uuid::Uuid>()
+            .map_err(|_| ObservabilityError::Internal("invalid user id in claims".into()))?;
+        // A superuser's query is unscoped (ops/cost triage needs the whole fleet), but that only
+        // ever widens which ROWS come back — `Row::into_summary` still redacts a row's own
+        // conversation content unless `viewer` is that row's `user_id`.
+        let caller = if is_superuser { None } else { Some(viewer) };
         let limit = limit.unwrap_or(DEFAULT_SESSION_PAGE).clamp(1, 100);
         let status = status
             .map(super::sessions_sql::StatusFilter::parse)
@@ -2008,6 +2013,7 @@ impl ObservabilityService {
             &self.db,
             &super::sessions_sql::SessionListQuery {
                 caller,
+                viewer,
                 start,
                 end,
                 status,
@@ -2113,9 +2119,8 @@ impl ObservabilityService {
         &self,
         session_id: &str,
         user_id: &str,
-        is_superuser: bool,
     ) -> Result<SessionDetailResponse, ObservabilityError> {
-        self.authorize_session(session_id, user_id, is_superuser, "session")
+        self.authorize_session(session_id, user_id, "session")
             .await?;
         // An orchestrator-routed session has no agent of its own; name the one that did the work.
         let ran_agent = super::sessions_sql::ran_agent_name("cs.session_id");
@@ -2315,7 +2320,6 @@ impl ObservabilityService {
         &self,
         trace_id: &str,
         user_id: &str,
-        is_superuser: bool,
     ) -> Result<TraceDetailResponse, ObservabilityError> {
         // Tempo first; when it no longer has the trace (retention, seeded or tiered
         // turns), rebuild it from the flow + `trace_usage` rows, hot + cold.
@@ -2346,7 +2350,7 @@ impl ObservabilityService {
             .spans
             .retain(|span| seen_spans.insert(span.span_id.clone()));
         let project_session_id = self.trace_session_id(trace_id, &trace).await?;
-        self.authorize_session(&project_session_id, user_id, is_superuser, "trace")
+        self.authorize_session(&project_session_id, user_id, "trace")
             .await?;
 
         let from_sql = sql_cost.is_some();
@@ -2409,12 +2413,12 @@ impl ObservabilityService {
                         completion: CostOnly {
                             cost: cost.completion_usd,
                         },
-                        cache_read: CostOnly {
+                        cache_read: Some(CostOnly {
                             cost: cost.cache_read_usd,
-                        },
-                        cache_creation: CostOnly {
+                        }),
+                        cache_creation: Some(CostOnly {
                             cost: cost.cache_creation_usd,
-                        },
+                        }),
                     },
                     root_spans: RootSpansWrapper { edges: root_edges },
                     spans: root_nodes,
@@ -2431,7 +2435,6 @@ impl ObservabilityService {
         trace_id: &str,
         span_id: &str,
         user_id: &str,
-        is_superuser: bool,
     ) -> Result<SpanDetailResponse, ObservabilityError> {
         // Resolve and authorize the trace's session before looking up the span
         // or its Loki content, so inaccessible traces reveal no span existence.
@@ -2452,8 +2455,7 @@ impl ObservabilityService {
                 }
                 other => other,
             })?;
-        self.authorize_session(&session_id, user_id, is_superuser, "span")
-            .await?;
+        self.authorize_session(&session_id, user_id, "span").await?;
         let details = if from_sql {
             let span = trace
                 .spans
@@ -2635,10 +2637,12 @@ impl ObservabilityService {
 
     // ── 5. agent/{agent_id}/stats ─────────────────────────────────────────────
 
+    /// `user_ids` narrows every figure to those people's calls (`None`: everyone's).
     pub async fn get_agent_stats(
         &self,
         agent_id: &str,
         start_time: Option<&str>,
+        user_ids: Option<&[uuid::Uuid]>,
     ) -> Result<AgentStatsResponse, ObservabilityError> {
         let start = parse_iso_or_default(start_time, 1);
         let end = Utc::now();
@@ -2661,21 +2665,29 @@ impl ObservabilityService {
                       percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p50,
                       percentile_cont(0.99) WITHIN GROUP (ORDER BY latency_ms)::FLOAT8 AS p99
                FROM trace_usage
-               WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3"#,
+               WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3
+                 AND ($4::uuid[] IS NULL OR user_id = ANY($4))"#,
         )
         .bind(agent_id)
         .bind(start)
         .bind(end)
+        .bind(user_ids)
         .fetch_one(&self.db)
         .await
         .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
 
-        let cache_cost = self
-            .provider
-            .agent_stats(agent_id, start, end)
-            .await
-            .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
-            .unwrap_or_default();
+        // Tempo's cache figures cover every caller of the agent and cannot be narrowed to some of
+        // them, so a narrowed read leaves them out (absent, not $0) rather than show other people's.
+        let cache_cost = match user_ids {
+            Some(_) => None,
+            None => Some(
+                self.provider
+                    .agent_stats(agent_id, start, end)
+                    .await
+                    .map(|stats| (stats.cost.cache_read_usd, stats.cost.cache_creation_usd))
+                    .unwrap_or_default(),
+            ),
+        };
 
         Ok(AgentStatsResponse {
             data: AgentStatsData {
@@ -2692,8 +2704,8 @@ impl ObservabilityService {
                         completion: CostOnly {
                             cost: row.completion_cost,
                         },
-                        cache_read: CostOnly { cost: cache_cost.0 },
-                        cache_creation: CostOnly { cost: cache_cost.1 },
+                        cache_read: cache_cost.map(|(read, _)| CostOnly { cost: read }),
+                        cache_creation: cache_cost.map(|(_, write)| CostOnly { cost: write }),
                     },
                     latency_ms_p50: row.p50,
                     latency_ms_p99: row.p99,

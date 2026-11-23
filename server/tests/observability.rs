@@ -336,6 +336,41 @@ async fn session_detail_returns_404_for_another_users_session() {
     server.cleanup().await;
 }
 
+/// A session's own conversation belongs to the person who had it — not to anyone who can see the
+/// row exists, superuser included. Session content (detail, turns, trace, span) has no superuser
+/// bypass; only `session/list`'s ops/cost view does, and even there the content fields are
+/// redacted (see `session_list_shows_another_users_row_to_a_superuser_but_redacts_its_content`).
+#[tokio::test]
+#[serial]
+async fn session_detail_returns_404_for_a_superuser_who_is_not_the_owner() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_uid = admin["user_id"].as_str().unwrap();
+    let owner = seed_user(&server, "session-detail-owner-2").await;
+    let agent = seed_agent(&server, owner, "session-detail-agent-2").await;
+    sqlx::query(
+        "INSERT INTO chat_sessions (session_id, user_id, agent_id, title) VALUES ($1, $2, $3, 'Private')",
+    )
+    .bind("private-observability-session-2")
+    .bind(owner)
+    .bind(agent)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let response = server
+        .client
+        .get(server.url("/api/observability/session/private-observability-session-2"))
+        .bearer_auth(common::sign_token(admin_uid, "admin", true, "admin"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 404);
+    assert_eq!(response.text().await.unwrap(), "session not found");
+
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn session_and_trace_detail_fall_back_to_receipts_when_tempo_has_nothing() {
@@ -696,8 +731,8 @@ async fn finops_spend_endpoints_hide_agents_the_caller_cannot_access() {
     for endpoint in SPEND_ENDPOINTS {
         let (total, body) = spend_seen(&server, endpoint, &world.caller_token).await;
         assert!(
-            (total - 3.0).abs() < 1e-6,
-            "{endpoint}: own + granted agent only, got {total}"
+            (total - 1.0).abs() < 1e-6,
+            "{endpoint}: the caller's own calls only, not the owner's on the granted agent, got {total}"
         );
         assert!(
             !body.contains("spend-hidden-agent"),
@@ -1406,6 +1441,44 @@ async fn session_list_never_shows_another_users_sessions() {
     assert!(ids.contains(&"ses-mine"));
     assert!(!ids.contains(&"ses-theirs"));
     assert_eq!(body["data"]["matching_count"], 1);
+
+    server.cleanup().await;
+}
+
+/// Ops/cost triage needs the whole fleet, so a superuser's `session/list` still lists a row it
+/// doesn't own — but that row's conversation content is not the superuser's to read, so
+/// `first_input`/`last_output` come back null even though every ops field (status, agent, cost)
+/// is there. Reading the actual content still needs the session's own detail/turns endpoints,
+/// which 404 for a non-owner regardless of role (`session_detail_returns_404_for_a_superuser_who_is_not_the_owner`).
+#[tokio::test]
+#[serial]
+async fn session_list_shows_another_users_row_to_a_superuser_but_redacts_its_content() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_uid = admin["user_id"].as_str().unwrap();
+    let owner = seed_user(&server, "list-redaction-owner").await;
+    let agent = seed_agent(&server, owner, "list-redaction-agent").await;
+    seed_session_with_flows(&server, owner, agent, "ses-not-mine", &["completed"]).await;
+    sqlx::query(
+        "INSERT INTO chat_messages (session_id, role, content) VALUES \
+         ('ses-not-mine', 'user', 'a private question'), \
+         ('ses-not-mine', 'assistant', 'a private answer')",
+    )
+    .execute(&server.db)
+    .await
+    .expect("seed chat_messages");
+
+    let body = list_sessions(&server, admin_uid, "?limit=100").await;
+    let row = body["data"]["sessions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["session_id"] == "ses-not-mine")
+        .expect("a superuser's unscoped list still carries another user's row");
+
+    assert_eq!(row["status"], "ok", "ops metadata is unaffected");
+    assert!(row["first_input"].is_null(), "content is redacted: {row}");
+    assert!(row["last_output"].is_null(), "content is redacted: {row}");
 
     server.cleanup().await;
 }
@@ -3064,5 +3137,198 @@ async fn finops_dashboard_counts_default_priced_calls_as_unpriced() {
         .await
         .unwrap();
     assert_eq!(body["data"]["summary"]["unpriced_calls"], 1, "{body}");
+    server.cleanup().await;
+}
+
+async fn context_report(server: &common::TestServer, user: Uuid, agent: Uuid, pool_tokens: i64) {
+    sqlx::query(
+        "INSERT INTO context_reports \
+           (user_id, agent_id, pool_messages, pool_tokens, kept_messages, kept_tokens) \
+         VALUES ($1, $2, 10, $3, 2, 100)",
+    )
+    .bind(user)
+    .bind(agent)
+    .bind(pool_tokens)
+    .execute(&server.db)
+    .await
+    .expect("seed context_reports");
+}
+
+async fn context_savings(server: &common::TestServer, path: &str, token: &str) -> Value {
+    let response = server
+        .client
+        .get(server.url(&format!("/api/observability/finops/context-savings{path}")))
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200, "{path}");
+    response.json().await.unwrap()
+}
+
+/// A member sees only their own requests on the Optimization page, even on an agent shared with
+/// them: another user's request is not on their list, in any form, nor in their totals.
+#[tokio::test]
+#[serial]
+async fn context_savings_show_a_member_only_their_own_requests_on_a_shared_agent() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let caller = seed_user(&server, "ctx-caller").await;
+    let other = seed_user(&server, "ctx-other").await;
+    let shared = seed_agent(&server, other, "ctx-shared-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(shared)
+    .bind(caller.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    context_report(&server, caller, shared, 1_000).await;
+    context_report(&server, other, shared, 50_000).await;
+    let token = common::sign_token(&caller.to_string(), "ctx-caller", false, "member");
+
+    let top = context_savings(&server, "/top-requests?range=7d", &token).await;
+    let rows = top["data"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "another user's request was listed: {top}");
+    assert_eq!(rows[0]["own"], true);
+    assert_eq!(rows[0]["pool_tokens"], 1_000);
+
+    let totals = context_savings(&server, "?range=7d", &token).await;
+    assert_eq!(
+        totals["data"]["pool_tokens"], 1_000,
+        "another user's tokens were in the totals: {totals}"
+    );
+
+    let by_agent = context_savings(&server, "/agents?range=7d", &token).await;
+    assert!(
+        !by_agent.to_string().contains("50000"),
+        "another user's tokens were in the per-agent rows: {by_agent}"
+    );
+
+    server.cleanup().await;
+}
+
+/// The agent stats card counts only the caller's own calls on an agent shared with them, and leaves
+/// out the cache figures it cannot narrow (absent, not a false $0); a superuser sees every caller.
+#[tokio::test]
+#[serial]
+async fn agent_stats_count_only_the_callers_own_calls_on_a_shared_agent() {
+    let mut tempo = mockito::Server::new_async().await;
+    tempo
+        .mock("GET", mockito::Matcher::Any)
+        .with_status(200)
+        .with_body(r#"{"traces":[]}"#)
+        .create_async()
+        .await;
+    let tempo_url = tempo.url();
+    let server = common::TestServer::start_with(move |config| {
+        config.loki_url = tempo_url.clone();
+        config.tempo_url = tempo_url;
+        config.observability_enabled = true;
+    })
+    .await;
+    let _admin = init_admin(&server).await;
+    let caller = seed_user(&server, "stats-caller").await;
+    let owner = seed_user(&server, "stats-owner").await;
+    let admin = seed_user(&server, "stats-admin").await;
+    let shared = seed_agent(&server, owner, "stats-shared-agent").await;
+    sqlx::query(
+        "INSERT INTO agent_grants (agent_id, grant_type, grantee_id) VALUES ($1, 'user', $2)",
+    )
+    .bind(shared)
+    .bind(caller.to_string())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    spend_row(&server, "stats-shared-agent", caller, 1.0).await;
+    spend_row(&server, "stats-shared-agent", owner, 2.0).await;
+
+    let stats = |token: String| {
+        let server = &server;
+        async move {
+            let response = server
+                .client
+                .get(server.url(&format!("/api/observability/agent/{shared}/stats")))
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), 200);
+            let body: Value = response.json().await.unwrap();
+            body["data"]["project"].clone()
+        }
+    };
+
+    let mine = stats(common::sign_token(
+        &caller.to_string(),
+        "stats-caller",
+        false,
+        "member",
+    ))
+    .await;
+    assert_eq!(
+        mine["trace_count"], 1,
+        "another user's call was counted: {mine}"
+    );
+    assert_eq!(mine["cost_summary"]["total"]["cost"], 1.0);
+    assert!(
+        mine["cost_summary"].get("cache_read").is_none(),
+        "an unnarrowable cache figure must be absent, not $0: {mine}"
+    );
+
+    let all = stats(common::sign_token(
+        &admin.to_string(),
+        "stats-admin",
+        true,
+        "admin",
+    ))
+    .await;
+    assert_eq!(all["trace_count"], 2);
+    assert_eq!(all["cost_summary"]["total"]["cost"], 3.0);
+    assert!(all["cost_summary"].get("cache_read").is_some());
+
+    server.cleanup().await;
+}
+
+/// `my_agent` matches spend by agent name. For a user manager (who sees every caller), another
+/// owner's agent of the same name must not be added up as theirs.
+#[tokio::test]
+#[serial]
+async fn my_agents_for_a_user_manager_does_not_count_another_owners_same_named_agent() {
+    let server = common::TestServer::start().await;
+    let _admin = init_admin(&server).await;
+    let manager = seed_user(&server, "twin-manager").await;
+    let other = seed_user(&server, "twin-other").await;
+    sqlx::query("UPDATE users SET role = 'admin' WHERE id = $1")
+        .bind(manager)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    seed_agent(&server, manager, "twin").await;
+    seed_agent(&server, other, "twin").await;
+    spend_row(&server, "twin", manager, 5.0).await;
+    spend_row(&server, "twin", other, 7.0).await;
+
+    let response = server
+        .client
+        .get(server.url("/api/observability/finops/dashboard?range=30d&view=agent&my_agent=true"))
+        .bearer_auth(common::sign_token(
+            &manager.to_string(),
+            "twin-manager",
+            false,
+            "member",
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let body: Value = response.json().await.unwrap();
+    let total = body["data"]["summary"]["total_cost"].as_f64().unwrap();
+    assert!(
+        (total - 5.0).abs() < 1e-6,
+        "my agents counted another owner's same-named agent, got {total}"
+    );
+
     server.cleanup().await;
 }

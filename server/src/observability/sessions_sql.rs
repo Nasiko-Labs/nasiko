@@ -543,11 +543,7 @@ SELECT p.session_id,
         None => (None, None),
     };
 
-    // Unprepared, as is the count below: a prepared statement gets Postgres's generic plan from its
-    // sixth run, which can't tell `$1 IS NULL` from a caller, never uses the user index, and walks
-    // every user's sessions.
     let mut rows: Vec<Row> = sqlx::query_as(&sql)
-        .persistent(false)
         .bind(q.caller)
         .bind(q.start)
         .bind(q.end)
@@ -613,7 +609,6 @@ async fn matching_count(
         )
     };
     sqlx::query_scalar(&sql)
-        .persistent(false)
         .bind(q.caller)
         .bind(q.start)
         .bind(q.end)
