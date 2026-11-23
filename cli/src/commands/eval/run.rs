@@ -70,9 +70,12 @@ pub struct RunInfo {
     pub finished_at: Option<chrono::DateTime<Utc>>,
 }
 
-/// Saves the agent's changes; run by the agent script at the end, and before a stop.
-const SAVE_DIFF: &str =
-    "cd /testbed && git add -A && git diff --cached --binary HEAD > /eval/out/raw.patch";
+/// Saves the agent's changes; run by the agent script at the end, and before a stop. The diff is
+/// taken against the task image's one root commit, not `HEAD`: an agent that commits its work
+/// (the prompt asks it not to, and some do anyway) would otherwise hand in an empty patch.
+const SAVE_DIFF: &str = "cd /testbed && git add -A \
+     && git diff --cached --binary \"$(git rev-list --max-parents=0 HEAD | tail -n 1)\" \
+     > /eval/out/raw.patch";
 
 /// Parallel compile jobs inside eval containers.
 const CARGO_JOBS: &str = "2";
@@ -728,7 +731,7 @@ mod tests {
         assert!(s.contains("--auto --dir /testbed"));
         let run = s.find("opencode run").expect("runs");
         let export = s.find("opencode export").expect("exports");
-        let diff = s.find("git diff --cached --binary HEAD").expect("diffs");
+        let diff = s.find("git diff --cached --binary").expect("diffs");
         assert!(run < export && export < diff);
     }
 
@@ -896,5 +899,42 @@ mod tests {
             1
         );
         let _ = fs::remove_dir_all(repo.root());
+    }
+
+    #[test]
+    fn work_the_agent_committed_is_still_saved() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (repo, out) = (dir.path().join("testbed"), dir.path().join("raw.patch"));
+        fs::create_dir_all(&repo).expect("dir");
+        let git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(&repo)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .expect("git runs")
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        fs::write(repo.join("lib.rs"), "fn a() {}\n").expect("write");
+        git(&["init", "-q"]);
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "base"]);
+        // The agent edits, commits, then edits again without committing.
+        fs::write(repo.join("lib.rs"), "fn b() {}\n").expect("write");
+        git(&["commit", "-qam", "agent fix"]);
+        fs::write(repo.join("new.rs"), "fn c() {}\n").expect("write");
+        let script = SAVE_DIFF
+            .replace("/testbed", &repo.display().to_string())
+            .replace("/eval/out/raw.patch", &out.display().to_string());
+        let ok = std::process::Command::new("sh")
+            .args(["-c", &script])
+            .status()
+            .expect("sh runs")
+            .success();
+        assert!(ok);
+        let patch = fs::read_to_string(&out).expect("saved");
+        assert!(patch.contains("+fn b() {}"), "{patch}");
+        assert!(patch.contains("+fn c() {}"), "{patch}");
     }
 }
