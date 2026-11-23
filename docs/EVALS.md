@@ -117,7 +117,9 @@ nasiko eval clean                                   # leftover containers and ne
 * **Router**: serves the model pinned on your `eval` identity (one model at a time, so models run
   one after another) and stores each call's tokens and cost with its attempt tag.
 * **Grading container**: the same task image with no network: applies the model's patch (test
-  files removed), applies the hidden test patch, builds and runs the tests.
+  files removed, and in Rust files every inline `#[cfg(test)]` module put back as it was, so
+  tests the model wrote cannot clash with the hidden ones), applies the hidden test patch,
+  builds and runs the tests.
 
 Every container runs with all Linux capabilities dropped, `no-new-privileges`, CPU, memory and
 process limits, and the disk limit (checked every few seconds; Docker Desktop cannot enforce
@@ -137,6 +139,9 @@ messages around the task are kept.
 * Only Claude Code logs and Cargo (Rust) repositories so far.
 * A long session can hold several tasks; the task's cost covers the messages from the one that
   led to the first edit of the commit's files up to the commit.
+* The toolchain image defaults to Debian 13 (`rust:<version>-trixie`): prebuilt native
+  libraries some crates download while building (ONNX Runtime, for one) need its newer glibc
+  and C++ runtime. Set `toolchain_image` in `specs/<repo>.json` to change it.
 * Tests are run per affected Cargo package; integration tests that need a database or network
   fail in the sandbox and drop out of the lists.
 * Attempt tags live with the router's hot usage rows (90 days).

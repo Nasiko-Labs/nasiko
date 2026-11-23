@@ -35,6 +35,24 @@ pub fn code_with_old_tests(base: &str, gold: &str) -> Option<String> {
     Some(middle)
 }
 
+/// `new`'s code with `base`'s test module put back, also when `new` dropped its module: how a
+/// model's file is graded, so the hidden tests apply to the model's code whatever it did to the
+/// tests (SWE-bench likewise discards a model's edits to test files). `None` when either side has
+/// more than one module, or neither has one.
+pub fn restore_old_tests(base: &str, new: &str) -> Option<String> {
+    if !test_module_spans(new).is_empty() {
+        return code_with_old_tests(base, new);
+    }
+    let spans = test_module_spans(base);
+    let [span] = spans.as_slice() else {
+        return None;
+    };
+    let mut out = new.trim_end().to_string();
+    out.push_str("\n\n");
+    out.push_str(&base[span.clone()]);
+    Some(out)
+}
+
 /// Byte ranges of every `#[cfg(test)] mod name { … }`, from the attribute line to the closing
 /// brace's line end. `#[cfg(test)] mod tests;` (tests in another file) is not counted.
 pub fn test_module_spans(src: &str) -> Vec<Range<usize>> {
@@ -254,5 +272,27 @@ mod tests {
             test_module_spans("const S: &str = r#\"\n#[cfg(test)]\nmod t {}\n\"#;\n").is_empty()
         );
         assert_eq!(code_with_old_tests("", "fn a() {}\n"), None);
+    }
+
+    #[test]
+    fn restore_old_tests_drops_a_model_test_and_keeps_its_code() {
+        let base =
+            "fn f() -> u8 { 1 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
+        let model = "fn f() -> u8 { 2 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n\n    #[test]\n    fn hidden_name() {}\n}\n";
+        let graded = restore_old_tests(base, model).expect("splits");
+        assert!(graded.contains("{ 2 }"));
+        assert!(!graded.contains("hidden_name"));
+        assert!(graded.contains("fn old()"));
+    }
+
+    #[test]
+    fn restore_old_tests_puts_back_a_deleted_module() {
+        let base = "fn f() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
+        let graded = restore_old_tests(base, "fn g() {}\n").expect("restores");
+        assert_eq!(
+            graded,
+            "fn g() {}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n"
+        );
+        assert_eq!(restore_old_tests("fn f() {}\n", "fn g() {}\n"), None);
     }
 }

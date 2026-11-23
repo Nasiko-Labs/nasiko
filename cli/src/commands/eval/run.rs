@@ -14,18 +14,20 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use chrono::Utc;
+use nasiko_evals::diff::FileDiff;
 use nasiko_evals::grade::{self, AgentExit, Grade, GradeInput};
 use nasiko_evals::opencode::{self, AgentConfig};
 use nasiko_evals::prompt::{self, ChatPrompt};
 use nasiko_evals::report::AttemptRecord;
 use nasiko_evals::spec::EnvSpec;
-use nasiko_evals::{TaskInstance, TestPathRules, cost, diff, testlog};
+use nasiko_evals::{TaskInstance, TestPathRules, cost, diff, rust_tests, testlog};
 use serde::{Deserialize, Serialize};
 
 use super::build::{sanitize, test_limits};
 use super::containers::{Containers, JobLimits, JobOutcome, JobSpec, Mount, Network, StopReason};
 use super::dataset;
 use super::gateway::{self, GatewayPlan};
+use super::git::{self, Repo};
 use super::images::opencode_version;
 use super::llm::LlmClient;
 use super::router::RouterClient;
@@ -419,7 +421,17 @@ impl ModelRun<'_> {
         let exit = agent_exit(&outcome, &out_dir, agent_record.as_ref());
         let raw = fs::read_to_string(out_dir.join("raw.patch")).unwrap_or_default();
         let rules = TestPathRules::from_globs(&spec.test_paths);
-        let model_patch = diff::join(&diff::without_tests(diff::parse_unified(&raw)?, &rules));
+        let files = diff::without_tests(diff::parse_unified(&raw)?, &rules);
+        let repo = spec
+            .local_path
+            .as_deref()
+            .map(|p| Repo::open(Path::new(p)))
+            .transpose()?;
+        let model_patch = diff::join(&without_inline_test_edits(
+            repo.as_ref(),
+            &task.base_commit,
+            files,
+        )?);
         fs::write(dir.join("model.patch"), &model_patch)?;
         // Nothing to grade: an empty patch cannot resolve anything, so skip the test build.
         let (script_exit, results) = if model_patch.trim().is_empty() {
@@ -464,6 +476,55 @@ impl ModelRun<'_> {
         )?;
         Ok(record)
     }
+}
+
+/// The model's changes with every Rust inline test module (`#[cfg(test)] mod …`) put back as it
+/// was at the base commit. Test files are already dropped by path, as SWE-bench does; Rust keeps
+/// unit tests inside the code's own file, so without this a test the model added under a hidden
+/// test's name breaks the build, and a model that rewrote a file's tests makes the hidden test
+/// patch unappliable, both failing a fix whose code may be right. Files the model created,
+/// renamed or deleted, and files whose test modules cannot be told apart, are kept as they are.
+fn without_inline_test_edits(
+    repo: Option<&Repo>,
+    base_commit: &str,
+    files: Vec<FileDiff>,
+) -> Result<Vec<FileDiff>> {
+    let Some(repo) = repo else {
+        return Ok(files);
+    };
+    let mut kept = Vec::with_capacity(files.len());
+    for file in files {
+        let path = file.path().to_string();
+        let same_file = file.old_path.is_some() && file.old_path == file.new_path;
+        if !path.ends_with(".rs") || !same_file {
+            kept.push(file);
+            continue;
+        }
+        let Some(base) = repo.file_at(base_commit, &path)? else {
+            kept.push(file);
+            continue;
+        };
+        let Ok(changed) = git::apply_to_text(&path, &base, &file.text) else {
+            kept.push(file);
+            continue;
+        };
+        let Some(graded) = rust_tests::restore_old_tests(&base, &changed) else {
+            kept.push(file);
+            continue;
+        };
+        if graded == changed {
+            kept.push(file);
+        } else if graded == base {
+            // Only test edits in this file: none of it is graded.
+        } else {
+            kept.extend(diff::parse_unified(&repo.diff_texts(
+                &path,
+                Some(&base),
+                &graded,
+            )?)?);
+        }
+    }
+    Ok(kept)
 }
 
 /// `attempt.json`: the graded record plus what is needed to attach the router's cost later.
@@ -759,5 +820,81 @@ mod tests {
             agent_exit(&outcome(Some(0), None), d, None),
             AgentExit::Finished
         );
+    }
+
+    /// A repository with one commit holding `src/lib.rs`; returns it and the commit.
+    fn one_commit_repo(lib: &str) -> (Repo, String) {
+        let dir = std::env::temp_dir().join(format!(
+            "nasiko-eval-run-test-{}-{}",
+            std::process::id(),
+            lib.len()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("src")).expect("dir");
+        fs::write(dir.join("src/lib.rs"), lib).expect("write");
+        for args in [
+            &["init", "-q"][..],
+            &["add", "-A"],
+            &[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        ] {
+            let ok = std::process::Command::new("git")
+                .current_dir(&dir)
+                .args(args)
+                .status()
+                .expect("git runs")
+                .success();
+            assert!(ok, "git {args:?}");
+        }
+        let repo = Repo::open(&dir).expect("repo");
+        let head = std::process::Command::new("git")
+            .current_dir(&dir)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("rev-parse");
+        (
+            repo,
+            String::from_utf8_lossy(&head.stdout).trim().to_string(),
+        )
+    }
+
+    #[test]
+    fn a_model_test_named_like_a_hidden_one_is_not_graded() {
+        let base = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
+        let model = "pub fn f() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n\n    #[test]\n    fn hidden_name() {}\n}\n";
+        let (repo, head) = one_commit_repo(base);
+        let raw = repo
+            .diff_texts("src/lib.rs", Some(base), model)
+            .expect("diff");
+        let files = diff::parse_unified(&raw).expect("parses");
+        let graded = diff::join(&without_inline_test_edits(Some(&repo), &head, files).expect("ok"));
+        assert!(graded.contains("+    2"), "{graded}");
+        assert!(!graded.contains("hidden_name"), "{graded}");
+
+        // A file with only test edits is not graded at all; without a repo nothing changes.
+        let tests_only = base.replace("fn old() {}", "fn old() { assert!(true) }");
+        let raw = repo
+            .diff_texts("src/lib.rs", Some(base), &tests_only)
+            .expect("diff");
+        let files = diff::parse_unified(&raw).expect("parses");
+        assert!(
+            without_inline_test_edits(Some(&repo), &head, files.clone())
+                .expect("ok")
+                .is_empty()
+        );
+        assert_eq!(
+            without_inline_test_edits(None, &head, files)
+                .expect("ok")
+                .len(),
+            1
+        );
+        let _ = fs::remove_dir_all(repo.root());
     }
 }

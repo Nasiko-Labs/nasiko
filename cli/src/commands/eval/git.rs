@@ -309,6 +309,36 @@ fn slug_from_remote(url: &str) -> Option<String> {
     owner_and_name(url).and_then(|full| full.rsplit('/').next().map(str::to_string))
 }
 
+/// `base` with one file's unified diff (`a/<path>` → `b/<path>`) applied: the file as the diff
+/// leaves it.
+pub fn apply_to_text(path: &str, base: &str, file_diff: &str) -> Result<String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "nasiko-eval-apply-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let file = dir.join(path);
+    std::fs::create_dir_all(file.parent().context("path has a parent")?)?;
+    std::fs::write(&file, base)?;
+    std::fs::write(dir.join(".patch"), file_diff)?;
+    let out = Command::new("git")
+        .current_dir(&dir)
+        .args(["apply", "--whitespace=nowarn", ".patch"])
+        .output()
+        .context("failed to run git apply");
+    let result = match out {
+        Ok(out) if out.status.success() => std::fs::read_to_string(&file).map_err(Into::into),
+        Ok(out) => Err(anyhow::anyhow!(
+            "git apply failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(e) => Err(e),
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -368,5 +398,18 @@ mod tests {
             trailers(body),
             vec!["Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"]
         );
+    }
+
+    #[test]
+    fn apply_to_text_returns_the_changed_file() {
+        let repo = Repo {
+            root: std::env::temp_dir(),
+        };
+        let diff = repo
+            .diff_texts("src/lib.rs", Some("fn a() {}\n"), "fn b() {}\n")
+            .expect("diff");
+        let applied = apply_to_text("src/lib.rs", "fn a() {}\n", &diff).expect("applies");
+        assert_eq!(applied, "fn b() {}\n");
+        assert!(apply_to_text("src/lib.rs", "fn other() {}\n", &diff).is_err());
     }
 }
