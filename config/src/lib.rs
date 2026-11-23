@@ -612,6 +612,12 @@ pub struct Config {
     /// so at 50 turns a second the pool carries about 2,500 a second. Keep it under Postgres's
     /// own `max_connections` (100 by default), less what other clients use.
     pub database_max_connections: u32,
+    /// Dashboard reads (the Overview, the spend pages, the session list) one server serves at
+    /// once; the rest wait up to a few seconds for a turn and are then answered `503`.
+    /// DASHBOARD_MAX_CONCURRENT, default an eighth of `database_max_connections` (at least 1),
+    /// clamped to 1..=500. One such read holds up to six connections at a time, so a burst of
+    /// them can no longer take the pool from chat (`dashboard_limit`).
+    pub dashboard_max_concurrent: u32,
     /// Number of agent/connector image builds the build worker runs
     /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=256: each
     /// in-flight build is a `docker build` on this host (OSS) or a build on the
@@ -813,6 +819,7 @@ impl Config {
         )
         .map_err(anyhow::Error::msg)?;
         let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
+        let database_max_connections = env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             shutdown_drain_delay_secs: env_parse("SERVER_DRAIN_DELAY_SECS", 5).clamp(0, 60),
@@ -1101,7 +1108,12 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
+            database_max_connections,
+            dashboard_max_concurrent: env_parse(
+                "DASHBOARD_MAX_CONCURRENT",
+                (database_max_connections / 8).max(1),
+            )
+            .clamp(1, 500),
             build_concurrency,
             build_push_rate_limit_per_minute: env_parse(
                 "BUILD_PUSH_RATE_LIMIT_PER_MINUTE",

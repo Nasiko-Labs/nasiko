@@ -301,11 +301,13 @@ pub struct AgentSandboxMinutes {
     pub minutes: f64,
 }
 
-/// Sum each sandbox row's overlap with `[start, end)` in minutes, grouped by agent.
+/// Sum each sandbox row's overlap with `[start, end)` in minutes, grouped by agent; `agents`
+/// narrows it as in `windowed_agent_hours`.
 pub async fn windowed_sandbox_minutes(
     db: &PgPool,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
+    agents: Option<&[Uuid]>,
 ) -> sqlx::Result<Vec<AgentSandboxMinutes>> {
     sqlx::query_as(
         r#"SELECT s.agent_id,
@@ -316,10 +318,13 @@ pub async fn windowed_sandbox_minutes(
            WHERE s.kind = 'sandbox'
              AND s.started_at < $2
              AND COALESCE(s.ended_at, s.last_seen_at) > $1
+             AND ($3::uuid[] IS NULL OR s.agent_id = ANY($3))
            GROUP BY s.agent_id"#,
     )
+    .persistent(false)
     .bind(start)
     .bind(end)
+    .bind(agents)
     .fetch_all(db)
     .await
 }

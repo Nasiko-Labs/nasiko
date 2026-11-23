@@ -58,6 +58,8 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     /// Rate limit, concurrency cap and counters of the coding-agent ingest route.
     pub coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard,
+    /// How many dashboard reads this server serves at once (`dashboard_limit`).
+    pub dashboard_limit: crate::dashboard_limit::DashboardLimit,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
     /// In-process LLM router for the server's own platform-key calls (titles, planner,
@@ -587,6 +589,9 @@ impl AppState {
             flow_events,
             genai_metrics,
             coding_agent_ingest,
+            dashboard_limit: crate::dashboard_limit::DashboardLimit::new(
+                config.dashboard_max_concurrent,
+            ),
             config: Arc::new(config),
             routing_engine,
             llm_backend: routing_backend,

@@ -150,7 +150,8 @@ pub fn router() -> Router<AppState> {
 /// reporting endpoints; the cost belongs in Tempo query bounds, not in a
 /// request counter that breaks the UI long before it protects anything.
 pub fn protected_router(state: AppState) -> Router<AppState> {
-    let finops_routes = Router::new()
+    // The dashboard reads, capped per server (`dashboard_limit`).
+    let dashboard_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/savings", get(handler::get_finops_savings))
         .route("/finops/model-routing", get(handler::get_model_routing))
@@ -163,7 +164,6 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
             "/finops/context-savings/top-requests",
             get(handler::get_context_savings_top_requests),
         )
-        .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(
             "/finops/spend-timeseries",
@@ -180,10 +180,16 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route(
             "/finops/attributions",
             get(handler::get_finops_attributions),
-        );
+        )
+        .route("/session/list", get(handler::get_all_sessions))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::dashboard_limit::limit,
+        ))
+        // After the cap: it waits on a model call, and would hold a dashboard slot that long.
+        .route("/finops/insights", post(handler::get_finops_insights));
 
     Router::new()
-        .route("/session/list", get(handler::get_all_sessions))
         .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
         .route(
@@ -205,7 +211,7 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
             "/coding-agents/usage",
             get(super::coding_agents::get_coding_agent_usage),
         )
-        .merge(finops_routes)
+        .merge(dashboard_routes)
         // Owner-scoped: authenticated, then narrowed by the agent ACL inside the
         // handler. Deliberately NOT admin-gated — an agent's owner may see their
         // own agent's usage. Distinct path from `/agent/{id}/stats`, which is

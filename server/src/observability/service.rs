@@ -2780,12 +2780,13 @@ impl ObservabilityService {
         let prev_end = start;
         let prev_start = start - window_len;
 
-        let mut hours_rows = hours_meter::windowed_agent_hours(&self.db, start, now, None)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "container hours aggregation failed");
-                vec![]
-            });
+        let mut hours_rows =
+            hours_meter::windowed_agent_hours(&self.db, start, now, accessible_agent_ids)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "container hours aggregation failed");
+                    vec![]
+                });
         if let Some(accessible) = &accessible {
             hours_rows.retain(|row| accessible.contains(&row.agent_id));
         }
@@ -2799,12 +2800,13 @@ impl ObservabilityService {
         if !dropped_internal.is_empty() {
             hours_rows.retain(|row| !dropped_internal.contains(&row.agent_id));
         }
-        let mut minutes_rows = sandbox_meter::windowed_sandbox_minutes(&self.db, start, now)
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "sandbox minutes aggregation failed");
-                vec![]
-            });
+        let mut minutes_rows =
+            sandbox_meter::windowed_sandbox_minutes(&self.db, start, now, accessible_agent_ids)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "sandbox minutes aggregation failed");
+                    vec![]
+                });
         if let Some(accessible) = &accessible {
             minutes_rows.retain(|row| accessible.contains(&row.agent_id));
         }
@@ -4294,7 +4296,11 @@ Data: {}"#,
 
         let accessible: Option<HashSet<uuid::Uuid>> =
             accessible_agent_ids.map(|ids| ids.iter().copied().collect());
-        let mut rows = hours_meter::windowed_agent_hours(&self.db, start, end, agent_filter)
+        let agents = match &agent_filter {
+            Some(id) => Some(std::slice::from_ref(id)),
+            None => accessible_agent_ids,
+        };
+        let mut rows = hours_meter::windowed_agent_hours(&self.db, start, end, agents)
             .await
             .map_err(|e| ObservabilityError::Internal(e.to_string()))?;
         if let Some(accessible) = &accessible {
