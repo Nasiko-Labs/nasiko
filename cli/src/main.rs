@@ -4,7 +4,8 @@ use clap_complete::Shell;
 use nasiko::commands;
 use nasiko::commands::local_agents::{self, ConnectOptions, DisconnectOptions};
 use nasiko::{
-    AgentDevCommands, AgentOpsCommands, IntegrationSubCommands, McpSubCommands, RegistrySubCommands,
+    AgentDevCommands, AgentOpsCommands, EvalSubCommands, IntegrationSubCommands, McpSubCommands,
+    RegistrySubCommands,
 };
 
 /// Nasiko CLI — Build, deploy, and manage AI agents.
@@ -21,8 +22,8 @@ const HELP_TEXT: &str = "\
 \x1b[33mUsage:\x1b[0m nasiko <COMMAND>
 
 \x1b[33mSetup:\x1b[0m
-  up         Start local Nasiko cluster (agent devs)
-  down       Stop local Nasiko cluster
+  up         Start Nasiko locally from a clone (Docker Compose)
+  down       Stop the local Nasiko stack
   connect    Register a CP by URL, or connect local coding agents
   disconnect Disconnect local coding agents
   use        Switch active cluster
@@ -79,6 +80,9 @@ const HELP_TEXT: &str = "\
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
 
+\x1b[33mEvals:\x1b[0m
+  eval       Replay finished coding tasks on other models (harvest/build/screen/run/report)
+
 \x1b[33mMCP:\x1b[0m
   mcp        MCP Gateway — connectors, connections, sharing, credentials, oauth, agent-tools
 
@@ -123,6 +127,8 @@ enum Commands {
     Mcp(McpCommands),
     #[command(flatten)]
     Integration(IntegrationCommands),
+    #[command(flatten)]
+    Eval(EvalCommands),
 }
 
 #[derive(Subcommand)]
@@ -142,10 +148,10 @@ enum IntegrationCommands {
 #[derive(Subcommand)]
 #[command(next_help_heading = "Setup")]
 enum CpCommands {
-    /// Start local Nasiko cluster (pulls CP image from DockerHub)
-    #[command(after_help = "Config: ~/.nasiko/.env")]
+    /// Start Nasiko locally: builds and runs this checkout's Docker Compose stack
+    #[command(after_help = "Run from a clone of the repository. Config: .env in the checkout")]
     Up,
-    /// Stop local Nasiko cluster
+    /// Stop the local Nasiko stack (data is kept)
     Down,
     /// Register a CP by URL, or connect local coding agents
     #[command(after_help = CONNECT_HELP)]
@@ -241,6 +247,16 @@ enum RegistryCommands {
 }
 
 #[derive(Subcommand)]
+#[command(next_help_heading = "Evals")]
+enum EvalCommands {
+    /// Replay finished coding tasks on other models and compare quality and cost
+    Eval {
+        #[command(subcommand)]
+        command: EvalSubCommands,
+    },
+}
+
+#[derive(Subcommand)]
 #[command(next_help_heading = "MCP")]
 enum McpCommands {
     /// Manage MCP Gateway connectors, connections, and agent tool access
@@ -300,7 +316,7 @@ fn main() -> Result<()> {
         Commands::Agent(cmd) => nasiko::dispatch_agent_dev(cmd),
         Commands::Ops(cmd) => nasiko::dispatch_agent_ops(cmd),
         Commands::Cp(cmd) => match cmd {
-            CpCommands::Up => commands::dev::start(false),
+            CpCommands::Up => commands::dev::start(),
             CpCommands::Down => commands::dev::stop(),
             CpCommands::Connect {
                 target,
@@ -312,6 +328,17 @@ fn main() -> Result<()> {
                 let agent_target = target.as_deref().is_none_or(local_agents::is_coding_agent);
                 if agent_target && url.is_none() && name.is_none() {
                     return local_agents::connect(target.as_deref(), &coding_agent);
+                }
+                // A name that is not a coding agent may be an A2A agent running on this machine.
+                if !agent_target
+                    && url.is_none()
+                    && let Some(target) = target.as_deref()
+                    && let Some((agent, running)) = local_agents::running_a2a_agent(target)?
+                {
+                    if name.is_some() {
+                        anyhow::bail!("--name applies only when connecting a control-plane URL");
+                    }
+                    return local_agents::connect_a2a(&agent, &running, &coding_agent);
                 }
                 if coding_agent.is_set() {
                     anyhow::bail!(
@@ -392,6 +419,9 @@ fn main() -> Result<()> {
         Commands::Mcp(cmd) => match cmd {
             McpCommands::Mcp { command } => nasiko::dispatch_mcp(command),
         },
+        Commands::Eval(cmd) => match cmd {
+            EvalCommands::Eval { command } => nasiko::dispatch_eval(command),
+        },
         Commands::Integration(cmd) => match cmd {
             IntegrationCommands::Integration { command } => nasiko::dispatch_integration(command),
             IntegrationCommands::Integrations => {
@@ -453,6 +483,48 @@ impl<W: std::io::Write> std::io::Write for IgnoreBrokenPipe<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_eval_harvest_and_tasks() {
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "eval",
+            "harvest",
+            "--repo",
+            "/r",
+            "--since",
+            "2026-11-01",
+            "--redo",
+        ])
+        .unwrap();
+        let Commands::Eval(EvalCommands::Eval {
+            command: EvalSubCommands::Harvest {
+                repo, since, redo, ..
+            },
+        }) = cli.command
+        else {
+            panic!("expected eval harvest");
+        };
+        assert_eq!(repo, std::path::PathBuf::from("/r"));
+        assert_eq!(since.map(|d| d.to_string()).as_deref(), Some("2026-11-01"));
+        assert!(redo);
+
+        let cli = Cli::try_parse_from(["nasiko", "eval", "tasks", "--status", "candidate", "-j"])
+            .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Eval(EvalCommands::Eval {
+                command: EvalSubCommands::Tasks {
+                    status: Some(nasiko_evals::TaskStatus::Candidate),
+                    json: true
+                }
+            })
+        ));
+        assert!(
+            Cli::try_parse_from(["nasiko", "eval", "tasks", "--status", "done"]).is_err(),
+            "unknown status is refused"
+        );
+    }
 
     #[test]
     fn parses_opencode_connect_options() {
@@ -813,9 +885,9 @@ mod tests {
             assert!(!script.contains("__claude-token"), "{shell}");
         }
 
-        // Hidden subcommands are dropped at every level, not just the top: `agents discover`
-        // (hidden, renamed to `status`) is gone while its visible siblings stay. Checked on the
-        // tree rather than the scripts, where "discover" also appears in other commands' help.
+        // Hidden subcommands are dropped at every level, not just the top: `agents install`
+        // (hidden, renamed to `connect --reporting`) is gone while its visible siblings stay.
+        // Checked on the tree rather than the scripts, where "install" also appears elsewhere.
         let tree = without_hidden_subcommands(&Cli::command());
         let agents = tree
             .get_subcommands()
@@ -823,7 +895,8 @@ mod tests {
             .expect("agents command");
         let names: Vec<&str> = agents.get_subcommands().map(|c| c.get_name()).collect();
         assert!(names.contains(&"list-uploaded"), "{names:?}");
-        assert!(!names.contains(&"discover"), "{names:?}");
+        assert!(names.contains(&"discover"), "{names:?}");
+        assert!(!names.contains(&"install"), "{names:?}");
         assert!(!names.contains(&"report"), "{names:?}");
     }
 

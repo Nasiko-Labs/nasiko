@@ -838,8 +838,7 @@ already finished are left as they are and listed. Only runs of your own workflow
 
 #[derive(Subcommand)]
 pub enum AgentsCommands {
-    /// Discover coding agents installed on this machine (now: `status`)
-    #[command(hide = true)]
+    /// Discover coding agents installed and A2A agents running on this machine
     Discover,
     /// Install session reporting for a local coding agent (now: `connect <agent> --reporting`)
     #[command(hide = true)]
@@ -1176,6 +1175,116 @@ pub enum SkillCommands {
         /// Skill name
         name: String,
     },
+}
+
+/// `nasiko eval` subcommands.
+#[derive(Subcommand)]
+pub enum EvalSubCommands {
+    /// Create ~/.nasiko/eval/ and a default config.json
+    Init,
+    /// Turn finished Claude Code sessions of a repo into candidate tasks
+    Harvest {
+        /// The repository (any folder inside it)
+        #[arg(long, default_value = ".")]
+        repo: std::path::PathBuf,
+        /// Only sessions started on or after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<chrono::NaiveDate>,
+        /// Claude Code's log folder (default ~/.claude/projects)
+        #[arg(long)]
+        log_dir: Option<std::path::PathBuf>,
+        /// Look again at sessions an earlier harvest already looked at
+        #[arg(long)]
+        redo: bool,
+    },
+    /// Build and test settings per repository
+    Spec {
+        #[command(subcommand)]
+        command: EvalSpecCommands,
+    },
+    /// Build each candidate task's Docker image and run its tests to fill FAIL_TO_PASS / PASS_TO_PASS
+    Build {
+        /// Only these task ids (default: every candidate task)
+        #[arg(long)]
+        only: Vec<String>,
+        /// Runs of each set-up, to catch flaky tests
+        #[arg(long, default_value_t = 3)]
+        runs: u32,
+    },
+    /// Rewrite each task's request as an issue (prompt P1), through the Nasiko router
+    Rewrite {
+        /// Only these task ids (default: every task not yet rewritten)
+        #[arg(long)]
+        only: Vec<String>,
+    },
+    /// Screen reproducible tasks with the reviewer models (prompt P3), SWE-bench Verified style
+    Screen,
+    /// Review, as a person, the tasks no reviewer model could judge
+    Review,
+    /// Freeze every verified task into a new dataset version
+    Freeze {
+        /// Dataset name
+        #[arg(long)]
+        name: String,
+    },
+    /// Print a frozen dataset as SWE-bench JSONL (NAME or NAME@VERSION)
+    Export { dataset: String },
+    /// Replay a frozen dataset with opencode on one or more models, and grade every attempt
+    Run {
+        /// Dataset (NAME or NAME@VERSION)
+        #[arg(long)]
+        dataset: String,
+        /// Model short names from config.json (repeatable); the configured control runs first
+        #[arg(long = "model")]
+        models: Vec<String>,
+        /// Attempts per task
+        #[arg(long, default_value_t = 1)]
+        attempts: u32,
+        /// Parallel attempts (default: "workers" in config.json)
+        #[arg(long)]
+        workers: Option<u32>,
+    },
+    /// Show a run's results
+    Report {
+        run: String,
+        /// text, json or md
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Re-read a run's costs from the Nasiko router (e.g. after adding a missing price)
+    Costs { run: String },
+    /// Remove leftover eval containers and networks
+    Clean {
+        /// Only those of this run or task label
+        #[arg(long)]
+        label: Option<String>,
+    },
+    /// List tasks and their status
+    Tasks {
+        /// Only tasks with this status (candidate, reproducible, verified, rejected)
+        #[arg(long, value_parser = parse_task_status)]
+        status: Option<nasiko_evals::TaskStatus>,
+        /// Output as JSON
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+}
+
+/// `nasiko eval spec` subcommands.
+#[derive(Subcommand)]
+pub enum EvalSpecCommands {
+    /// Propose and save the build/test commands of a repository
+    Detect {
+        /// The repository (any folder inside it)
+        #[arg(long, default_value = ".")]
+        repo: std::path::PathBuf,
+    },
+}
+
+fn parse_task_status(s: &str) -> std::result::Result<nasiko_evals::TaskStatus, String> {
+    serde_json::from_value(serde_json::Value::String(s.to_lowercase())).map_err(|_| {
+        format!("unknown status {s:?}: use candidate, reproducible, verified or rejected")
+    })
 }
 
 #[derive(Subcommand)]
@@ -1538,8 +1647,7 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
         },
         AgentOpsCommands::Agents { command } => match command {
             AgentsCommands::Discover => {
-                commands::local_agents::note_renamed("agents discover", "status");
-                commands::local_agents::print_overview()
+                commands::integration::discover(commands::local_agents::cli_name())
             }
             AgentsCommands::Install { agent, no_content } => {
                 install_reporting_renamed("agents", &agent, no_content)
@@ -1814,6 +1922,62 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
                 json,
             } => commands::maf::trace(&instruction, content.as_deref(), cleanup, json),
         },
+    }
+}
+
+pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
+    use commands::eval;
+    match cmd {
+        EvalSubCommands::Init => eval::init(),
+        EvalSubCommands::Harvest {
+            repo,
+            since,
+            log_dir,
+            redo,
+        } => eval::harvest(&eval::HarvestArgs {
+            repo,
+            since: since
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|t| t.and_utc()),
+            log_dir,
+            redo: if redo {
+                eval::Redo::All
+            } else {
+                eval::Redo::Skip
+            },
+        }),
+        EvalSubCommands::Tasks { status, json } => eval::tasks(status, json),
+        EvalSubCommands::Spec {
+            command: EvalSpecCommands::Detect { repo },
+        } => eval::spec_detect(&repo),
+        EvalSubCommands::Build { only, runs } => eval::build(&eval::BuildArgs { only, runs }),
+        EvalSubCommands::Clean { label } => eval::clean(label.as_deref()),
+        EvalSubCommands::Rewrite { only } => eval::rewrite(&only),
+        EvalSubCommands::Screen => eval::screen_tasks(),
+        EvalSubCommands::Review => eval::review(),
+        EvalSubCommands::Freeze { name } => eval::freeze(&name),
+        EvalSubCommands::Export { dataset } => eval::export(&dataset),
+        EvalSubCommands::Run {
+            dataset,
+            models,
+            attempts,
+            workers,
+        } => eval::run(&eval::run::RunArgs {
+            dataset,
+            models,
+            attempts,
+            workers,
+        }),
+        EvalSubCommands::Report { run, format } => {
+            let format = match format.as_str() {
+                "text" => eval::report::Format::Text,
+                "json" => eval::report::Format::Json,
+                "md" | "markdown" => eval::report::Format::Markdown,
+                other => anyhow::bail!("unknown format {other:?}: use text, json or md"),
+            };
+            eval::report_run(&run, format)
+        }
+        EvalSubCommands::Costs { run } => eval::costs(&run),
     }
 }
 

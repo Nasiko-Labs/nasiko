@@ -1,0 +1,290 @@
+//! The prompts: P1 (rewrite a session's request as an issue), P3 (screen a task, Verified-style)
+//! and P4 (the replayed agent's task), and parsers for the model replies.
+
+use serde::Deserialize;
+
+use crate::instance::{Difficulty, TaskInstance};
+use crate::session::TaskSource;
+use crate::spec::{self, EnvSpec};
+
+/// Recorded with every run, so a result can be traced to the exact wording.
+pub const PROMPT_VERSION: &str = "2026-11-24.1";
+
+/// A system + user message pair.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatPrompt {
+    pub system: String,
+    pub user: String,
+}
+
+#[derive(Debug, thiserror::Error, PartialEq)]
+pub enum PromptError {
+    #[error("the reply has no JSON object")]
+    NoJson,
+    #[error("the reply's JSON is not in the expected shape: {0}")]
+    BadShape(String),
+}
+
+const P1_SYSTEM: &str = "You turn a developer's chat messages to a coding assistant into a GitHub-issue-style problem statement for a coding benchmark. You never invent requirements and never describe how to implement the fix.";
+
+const P1_USER: &str = r#"Repository: {repo}
+
+Below are the messages a developer typed to a coding assistant, oldest first. The assistant's replies and all tool output have been removed. The session may contain several tasks; the one that matters is the work that ended in this commit:
+
+<commit>
+subject: {subjects}
+files changed: {files}
+</commit>
+
+<messages>
+{messages}
+</messages>
+
+Write the problem statement for that one change, as if it were a GitHub issue filed before any code was written.
+
+Rules:
+1. Describe the problem or the wanted behaviour, and how someone would tell it is done. Keep every requirement the developer stated for this change, including ones added in later messages.
+2. Do not add requirements the developer did not state. Ignore messages about other tasks.
+3. Do not describe the solution: no code, no diffs, no "edit line N of file X". The commit subject and file list are only there to help you find the right request: do not copy them. You may name a file, function or command only if the developer named it as part of what they wanted.
+4. Messages that only steer the assistant during the work ("look in router.rs", "no, try a different approach", "run the tests again", "OK", "raise a PR") are not requirements. Put useful ones, shortened, into "hints".
+5. Remove secrets, keys, tokens, internal hostnames, personal names and emails.
+6. If the messages do not say what this change was for, answer REJECT.
+
+Answer with JSON only, no other text:
+{"status": "OK" | "REJECT", "title": "<one line, max 80 characters>", "problem_statement": "<markdown issue body>", "hints": "<steering messages, shortened, or empty string>", "reason": "<only for REJECT: one sentence>"}"#;
+
+/// Prompt P1 for one task.
+pub fn distill_prompt(repo: &str, source: &TaskSource) -> ChatPrompt {
+    let messages = source
+        .context_messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| format!("[{}] {}", i + 1, m.text))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    ChatPrompt {
+        system: P1_SYSTEM.to_string(),
+        user: P1_USER
+            .replace("{repo}", repo)
+            .replace("{subjects}", &source.commit_subjects.join(" / "))
+            .replace("{files}", &source.changed_files.join(", "))
+            .replace("{messages}", &messages),
+    }
+}
+
+/// P1's answer.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Distilled {
+    Ok {
+        title: String,
+        statement: String,
+        hints: String,
+    },
+    Reject(String),
+}
+
+#[derive(Deserialize)]
+struct DistillReply {
+    status: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    problem_statement: String,
+    #[serde(default)]
+    hints: String,
+    #[serde(default)]
+    reason: String,
+}
+
+pub fn parse_distill_reply(reply: &str) -> Result<Distilled, PromptError> {
+    let r: DistillReply = from_reply(reply)?;
+    match r.status.to_uppercase().as_str() {
+        "OK" if !r.problem_statement.trim().is_empty() => Ok(Distilled::Ok {
+            title: r.title.trim().to_string(),
+            statement: r.problem_statement.trim().to_string(),
+            hints: r.hints.trim().to_string(),
+        }),
+        "OK" => Err(PromptError::BadShape("empty problem_statement".into())),
+        "REJECT" | "SPLIT" => Ok(Distilled::Reject(r.reason)),
+        other => Err(PromptError::BadShape(format!("status {other:?}"))),
+    }
+}
+
+const P3_SYSTEM: &str = "You review tasks for a coding benchmark. A model will get only the problem statement and the repository at the base commit, and must write a fix. Its fix is then judged by hidden tests. Your job is to say whether that is fair. Be strict.";
+
+const P3_USER: &str = r#"Repository: {repo}
+
+<problem_statement>
+{statement}
+</problem_statement>
+
+<gold_patch>   (the real fix; the model will NOT see this)
+{patch}
+</gold_patch>
+
+<test_patch>   (the hidden tests; the model will NOT see this)
+{test_patch}
+</test_patch>
+
+Tests that must go from failing to passing: {f2p}
+
+Answer four questions.
+
+Q1 CLARITY. Could a skilled engineer who knows this repository, but has not seen the gold patch, tell exactly what a correct solution must do?
+  0 = The issue is well specified; it is clear what a successful solution needs.
+  1 = Some blanks to fill in, but there is a sensible interpretation of what is needed.
+  2 = Vague; room for ambiguity; unclear what a successful solution looks like.
+  3 = Almost impossible to understand what is asked without more information.
+
+Q2 TEST VALIDITY. Would the FAIL_TO_PASS tests accept every reasonable correct solution?
+  0 = The tests cover all possible correct solutions.
+  1 = The tests cover the majority of correct solutions; some unusual ones may be missed.
+  2 = The tests work, but some perfectly reasonable solutions would fail them (for example they check names, messages or structure the problem statement never asked for).
+  3 = The tests are too narrow or too broad, or test something different from what the problem statement asks.
+
+Q3 OTHER PROBLEMS. List any that apply, or an empty list: "needs_network", "needs_secret_or_service", "needs_manual_or_ui_check", "depends_on_time_or_randomness", "gold_patch_has_unrelated_changes", "statement_leaks_solution", "other: <short text>".
+
+Q4 EFFORT. How long would an experienced engineer who knows the repository need to write and check this fix? One of: "<15 min fix", "15 min - 1 hour", "1-4 hours", ">4 hours".
+
+Think it through privately first, then answer with JSON only:
+{"clarity": 0-3, "clarity_reason": "...", "test_validity": 0-3, "test_validity_reason": "...", "other_problems": [...], "effort": "...", "effort_reason": "..."}"#;
+
+/// Longest patch text put into P3; longer ones are cut with a note.
+pub const MAX_PATCH_CHARS: usize = 60_000;
+
+/// Prompt P3 for one task.
+pub fn screen_prompt(task: &TaskInstance) -> ChatPrompt {
+    ChatPrompt {
+        system: P3_SYSTEM.to_string(),
+        user: P3_USER
+            .replace("{repo}", &task.repo)
+            .replace("{statement}", &task.problem_statement)
+            .replace("{patch}", &cut(&task.patch))
+            .replace("{test_patch}", &cut(&task.test_patch))
+            .replace("{f2p}", &task.fail_to_pass.join(", ")),
+    }
+}
+
+fn cut(text: &str) -> String {
+    if text.len() <= MAX_PATCH_CHARS {
+        return text.to_string();
+    }
+    let mut end = MAX_PATCH_CHARS;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!(
+        "{}\n[… cut: {} more characters]",
+        &text[..end],
+        text.len() - end
+    )
+}
+
+/// One reviewer's answer to P3.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, Deserialize)]
+pub struct ScreenVerdict {
+    #[serde(default)]
+    pub reviewer: String,
+    pub clarity: u8,
+    #[serde(default)]
+    pub clarity_reason: String,
+    pub test_validity: u8,
+    #[serde(default)]
+    pub test_validity_reason: String,
+    #[serde(default)]
+    pub other_problems: Vec<String>,
+    pub effort: Difficulty,
+    #[serde(default)]
+    pub effort_reason: String,
+}
+
+pub fn parse_screen_reply(reviewer: &str, reply: &str) -> Result<ScreenVerdict, PromptError> {
+    let mut v: ScreenVerdict = from_reply(reply)?;
+    if v.clarity > 3 || v.test_validity > 3 {
+        return Err(PromptError::BadShape("scores must be 0-3".into()));
+    }
+    v.reviewer = reviewer.to_string();
+    Ok(v)
+}
+
+const P4: &str = "You are working in a git repository at /testbed. Resolve the issue below.
+
+<issue>
+{problem_statement}
+</issue>
+
+Rules:
+1. Change only non-test source files. Do not add, edit or delete test files.
+2. Make the fix general and consistent with the existing code, not a special case for one input.
+3. Do not commit, stash, reset or switch branches. Leave your changes in the working tree.
+4. There is no internet access. All dependencies are already installed; do not try to install packages.
+5. You may build and run tests to check your work:
+   build: {build_cmd}
+   tests: {test_cmd}
+6. Do not ask questions. Nobody will answer. Make the most reasonable choice and continue.
+7. When you are done, stop and reply with a short summary of what you changed and why.
+";
+
+/// Prompt P4: the replayed agent's task (the user message; opencode adds its own system prompt).
+pub fn agent_task_prompt(task: &TaskInstance, spec: &EnvSpec) -> String {
+    let scope = &task.x_nasiko.test_scope;
+    P4.replace("{problem_statement}", &task.problem_statement)
+        .replace("{build_cmd}", &spec::with_scope(&spec.build_cmd, scope))
+        .replace("{test_cmd}", &spec::with_scope(&spec.test_cmd, scope))
+}
+
+/// The first `{ … }` object in a reply, also when wrapped in a code fence or prose.
+fn from_reply<T: for<'de> Deserialize<'de>>(reply: &str) -> Result<T, PromptError> {
+    let start = reply.find('{').ok_or(PromptError::NoJson)?;
+    let end = reply.rfind('}').ok_or(PromptError::NoJson)?;
+    if end < start {
+        return Err(PromptError::NoJson);
+    }
+    serde_json::from_str(&reply[start..=end]).map_err(|e| PromptError::BadShape(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn distill_replies_in_fences_parse() {
+        let reply = "Sure:\n```json\n{\"status\":\"OK\",\"title\":\"Fix retry\",\"problem_statement\":\"Retries stop early.\",\"hints\":\"\"}\n```";
+        assert_eq!(
+            parse_distill_reply(reply),
+            Ok(Distilled::Ok {
+                title: "Fix retry".into(),
+                statement: "Retries stop early.".into(),
+                hints: String::new()
+            })
+        );
+        assert_eq!(
+            parse_distill_reply("{\"status\":\"REJECT\",\"reason\":\"no task\"}"),
+            Ok(Distilled::Reject("no task".into()))
+        );
+        assert_eq!(
+            parse_distill_reply("no json here"),
+            Err(PromptError::NoJson)
+        );
+    }
+
+    #[test]
+    fn screen_replies_are_checked() {
+        let ok = "{\"clarity\":1,\"test_validity\":0,\"other_problems\":[],\"effort\":\"15 min - 1 hour\"}";
+        let v = parse_screen_reply("m", ok).expect("parses");
+        assert_eq!(
+            (v.clarity, v.effort, v.reviewer.as_str()),
+            (1, Difficulty::Min15To1H, "m")
+        );
+        let bad = "{\"clarity\":7,\"test_validity\":0,\"effort\":\"<15 min fix\"}";
+        assert!(parse_screen_reply("m", bad).is_err());
+    }
+
+    #[test]
+    fn long_patches_are_cut_on_a_char_boundary() {
+        let text = "é".repeat(MAX_PATCH_CHARS);
+        let cut = cut(&text);
+        assert!(cut.contains("[… cut:"));
+        assert!(cut.len() < text.len() + 50);
+    }
+}
