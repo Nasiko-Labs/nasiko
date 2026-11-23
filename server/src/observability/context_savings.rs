@@ -563,6 +563,9 @@ pub async fn get_by_agent(
             AND ($4::uuid[] IS NULL OR s.user_id = ANY($4)) \
           GROUP BY s.agent_id",
     )
+    // Unprepared: a prepared statement's generic plan (from its sixth run) can't tell `$4 IS NULL`
+    // from a list of people, so it reads every caller's messages in the window.
+    .persistent(false)
     .bind(q.start)
     .bind(q.end)
     .bind(&ids)

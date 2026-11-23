@@ -604,11 +604,15 @@ fn mine(t: &str) -> String {
     format!("($2::uuid[] IS NULL OR {t}user_id = ANY($2))")
 }
 
+/// Binds [`UsageScope`] as [`usage_where`] expects it, on an unprepared statement: a prepared one
+/// gets Postgres's generic plan from its sixth run, which can't tell `$2 IS NULL` from a list of
+/// people, never uses the user index, and reads every caller's rows in the window.
 fn bind_usage<'q, O>(
     query: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
     usage: &'q UsageScope,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
     query
+        .persistent(false)
         .bind(&usage.agents)
         .bind(&usage.people)
         .bind(&usage.owned)
