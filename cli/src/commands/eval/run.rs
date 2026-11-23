@@ -84,6 +84,7 @@ pub fn run(
             .get(m)
             .with_context(|| format!("model {m:?} is not under \"models\" in config.json"))?;
     }
+    refuse_self_graded(store, &tasks, &config, &models)?;
     let run_id = format!(
         "{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S"),
@@ -135,6 +136,33 @@ pub fn run(
     info.finished_at = Some(Utc::now());
     store.save_json(&run_dir.join("run.json"), &info)?;
     Ok(info)
+}
+
+/// The dataset must be built by stronger models than the ones tested: a model that rewrote a
+/// task's request or screened it would be scored on tasks it shaped itself.
+fn refuse_self_graded(
+    store: &Store,
+    tasks: &[TaskInstance],
+    config: &EvalConfig,
+    models: &[String],
+) -> Result<()> {
+    let mut builders: Vec<String> = config.reviewers.clone();
+    builders.extend(config.rewriter.clone());
+    for task in tasks {
+        builders.extend(
+            store
+                .load_reviews(&task.instance_id)?
+                .into_iter()
+                .map(|r| r.reviewer),
+        );
+    }
+    let tested_builders: Vec<&String> = models.iter().filter(|m| builders.contains(m)).collect();
+    if !tested_builders.is_empty() {
+        bail!(
+            "{tested_builders:?} also rewrote or screened this dataset; build the dataset with a stronger model (\"rewriter\" and \"reviewers\" in config.json, then `rewrite`, `screen`, `freeze` again) before testing it"
+        );
+    }
+    Ok(())
 }
 
 /// Everything one model's batch shares.
@@ -600,6 +628,39 @@ mod tests {
         let export = s.find("opencode export").expect("exports");
         let diff = s.find("git diff --cached --binary HEAD").expect("diffs");
         assert!(run < export && export < diff);
+    }
+
+    #[test]
+    fn a_model_that_built_the_dataset_is_not_tested_on_it() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::new(nasiko_evals::EvalLayout::new(dir.path()));
+        let task: TaskInstance =
+            serde_json::from_str(include_str!("testdata/task.json")).expect("task");
+        let mut config: EvalConfig = serde_json::from_str("{}").expect("config");
+        config.rewriter = Some("strong".into());
+        config.reviewers = vec!["strong".into()];
+        let tasks = vec![task];
+        assert!(refuse_self_graded(&store, &tasks, &config, &["flint".into()]).is_ok());
+        assert!(refuse_self_graded(&store, &tasks, &config, &["strong".into()]).is_err());
+        config.reviewers = vec![];
+        config.rewriter = None;
+        let review = nasiko_evals::prompt::ScreenVerdict {
+            reviewer: "flint".into(),
+            clarity: 0,
+            clarity_reason: String::new(),
+            test_validity: 0,
+            test_validity_reason: String::new(),
+            other_problems: vec![],
+            effort: nasiko_evals::Difficulty::Under15Min,
+            effort_reason: String::new(),
+        };
+        store
+            .save_json(
+                &store.layout().review_file(&tasks[0].instance_id, "flint"),
+                &review,
+            )
+            .expect("saves");
+        assert!(refuse_self_graded(&store, &tasks, &config, &["flint".into()]).is_err());
     }
 
     #[test]

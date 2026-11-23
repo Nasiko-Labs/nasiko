@@ -74,8 +74,9 @@ own figure (its `trace_usage` rows, priced by its price book).
 ```
 
 * `models`: short name → router provider label and model id.
-* `rewriter`, `reviewers`: models for prompts P1 and P3. With no reviewers, every task goes to
-  `nasiko eval review`.
+* `rewriter`, `reviewers`: models for prompts P1 and P3. Use stronger models than the ones you
+  test: `run` refuses to test a model that rewrote or screened the dataset. With no reviewers,
+  every task goes to `nasiko eval review`.
 * `control`: a model to re-run in the same harness as the fair comparison. Without one, models
   are compared with the original sessions (whose real fixes solved every task) and their cost.
 * `storage_mib`: disk each container may write before it is stopped (2 GiB by default).
