@@ -1243,6 +1243,9 @@ pub enum EvalSubCommands {
         /// Parallel attempts (default: "workers" in config.json)
         #[arg(long)]
         workers: Option<u32>,
+        /// Also test models that rewrote or screened the dataset (marked in the report)
+        #[arg(long)]
+        allow_builder: bool,
     },
     /// Show a run's results
     Report {
@@ -1962,11 +1965,17 @@ pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
             models,
             attempts,
             workers,
+            allow_builder,
         } => eval::run(&eval::run::RunArgs {
             dataset,
             models,
             attempts,
             workers,
+            builders: if allow_builder {
+                eval::run::BuilderPolicy::AllowAndMark
+            } else {
+                eval::run::BuilderPolicy::Refuse
+            },
         }),
         EvalSubCommands::Report { run, format } => {
             let format = match format.as_str() {

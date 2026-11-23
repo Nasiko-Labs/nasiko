@@ -38,6 +38,16 @@ pub struct RunArgs {
     pub models: Vec<String>,
     pub attempts: u32,
     pub workers: Option<u32>,
+    pub builders: BuilderPolicy,
+}
+
+/// Whether models that rewrote or screened the dataset may be tested on it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum BuilderPolicy {
+    Refuse,
+    /// Test them anyway (e.g. as a strong reference); the report marks their scores as
+    /// optimistic.
+    AllowAndMark,
 }
 
 /// `run.json`: everything needed to reproduce and report the run.
@@ -48,6 +58,9 @@ pub struct RunInfo {
     pub dataset_version: u32,
     pub models: Vec<String>,
     pub control: Option<String>,
+    /// Tested models that also built the dataset (allowed with `--allow-builder`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub builders_tested: Vec<String>,
     pub attempts: u32,
     pub prompt_version: String,
     pub opencode_version: String,
@@ -84,7 +97,12 @@ pub fn run(
             .get(m)
             .with_context(|| format!("model {m:?} is not under \"models\" in config.json"))?;
     }
-    refuse_self_graded(store, &tasks, &config, &models)?;
+    let builders_tested = builders_among(store, &tasks, &config, &models)?;
+    if !builders_tested.is_empty() && args.builders == BuilderPolicy::Refuse {
+        bail!(
+            "{builders_tested:?} also rewrote or screened this dataset; build the dataset with a stronger model (\"rewriter\" and \"reviewers\" in config.json, then `rewrite`, `screen`, `freeze` again), or pass --allow-builder to run it as a marked reference"
+        );
+    }
     let run_id = format!(
         "{}-{}",
         Utc::now().format("%Y%m%dT%H%M%S"),
@@ -96,6 +114,7 @@ pub fn run(
         dataset_version: manifest.version,
         models: models.clone(),
         control: config.control.clone(),
+        builders_tested,
         attempts: args.attempts.max(1),
         prompt_version: prompt::PROMPT_VERSION.to_string(),
         opencode_version: opencode_version().to_string(),
@@ -139,13 +158,14 @@ pub fn run(
 }
 
 /// The dataset must be built by stronger models than the ones tested: a model that rewrote a
-/// task's request or screened it would be scored on tasks it shaped itself.
-fn refuse_self_graded(
+/// task's request or screened it would be scored on tasks it shaped itself. Returns the tested
+/// models that did.
+fn builders_among(
     store: &Store,
     tasks: &[TaskInstance],
     config: &EvalConfig,
     models: &[String],
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let mut builders: Vec<String> = config.reviewers.clone();
     builders.extend(config.rewriter.clone());
     for task in tasks {
@@ -156,13 +176,11 @@ fn refuse_self_graded(
                 .map(|r| r.reviewer),
         );
     }
-    let tested_builders: Vec<&String> = models.iter().filter(|m| builders.contains(m)).collect();
-    if !tested_builders.is_empty() {
-        bail!(
-            "{tested_builders:?} also rewrote or screened this dataset; build the dataset with a stronger model (\"rewriter\" and \"reviewers\" in config.json, then `rewrite`, `screen`, `freeze` again) before testing it"
-        );
-    }
-    Ok(())
+    Ok(models
+        .iter()
+        .filter(|m| builders.contains(m))
+        .cloned()
+        .collect())
 }
 
 /// Everything one model's batch shares.
@@ -640,8 +658,15 @@ mod tests {
         config.rewriter = Some("strong".into());
         config.reviewers = vec!["strong".into()];
         let tasks = vec![task];
-        assert!(refuse_self_graded(&store, &tasks, &config, &["flint".into()]).is_ok());
-        assert!(refuse_self_graded(&store, &tasks, &config, &["strong".into()]).is_err());
+        assert!(
+            builders_among(&store, &tasks, &config, &["flint".into()])
+                .expect("reads")
+                .is_empty()
+        );
+        assert_eq!(
+            builders_among(&store, &tasks, &config, &["strong".into()]).expect("reads"),
+            vec!["strong".to_string()]
+        );
         config.reviewers = vec![];
         config.rewriter = None;
         let review = nasiko_evals::prompt::ScreenVerdict {
@@ -660,7 +685,10 @@ mod tests {
                 &review,
             )
             .expect("saves");
-        assert!(refuse_self_graded(&store, &tasks, &config, &["flint".into()]).is_err());
+        assert_eq!(
+            builders_among(&store, &tasks, &config, &["flint".into()]).expect("reads"),
+            vec!["flint".to_string()]
+        );
     }
 
     #[test]

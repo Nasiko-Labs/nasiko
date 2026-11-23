@@ -70,7 +70,13 @@ fn markdown(
         s.push_str(&format!(
             "| {}{} | {} ({}–{}), n={} | {} | {:.4} | {} | {} | {} | {} |\n",
             m.model,
-            if m.is_control { " (control)" } else { "" },
+            if info.builders_tested.contains(&m.model) {
+                " (built the dataset: optimistic)"
+            } else if m.is_control {
+                " (control)"
+            } else {
+                ""
+            },
             pct(m.resolved.value),
             pct(m.resolved.low95),
             pct(m.resolved.high95),
