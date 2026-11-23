@@ -33,8 +33,10 @@ pub mod coding_agent_turn_summary_backfill;
 mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
+pub mod current_time;
 pub mod embedding_change;
 pub mod error_reporting;
+mod evals;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -154,13 +156,13 @@ where
     T: 'static,
 {
     let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
-    // OSS-tier agent grants/visibility API (list grants, public toggle, user
-    // and agent-agent shares, ownership transfer). Mounted HERE and not in
-    // `agents::router()` because EE replaces it wholesale: `build_ee_app`
-    // nests its richer org-aware grants router at the same
-    // `/api/agents/{id}/…` paths, and mounting both would panic on route
-    // conflicts at startup. Handlers gate themselves on owner-or-superuser
-    // (`acl::can_manage_agent`), so the mount needs only `require_auth`.
+    // Agent grants/visibility API (list grants, public toggle, user and
+    // agent-agent shares, ownership transfer). Mounted HERE and not in
+    // `agents::router()` so a caller composing its own app can replace it
+    // wholesale with a grants router at the same `/api/agents/{id}/…` paths;
+    // mounting both would panic on route conflicts at startup. Handlers gate
+    // themselves on owner-or-superuser (`acl::can_manage_agent`), so the mount
+    // needs only `require_auth`.
     let grant_routes = Router::new()
         .nest("/agents", agents::grants::router())
         .layer(middleware::from_fn_with_state(
@@ -242,6 +244,8 @@ where
                 outbound: std::sync::Arc::new(crate::prompt_context::PromptContextOutbound::new(
                     state.prompt_context.clone(),
                 )),
+                // Each step's message carries the current date and time, as every other path's does.
+                clock: state.agent_clock(),
                 // Wakes a parked agent before its step is sent, like the proxy and dispatch do.
                 targets: std::sync::Arc::new(crate::agent_resolver::ServerTargetResolver::new(
                     state.clone(),
@@ -387,6 +391,7 @@ where
         .merge(coding_agent_onboarding::router())
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
+        .merge(evals::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
@@ -503,6 +508,10 @@ where
     let llm_ctx = nasiko_llm_router::LlmRouterCtx {
         ledger: state.usage_tracker.ledger(),
         payer: state.shared_call_payer.clone(),
+        // A discovered A2A agent's calls become turns of its chat session, so it shows in Sessions.
+        turn_recorder: std::sync::Arc::new(chat::discovered_turns::DiscoveredAgentSessions::new(
+            state.db.clone(),
+        )),
         ..nasiko_llm_router::LlmRouterCtx::from_shared(state.db.clone())
             .with_config_cache(state.llm_config_cache.clone())
             .with_attachment_store(state.attachment_store.clone())

@@ -950,6 +950,9 @@ fn end_user_turn_with(turn: Option<&mut Value>, text: &str) -> bool {
     }
 }
 
+/// Dummy signature Gemini accepts when the real one was lost (ai.google.dev thought-signatures docs).
+const SKIP_THOUGHT_SIGNATURE: &str = "skip_thought_signature_validator";
+
 fn assistant_to_gemini(m: &Message) -> Value {
     let mut parts: Vec<Value> = Vec::new();
     if let Some(t) = m.text()
@@ -958,12 +961,23 @@ fn assistant_to_gemini(m: &Message) -> Value {
         parts.push(json!({ "text": t }));
     }
     if let Some(tool_calls) = &m.tool_calls {
-        for tc in tool_calls {
+        // Gemini 3+/thinking models reject a model turn whose first functionCall lacks a
+        // thoughtSignature. Clients that rebuild history (Responses API, compacted tools,
+        // stored chats) drop it, so send Google's documented bypass value instead.
+        let has_sig: bool = tool_calls.iter().any(|tc| {
+            tc.extra
+                .get("thought_signature")
+                .and_then(|v| v.as_str())
+                .is_some()
+        });
+        for (i, tc) in tool_calls.iter().enumerate() {
             let args: Value =
                 serde_json::from_str(&tc.function.arguments).unwrap_or_else(|_| json!({}));
             let mut fc_part = json!({ "functionCall": { "name": tc.function.name, "args": args } });
             if let Some(sig) = tc.extra.get("thought_signature").and_then(|v| v.as_str()) {
                 fc_part["thoughtSignature"] = Value::String(sig.to_string());
+            } else if i == 0 && !has_sig {
+                fc_part["thoughtSignature"] = Value::String(SKIP_THOUGHT_SIGNATURE.to_string());
             }
             parts.push(fc_part);
         }
@@ -1136,6 +1150,8 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
+            is_discovered_agent: false,
         }
     }
 
@@ -1961,11 +1977,11 @@ mod tests {
             "File: data.csv\n\nregion,q2\nEMEA,913"
         );
 
-        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let doc = "application/msword";
         let message = gemini_rejection(&with_parts(vec![json!({ "type": "file", "file": {
-            "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
+            "file_data": format!("data:{doc};base64,0M8R4A=="), "filename": "r.doc"
         }})]));
-        assert!(message.contains(docx), "{message}");
+        assert!(message.contains(doc), "{message}");
     }
 
     #[test]
@@ -2278,6 +2294,24 @@ mod tests {
         assert_eq!(resp.choices[0].message.text().as_deref(), Some("done"));
         refused.assert_async().await;
         whole.assert_async().await;
+    }
+
+    #[test]
+    fn missing_thought_signature_gets_bypass_on_first_call_only() {
+        let call = |name: &str| ToolCall {
+            id: name.into(),
+            kind: "function".into(),
+            function: FunctionCall {
+                name: name.into(),
+                arguments: "{}".into(),
+            },
+            extra: Map::new(),
+        };
+        let mut m: Message = serde_json::from_value(json!({"role": "assistant"})).unwrap();
+        m.tool_calls = Some(vec![call("a"), call("b")]);
+        let v: Value = assistant_to_gemini(&m);
+        assert_eq!(v["parts"][0]["thoughtSignature"], SKIP_THOUGHT_SIGNATURE);
+        assert!(v["parts"][1].get("thoughtSignature").is_none());
     }
 
     #[test]

@@ -815,6 +815,8 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
+            is_discovered_agent: false,
         }
     }
 
@@ -890,6 +892,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_word_document_reaches_openai_as_the_text_it_holds() {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(
+            "word/document.xml",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(
+            br#"<w:document xmlns:w="w"><w:body><w:p><w:r><w:t>Contract CN-58213</w:t></w:r></w:p></w:body></w:document>"#,
+        )
+        .unwrap();
+        let docx = zip.finish().unwrap().into_inner();
+
+        let mut server = mockito::Server::new_async().await;
+        let (provider, mock) = builtin_openai(
+            &mut server,
+            json!([{ "role": "user", "content": [
+                { "type": "text", "text": "what does it say?" },
+                { "type": "text", "text": "File: contract.docx\n\nContract CN-58213" }
+            ]}]),
+            1,
+        )
+        .await;
+        let req = ask_with(json!({ "type": "file", "file": {
+            "file_data": format!(
+                "data:application/vnd.openxmlformats-officedocument.wordprocessingml.document;base64,{}",
+                b64(&docx)
+            ),
+            "filename": "contract.docx"
+        }}));
+
+        provider
+            .chat(&req, &resolved("gpt-4o", None))
+            .await
+            .unwrap();
+
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn an_anthropic_text_document_reaches_openai_as_a_text_part() {
         use crate::inbound::InboundParser;
         let mut server = mockito::Server::new_async().await;
@@ -922,13 +965,13 @@ mod tests {
 
     #[tokio::test]
     async fn a_file_or_image_type_openai_cannot_read_is_refused_before_sending() {
-        let docx = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let doc = "application/msword";
         let cases = [
             (
                 json!({ "type": "file", "file": {
-                    "file_data": format!("data:{docx};base64,UEsDBA=="), "filename": "r.docx"
+                    "file_data": format!("data:{doc};base64,0M8R4A=="), "filename": "r.doc"
                 }}),
-                docx,
+                doc,
             ),
             (
                 json!({ "type": "image_url", "image_url": { "url": "data:image/tiff;base64,SUkqAA==" } }),

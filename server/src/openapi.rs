@@ -29,6 +29,8 @@ use crate::state::AppState;
         crate::catalog::routes::by_skill,
         crate::catalog::routes::create,
         crate::catalog::routes::register_coding_agent,
+        crate::catalog::discovered::register_discovered_agents,
+        crate::catalog::discovered::list_discovered_agents,
         crate::catalog::routes::list,
         crate::catalog::routes::get_one,
         crate::catalog::routes::update,
@@ -135,6 +137,8 @@ use crate::state::AppState;
         crate::settings::update_context_tiers,
         crate::observability::routes::agent_logs,
         crate::observability::routes::agent_logs_stream,
+        crate::evals::get_usage,
+        crate::evals::post_price,
     ),
     components(schemas(
         crate::secrets::routes::SecretEntry,
@@ -151,6 +155,12 @@ use crate::state::AppState;
         crate::catalog::routes::AgentDetailResponse,
         crate::catalog::routes::RegisterCodingAgentRequest,
         crate::catalog::routes::RegisterCodingAgentResponse,
+        crate::catalog::discovered::RegisterDiscoveredRequest,
+        crate::catalog::discovered::DiscoveredAgentInput,
+        crate::catalog::discovered::RegisterDiscoveredResponse,
+        crate::catalog::discovered::RegisteredAgent,
+        crate::catalog::discovered::ListDiscoveredResponse,
+        crate::catalog::discovered::DiscoveredAgentEntry,
         crate::catalog::routes::DeletedAgent,
         crate::catalog::routes::AgentSearchResponse,
         crate::catalog::routes::AgentSearchResult,
@@ -315,6 +325,11 @@ use crate::state::AppState;
         crate::coding_agent_onboarding::SyncRun,
         crate::coding_agent_onboarding::CodingAgentPrivacy,
         crate::coding_agent_onboarding::SyncRunsResponse,
+        crate::evals::UsagePage,
+        crate::evals::AttemptUsage,
+        crate::evals::PriceEnvelope,
+        crate::evals::PriceRequest,
+        crate::evals::PricedTokens,
         EmptyEnvelope,
     )),
     tags(
@@ -328,6 +343,7 @@ use crate::state::AppState;
         (name = "llm-router", description = "LLM routing presets, provider/model catalog, and tier→model registry"),
         (name = "context-selection", description = "Per-user chat-history selection preferences: strategy, PACMS budget tier, the on/off switch, a dry-run preview, and settings-change history"),
         (name = "coding-agents", description = "The progress local clients report while they bring in the caller's coding agents"),
+        (name = "evals", description = "Replay evals: what each attempt of a run cost through the router, and the same price book for token counts it never saw"),
         (name = "settings", description = "Workspace-wide settings, including the Optimization tiers a user's PACMS budget level resolves against"),
     ),
 )]
@@ -377,5 +393,7 @@ mod tests {
         assert!(json.contains("/api/mcp/connectors"));
         assert!(json.contains("/api/usage/summary"));
         assert!(json.contains("/api/observability/coding-agents/usage"));
+        assert!(json.contains("/api/evals/usage"));
+        assert!(json.contains("/api/evals/price"));
     }
 }

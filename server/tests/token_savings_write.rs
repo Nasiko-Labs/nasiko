@@ -63,6 +63,7 @@ fn record(
         compact_tools_bytes: None,
         request_bytes,
         failure: None,
+        eval_attempt: None,
     }
 }
 

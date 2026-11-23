@@ -34,9 +34,10 @@ use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
 use crate::payer;
 use crate::providers::{ProviderError, fallback};
-use crate::resolver::{PgRegistry, RegistryStore, RequestHint, resolve_for};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, RequestHint, resolve_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::routing::{self, BoundarySignals, RouteInputs};
+use crate::turns::{self, StreamedReply, TurnRecorder, TurnStart};
 use crate::usage::{self, UsageRecord};
 
 #[derive(Clone)]
@@ -55,6 +56,8 @@ pub(crate) struct RoutedRequest {
     /// success, failed attempt, streamed — carries the same block, since the model was chosen once.
     pub routing_metadata: Option<serde_json::Value>,
     pub sticky_conv_id: Option<String>,
+    /// The replay-eval attempt every row of this request is filed under (`crate::eval_tag`).
+    pub eval_attempt: Option<String>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -517,7 +520,21 @@ async fn chat_core_as(
         compression: _,
         routing_metadata,
         sticky_conv_id,
+        eval_attempt,
     } = routed;
+    // A discovered agent's call is also a turn of its conversation (see `crate::turns`). Read
+    // the user message before compression can rewrite the request.
+    // In a tool loop the latest user message is the question every call of the loop repeats,
+    // so a call answering tool results is recorded as that instead.
+    let turn = resolved.is_discovered_agent.then(|| TurnStart {
+        user_text: if routing::is_tool_continuation(&req.messages) {
+            turns::TOOL_RESULTS.to_string()
+        } else {
+            routing::latest_user_query(&req.messages).unwrap_or_default()
+        },
+        started_at: chrono::Utc::now(),
+        span: tracing::Span::current(),
+    });
 
     crate::attachments::expand::attach_marked_files(ctx, &mut req, flow_id.as_deref(), &agent_id)
         .await?;
@@ -714,6 +731,7 @@ async fn chat_core_as(
         attribution_source,
         request_bytes: Some(sent_bytes),
         routing_metadata: routing_metadata.clone(),
+        eval_attempt: eval_attempt.clone(),
     };
     let mut attempts = crate::providers::attempts::AttemptLog::default();
 
@@ -759,6 +777,8 @@ async fn chat_core_as(
             compress_bytes,
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
+            turn,
+            eval_attempt,
         });
     }
 
@@ -838,6 +858,7 @@ async fn chat_core_as(
                 request_bytes: Some(sent_bytes),
                 // The provider answered; only the router could not decode the reply.
                 failure: None,
+                eval_attempt: eval_attempt.clone(),
             },
         );
         compact_tools_bytes = None;
@@ -877,6 +898,15 @@ async fn chat_core_as(
             .map_or(0, Vec::len),
     );
 
+    if let Some(turn) = turn {
+        ctx.turn_recorder.record(turn.finish(
+            (agent_id.clone(), owner_id.clone()),
+            turns::reply_text(&resp),
+            model.clone(),
+            resp.usage.as_ref(),
+            latency_ms,
+        ));
+    }
     usage::spawn_log(
         ctx.db.clone(),
         ctx.pricing.clone(),
@@ -904,6 +934,7 @@ async fn chat_core_as(
             compact_tools_bytes,
             request_bytes: Some(sent_bytes),
             failure: None,
+            eval_attempt,
         },
     );
 
@@ -930,7 +961,9 @@ pub(crate) async fn resolve_routed_request(
     // traceparent lookup is a permanent dead end for it (see that fn's doc comment), which
     // otherwise pins every request to Level 4 (the agent's configured `llm_config`) and
     // makes the prompt classifier (Level 3) unreachable. Derive signals from the transcript
-    // itself instead for these agents.
+    // itself instead for these agents. An A2A agent the CLI discovered on a user's machine is
+    // in the same position (Nasiko never calls it, so no flow exists), and its calls are
+    // likewise billed to its owner rather than refused for a missing traceparent.
     let (boundary, flow_id, billed_user_id, attribution_source, query, acting_user) =
         if let Some(s) = session.as_ref() {
             // Session-bound coding agent: the signed token names the user, so bill that
@@ -958,7 +991,7 @@ pub(crate) async fn resolve_routed_request(
                 // keeps resolving on the agent owner.
                 None,
             )
-        } else if is_coding_agent(store, &agent_id).await? {
+        } else if runs_outside_flows(store, &agent_id).await? {
             (
                 BoundarySignals::for_coding_agent(
                     &agent_id,
@@ -1006,9 +1039,20 @@ pub(crate) async fn resolve_routed_request(
     let (subject, retry_after) =
         payer::subject_for_call(store, ctx.payer.as_ref(), &agent_id, &owner_id, acting_user)
             .await?;
-    let mut resolved = resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint)
-        .await
-        .map_err(|e| payer::allowance_error(e, retry_after))?;
+    let mut resolved =
+        match resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint).await {
+            Err(no_key @ GatewayError::NoApiKey { .. })
+                if matches!(subject, ConfigSubject::Owner(_)) =>
+            {
+                match payer::cover_owner_call(ctx.payer.as_ref(), &owner_id, acting_user).await? {
+                    Some(covered) => {
+                        resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, covered, hint).await?
+                    }
+                    None => return Err(no_key),
+                }
+            }
+            resolved => resolved.map_err(|e| payer::allowance_error(e, retry_after))?,
+        };
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
     let decision = routing::route_model_with(
         ctx.classifier.as_ref(),
@@ -1073,7 +1117,10 @@ pub(crate) async fn resolve_routed_request(
         );
         resolved.fallback_models.clear();
     }
+    let eval_attempt =
+        crate::eval_tag::eval_attempt(headers, resolved.coding_integration.as_deref());
     Ok(RoutedRequest {
+        eval_attempt,
         agent_id,
         owner_id: billed_user_id,
         resolved,
@@ -1117,10 +1164,14 @@ pub(crate) async fn forget_route_that_did_not_answer(
     ctx.router_cache.forget(conv_id, agent_id).await;
 }
 
-/// Whether the agent is a coding-agent CLI integration, read before its config is resolved
-/// (the config depends on who the call is attributed to, and a coding agent is never
-/// attributed). A missing agent row is `NoRegistryEntry`, as the resolver reports it.
-async fn is_coding_agent(store: &dyn RegistryStore, agent_id: &str) -> Result<bool, GatewayError> {
+/// Whether the agent runs outside any flow: a coding-agent CLI integration, or an A2A agent the
+/// CLI discovered on a user's machine. Read before its config is resolved (the config depends on
+/// who the call is attributed to, and neither kind is ever attributed). A missing agent row is
+/// `NoRegistryEntry`, as the resolver reports it.
+async fn runs_outside_flows(
+    store: &dyn RegistryStore,
+    agent_id: &str,
+) -> Result<bool, GatewayError> {
     let no_entry = || GatewayError::NoRegistryEntry(agent_id.to_string());
     let agent_uuid = uuid::Uuid::parse_str(agent_id).map_err(|_| no_entry())?;
     let flags = store
@@ -1128,7 +1179,7 @@ async fn is_coding_agent(store: &dyn RegistryStore, agent_id: &str) -> Result<bo
         .await
         .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
         .ok_or_else(no_entry)?;
-    Ok(flags.is_coding_agent)
+    Ok(flags.is_coding_agent || flags.is_discovered_agent)
 }
 
 /// The text the salience gate and classifier score for an in-flow call: the end user's
@@ -1203,6 +1254,11 @@ struct StreamChatArgs<'a> {
     /// `compress_metadata` is: on this path the `UsageRecord` is only built once the stream ends.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Set for a discovered agent: its reply is gathered as it streams and recorded as a turn
+    /// when the stream ends.
+    turn: Option<TurnStart>,
+    /// The replay-eval attempt the stream's row is filed under (`crate::eval_tag`).
+    eval_attempt: Option<String>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -1229,8 +1285,13 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         routing_metadata,
         compress_bytes,
         request_bytes,
+        turn,
+        eval_attempt,
     } = args;
-    let state = Arc::new(Mutex::new(StreamState::default()));
+    let state = Arc::new(Mutex::new(StreamState {
+        reply: turn.is_some().then(StreamedReply::default),
+        ..StreamState::default()
+    }));
     let guard = UsageGuard {
         db: ctx.db.clone(),
         pricing: ctx.pricing.clone(),
@@ -1251,6 +1312,8 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         routing_metadata,
         compress_bytes,
         request_bytes,
+        turn: turn.map(|turn| (ctx.turn_recorder.clone(), turn)),
+        eval_attempt,
     };
 
     let body_stream = async_stream::stream! {
@@ -1278,6 +1341,9 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
                             chunk.choices.first().and_then(|c| c.delta.tool_calls.as_ref())
                         {
                             st.tool_call_indexes.extend(calls.iter().map(|c| c.index));
+                        }
+                        if let (Some(reply), Some(choice)) = (st.reply.as_mut(), chunk.choices.first()) {
+                            reply.push(choice.delta.content.as_deref(), choice.delta.tool_calls.as_deref());
                         }
                     }
                     for frame in renderer.render(chunk) {
@@ -1314,6 +1380,8 @@ struct StreamState {
     tool_call_indexes: std::collections::BTreeSet<i64>,
     /// Set when the provider's stream broke off with an error.
     failure: Option<usage::CallFailure>,
+    /// The reply so far, when the call is recorded as a turn.
+    reply: Option<StreamedReply>,
 }
 
 /// Writes the streaming usage row when dropped (stream completion or client disconnect).
@@ -1339,6 +1407,10 @@ struct UsageGuard {
     /// `Copy`, so unlike the four above these are read rather than taken.
     compress_bytes: Option<(usize, usize)>,
     request_bytes: Option<usize>,
+    /// Taken in `drop`: the recorder and start of a discovered agent's turn.
+    turn: Option<(Arc<dyn TurnRecorder>, TurnStart)>,
+    /// Taken in `drop`, like the metadata blocks.
+    eval_attempt: Option<String>,
 }
 
 impl UsageGuard {
@@ -1348,9 +1420,19 @@ impl UsageGuard {
         let brevity_metadata = self.brevity_metadata.take();
         let compact_tools_metadata = self.compact_tools_metadata.take();
         let routing_metadata = self.routing_metadata.take();
+        let eval_attempt = self.eval_attempt.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         record_tool_calls(&self.span, st.tool_call_indexes.len());
+        if let (Some((recorder, turn)), Some(reply)) = (self.turn.take(), st.reply.as_ref()) {
+            recorder.record(turn.finish(
+                (self.agent_id.clone(), self.owner_id.clone()),
+                reply.text(),
+                self.model.clone(),
+                st.usage.as_ref(),
+                self.started.elapsed().as_millis() as i64,
+            ));
+        }
         UsageRecord {
             owner_id: self.owner_id.clone(),
             agent_id: self.agent_id.clone(),
@@ -1375,6 +1457,7 @@ impl UsageGuard {
             compact_tools_bytes: None,
             request_bytes: self.request_bytes,
             failure: st.failure,
+            eval_attempt,
         }
     }
 }
@@ -1526,8 +1609,11 @@ mod tests {
                     finish_reason: None,
                     tool_call_indexes: Default::default(),
                     failure: None,
+                    reply: None,
                 })),
                 flow_id: None,
+                turn: None,
+                eval_attempt: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
                 // ran, so there is nothing for the guard to credit.
                 compress_bytes: None,
@@ -1575,6 +1661,7 @@ mod tests {
                     finish_reason: Some("tool_calls".into()),
                     tool_call_indexes: [0, 1].into_iter().collect(),
                     failure: None,
+                    reply: None,
                 })),
                 flow_id: None,
                 compress_bytes: None,
@@ -1585,6 +1672,8 @@ mod tests {
                 brevity_metadata: None,
                 compact_tools_metadata: None,
                 routing_metadata: None,
+                turn: None,
+                eval_attempt: None,
             };
             drop(guard);
         });
@@ -1627,6 +1716,8 @@ mod tests {
             brevity_metadata: None,
             compact_tools_metadata: None,
             routing_metadata: None,
+            turn: None,
+            eval_attempt: None,
         };
         let record = guard.usage_record();
         assert_eq!(
@@ -1644,6 +1735,7 @@ mod tests {
     struct Store {
         config: Option<LLMConfig>,
         is_coding_agent: bool,
+        is_discovered_agent: bool,
         compress_enabled: bool,
     }
     #[async_trait]
@@ -1656,6 +1748,8 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
+                coding_integration: None,
+                is_discovered_agent: self.is_discovered_agent,
                 compress_enabled: self.compress_enabled,
             }))
         }
@@ -1755,6 +1849,7 @@ mod tests {
             inner: Store {
                 config: None,
                 is_coding_agent: true,
+                is_discovered_agent: false,
                 compress_enabled: false,
             },
             revoked_at,
@@ -1864,6 +1959,7 @@ mod tests {
             marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 
@@ -1971,6 +2067,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled,
         };
         chat_core(
@@ -2069,6 +2166,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
@@ -2115,6 +2213,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         // Anthropic Messages request shape: top-level system + max_tokens.
@@ -2171,6 +2270,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         // Gemini Messages request shape: systemInstruction + contents.
@@ -2217,6 +2317,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "stream": true, "messages": [{ "role": "user", "content": "hi" }] });
@@ -2242,12 +2343,212 @@ mod tests {
         assert!(body.trim_end().ends_with("data: [DONE]"));
     }
 
+    /// Keeps every turn it is given, for tests to read back.
+    #[derive(Clone, Default)]
+    struct CapturedTurns(Arc<std::sync::Mutex<Vec<crate::turns::RecordedTurn>>>);
+
+    impl crate::turns::TurnRecorder for CapturedTurns {
+        fn record(&self, turn: crate::turns::RecordedTurn) {
+            self.0.lock().unwrap().push(turn);
+        }
+    }
+
+    fn store_for(is_discovered_agent: bool) -> Store {
+        Store {
+            config: None,
+            is_coding_agent: false,
+            is_discovered_agent,
+            compress_enabled: false,
+        }
+    }
+
+    /// A conversation whose latest user message is the one a turn is recorded under.
+    fn conversation(stream: bool) -> Value {
+        json!({
+            "model": "gpt-4o", "stream": stream,
+            "messages": [
+                { "role": "system", "content": "be brief" },
+                { "role": "user", "content": "earlier question" },
+                { "role": "assistant", "content": "earlier answer" },
+                { "role": "user", "content": "plan my day" }
+            ]
+        })
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_call_is_recorded_as_a_turn() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "finish_reason": "stop",
+                                  "message": { "role": "assistant", "content": "start with email" } }],
+                    "usage": { "prompt_tokens": 30, "completion_tokens": 4, "total_tokens": 34 }
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].agent_id, AGENT);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].model, "gpt-4o");
+        assert_eq!(
+            (recorded[0].input_tokens, recorded[0].output_tokens),
+            (Some(30), Some(4))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_discovered_agents_streamed_reply_is_recorded_once_the_stream_ends() {
+        let mut server = mockito::Server::new_async().await;
+        let sse = concat!(
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"start \"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"with email\"}}]}\n\n",
+            "data: {\"id\":\"x\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":4,\"total_tokens\":34}}\n\n",
+            "data: [DONE]\n\n",
+        );
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "text/event-stream")
+            .with_body(sse)
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        let resp = chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            conversation(true),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+        // Nothing is recorded while the reply streams; the agent's response is not held for it.
+        assert!(turns.0.lock().unwrap().is_empty());
+        let body = body_string(resp).await;
+        assert!(body.contains("with email"));
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded.len(), 1);
+        assert_eq!(recorded[0].user_text, "plan my day");
+        assert_eq!(recorded[0].assistant_text, "start with email");
+        assert_eq!(recorded[0].output_tokens, Some(4));
+    }
+
+    #[tokio::test]
+    async fn a_call_answering_tool_results_is_recorded_as_such() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "done" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+        let body = json!({
+            "model": "gpt-4o",
+            "messages": [
+                { "role": "user", "content": "plan my day" },
+                { "role": "assistant", "content": null, "tool_calls": [
+                    { "id": "c1", "type": "function", "function": { "name": "calendar", "arguments": "{}" } }
+                ] },
+                { "role": "tool", "tool_call_id": "c1", "content": "3 meetings" }
+            ]
+        });
+
+        chat_core(
+            &ctx,
+            &store_for(true),
+            &auth_headers(&token()),
+            body,
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let recorded = turns.0.lock().unwrap().clone();
+        assert_eq!(recorded[0].user_text, crate::turns::TOOL_RESULTS);
+        assert_eq!(recorded[0].assistant_text, "done");
+    }
+
+    #[tokio::test]
+    async fn only_discovered_agents_calls_are_recorded() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "id": "r", "object": "chat.completion", "model": "gpt-4o",
+                    "choices": [{ "index": 0, "message": { "role": "assistant", "content": "ok" } }]
+                })
+                .to_string(),
+            )
+            .create_async()
+            .await;
+        let turns = CapturedTurns::default();
+        let mut ctx = ctx_with(server.url());
+        ctx.turn_recorder = Arc::new(turns.clone());
+
+        chat_core(
+            &ctx,
+            &store_for(false),
+            &auth_headers(&token()),
+            conversation(false),
+            InboundFormat::OpenAi,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert!(turns.0.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn missing_auth_is_401_before_any_provider_call() {
         let ctx = ctx_with("http://unused".into());
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [] });
@@ -2279,6 +2580,7 @@ mod tests {
         Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         }
     }
@@ -2426,6 +2728,7 @@ mod tests {
         let store = Store {
             config: None,
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let mut headers = HeaderMap::new();
@@ -2496,6 +2799,7 @@ mod tests {
         let store = SharedCallerStore(Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         });
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
@@ -2514,10 +2818,12 @@ mod tests {
 
     const SHARED: &str = "33333333-3333-3333-3333-333333333333";
 
-    /// An agent `OWNER` owns, attached to `owner-model`, called by `flow_user`. Every secret
-    /// decrypts to `key-of-<holder>`, so the key a provider receives names whose key it is.
+    /// An agent `OWNER` owns, attached to `owner_config` (`owner-model` unless a test clears it),
+    /// called by `flow_user`. Every secret decrypts to `key-of-<holder>`, so the key a provider
+    /// receives names whose key it is.
     struct PayerStore {
         flow_user: Uuid,
+        owner_config: Option<LLMConfig>,
         chosen: Option<LLMConfig>,
         default: Option<LLMConfig>,
         is_coding_agent: bool,
@@ -2533,6 +2839,7 @@ mod tests {
             };
             Self {
                 flow_user: Uuid::parse_str(SHARED).unwrap(),
+                owner_config: Some(keyed("owner-model")),
                 chosen: chosen.map(keyed),
                 default: default.map(keyed),
                 is_coding_agent: false,
@@ -2548,13 +2855,11 @@ mod tests {
             _: Uuid,
         ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
             Ok(Some(AgentConfigResult {
-                config: Some(LLMConfig {
-                    model: Some("owner-model".into()),
-                    api_key_secret_name: Some("KEY".into()),
-                    ..openai_config()
-                }),
+                config: self.owner_config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
+                coding_integration: None,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
         }
@@ -2646,9 +2951,20 @@ mod tests {
     async fn paid_chat(store: &PayerStore, payer: &Payers, model: &str, key_holder: &str) {
         install_master_key();
         let mut server = mockito::Server::new_async().await;
-        let mock = server
+        let mock = completion_mock(&mut server, model, &format!("key-of-{key_holder}")).await;
+        chat_paid_by(payer, server.url(), store).await.unwrap();
+        mock.assert_async().await;
+    }
+
+    /// A completion answered only for `model` with `Bearer <key>`, exactly once.
+    async fn completion_mock(
+        server: &mut mockito::ServerGuard,
+        model: &str,
+        key: &str,
+    ) -> mockito::Mock {
+        server
             .mock("POST", "/chat/completions")
-            .match_header("authorization", format!("Bearer key-of-{key_holder}").as_str())
+            .match_header("authorization", format!("Bearer {key}").as_str())
             .match_body(mockito::Matcher::PartialJson(json!({ "model": model })))
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -2662,9 +2978,7 @@ mod tests {
             )
             .expect(1)
             .create_async()
-            .await;
-        chat_paid_by(payer, server.url(), store).await.unwrap();
-        mock.assert_async().await;
+            .await
     }
 
     /// What the payer is asked about: the agent's owner, then the calling user.
@@ -2735,8 +3049,8 @@ mod tests {
         let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
         assert_eq!(
             body["detail"],
-            "Today's calls on this agent's own model are used up. Connect your own model in LLM \
-             router to keep chatting with it, or try again after 00:00 UTC."
+            "Today's free model calls are used up. Connect your own model in LLM router to keep \
+             going, or try again after 00:00 UTC."
         );
     }
 
@@ -2829,6 +3143,174 @@ mod tests {
         assert!(asked(&payer).is_empty());
     }
 
+    /// Agents get no platform key; the platform keeps its own.
+    fn no_agent_key_ctx(base: String, payer: &Payers) -> LlmRouterCtx {
+        let ctx = ctx_with(base);
+        let cfg = GatewayConfig {
+            generic_key_fallback: false,
+            platform_openai_api_key: String::new(),
+            service_openai_api_key: "sk-service".into(),
+            ..(*ctx.cfg).clone()
+        };
+        LlmRouterCtx {
+            cfg: Arc::new(cfg),
+            payer: payer.clone(),
+            ..ctx
+        }
+    }
+
+    /// The owner calling their own agent, which resolves to no config.
+    fn unconfigured_owner() -> PayerStore {
+        PayerStore {
+            flow_user: Uuid::parse_str(OWNER).unwrap(),
+            owner_config: None,
+            ..PayerStore::new(None, None)
+        }
+    }
+
+    fn owner_asked_about_themselves() -> Vec<(Uuid, Uuid)> {
+        let owner = Uuid::parse_str(OWNER).unwrap();
+        vec![(owner, owner)]
+    }
+
+    #[tokio::test]
+    async fn an_owner_without_a_key_is_covered_on_the_platform_defaults() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let mut server = mockito::Server::new_async().await;
+        // The request asks for `gpt-4o`; a covered call runs the platform default instead.
+        let mock = completion_mock(&mut server, "gpt-4o-mini", "sk-service").await;
+        let ctx = no_agent_key_ctx(server.url(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(asked(&payer), owner_asked_about_themselves());
+    }
+
+    #[tokio::test]
+    async fn an_owner_whose_allowance_is_spent_gets_the_429() {
+        let spent = Payer::CallerAfterAllowance {
+            retry_after_secs: 120,
+        };
+        let payer = crate::payer::RecordingPayer::answering(Some(spent));
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                GatewayError::OwnerAllowanceSpent {
+                    retry_after_secs: 120
+                }
+            ),
+            "{err:?}"
+        );
+        let response = err.into_response();
+        assert_eq!(response.status(), axum::http::StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(response.headers()["retry-after"], "120");
+        let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
+        assert_eq!(
+            body["detail"],
+            "Today's free model calls are used up. Connect your own model in LLM router to keep \
+             going, or try again after 00:00 UTC."
+        );
+    }
+
+    #[tokio::test]
+    async fn an_owner_the_payer_leaves_alone_keeps_the_no_api_key_error() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Caller));
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
+        let headers = auth_headers(&token());
+        let store = unconfigured_owner();
+        let err = chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, GatewayError::NoApiKey { .. }), "{err:?}");
+        assert_eq!(asked(&payer), owner_asked_about_themselves());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_owner_with_a_working_config_is_never_counted_on_the_no_agent_key_ctx() {
+        install_master_key();
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let mut server = mockito::Server::new_async().await;
+        let mock = completion_mock(&mut server, "owner-model", &format!("key-of-{OWNER}")).await;
+        let ctx = no_agent_key_ctx(server.url(), &payer);
+        let headers = auth_headers(&token());
+        let store = PayerStore {
+            flow_user: Uuid::parse_str(OWNER).unwrap(),
+            ..PayerStore::new(None, None)
+        };
+        chat_core(&ctx, &store, &headers, hello(), InboundFormat::OpenAi, None)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert!(asked(&payer).is_empty());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_shared_caller_is_never_put_on_the_platform() {
+        // The platform covers only an owner's own call: for anyone else the answer is their own config.
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let store = PayerStore::new(None, Some("default-model"));
+        paid_chat(&store, &payer, "default-model", SHARED).await;
+        assert_eq!(asked(&payer), owner_and_caller());
+    }
+
+    #[tokio::test]
+    async fn an_unattributed_call_that_finds_no_key_never_asks_the_payer() {
+        let payer = crate::payer::RecordingPayer::answering(Some(Payer::Platform));
+        let ctx = no_agent_key_ctx("http://unused".into(), &payer);
+        // A coding agent and a session token are never attributed to a flow user.
+        let coding_store = PayerStore {
+            is_coding_agent: true,
+            owner_config: None,
+            ..PayerStore::new(None, None)
+        };
+        let session = SessionClaims {
+            agent_id: AGENT.into(),
+            user_id: OWNER.into(),
+            session_id: "ses_1".into(),
+            flow_id: "flow".into(),
+            jti: "jti".into(),
+            aud: String::new(),
+            iat: 0,
+            exp: 0,
+        };
+        for session in [None, Some(session)] {
+            let routed = resolve_routed_request(
+                &ctx,
+                &coding_store,
+                &HeaderMap::new(),
+                AGENT.into(),
+                OWNER.into(),
+                RequestHint {
+                    provider: Some("openai"),
+                    model: None,
+                },
+                RequestSignals {
+                    query: Some("hi".into()),
+                    turn_ordinal: 1,
+                    is_tool_continuation: false,
+                },
+                session,
+            )
+            .await;
+            let Err(err) = routed else {
+                panic!("an unattributed call was covered");
+            };
+            assert!(matches!(err, GatewayError::NoApiKey { .. }), "{err:?}");
+        }
+        assert!(asked(&payer).is_empty());
+    }
+
     /// A store whose session-flow lookup answers a fixed later-turn flow.
     struct SessionStore(Store);
     #[async_trait]
@@ -2882,6 +3364,7 @@ mod tests {
         let store = SessionStore(Store {
             config: None,
             is_coding_agent: true,
+            is_discovered_agent: false,
             compress_enabled: false,
         });
         let claims = SessionClaims {
@@ -2954,6 +3437,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: true,
+            is_discovered_agent: false,
         };
         let routed = resolve_routed_request(
             &ctx,
@@ -2995,6 +3479,7 @@ mod tests {
         Store {
             config: Some(config),
             is_coding_agent: true,
+            is_discovered_agent: false,
             compress_enabled: false,
         }
     }
@@ -3027,6 +3512,91 @@ mod tests {
         )
         .await
         .unwrap()
+    }
+
+    /// A coding agent of the given integration (`agents.coding_agent_integration_id`).
+    struct IntegrationStore(Store, &'static str);
+    #[async_trait]
+    impl RegistryStore for IntegrationStore {
+        async fn fetch_llm_config(
+            &self,
+            id: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            Ok(self
+                .0
+                .fetch_llm_config(id)
+                .await?
+                .map(|agent| AgentConfigResult {
+                    is_coding_agent: true,
+                    coding_integration: Some(self.1.into()),
+                    ..agent
+                }))
+        }
+        async fn fetch_agent_owner(&self, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            self.0.fetch_agent_owner(id).await
+        }
+        async fn fetch_user_secret(
+            &self,
+            user: Uuid,
+            name: &str,
+        ) -> Result<Option<String>, sqlx::Error> {
+            self.0.fetch_user_secret(user, name).await
+        }
+        async fn fetch_live_flow(
+            &self,
+            trace: &str,
+            agent: Uuid,
+            window: i64,
+        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
+            self.0.fetch_live_flow(trace, agent, window).await
+        }
+        async fn fetch_custom_provider(
+            &self,
+            label: &str,
+        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
+            self.0.fetch_custom_provider(label).await
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
+            self.0.fetch_org_embedding_default().await
+        }
+    }
+
+    async fn route_tagged(integration: &'static str, tag: &str) -> RoutedRequest {
+        let (ctx, _) = tiered_ctx("http://unused".into());
+        let store = IntegrationStore(tiered_store(Vec::new(), None), integration);
+        let mut headers = HeaderMap::new();
+        headers.insert(crate::eval_tag::EVAL_ATTEMPT_HEADER, tag.parse().unwrap());
+        resolve_routed_request(
+            &ctx,
+            &store,
+            &headers,
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint::default(),
+            RequestSignals {
+                query: Some("fix the bug".into()),
+                turn_ordinal: 1,
+                is_tool_continuation: false,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn the_eval_identitys_attempt_tag_reaches_every_row_of_the_request() {
+        let routed = route_tagged("eval", "run-1:task-3:2").await;
+        assert_eq!(routed.resolved.coding_integration.as_deref(), Some("eval"));
+        assert_eq!(routed.eval_attempt.as_deref(), Some("run-1:task-3:2"));
+    }
+
+    #[tokio::test]
+    async fn another_coding_agent_cannot_file_its_calls_under_an_eval_attempt() {
+        let routed = route_tagged("opencode", "run-1:task-3:2").await;
+        assert_eq!(routed.eval_attempt, None);
     }
 
     #[tokio::test]
@@ -3196,6 +3766,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let result = resolve_routed_request(
@@ -3223,6 +3794,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn discovered_agent_with_no_traceparent_is_billed_to_its_owner() {
+        // An A2A agent the CLI discovered runs on the user's machine and is never called
+        // through Nasiko, so it never has a traceparent. Its calls are accepted and billed to
+        // its owner, while it stays an ordinary agent for everything coding agents skip.
+        let ctx = ctx_with("http://unused".into());
+        let store = Store {
+            config: Some(LLMConfig {
+                provider: "openai".into(),
+                model: Some("static-configured-model".into()),
+                fallback_models: vec![],
+                temperature: None,
+                max_tokens: None,
+                api_key_secret_name: None,
+                pinned: false,
+                pinned_model: None,
+                tier1_model: None,
+                tier2_model: None,
+                tier3_model: None,
+                embedding_provider: None,
+                embedding_model: None,
+                embedding_api_key_secret_name: None,
+                embedding_model_override: false,
+            }),
+            is_coding_agent: false,
+            is_discovered_agent: true,
+            compress_enabled: false,
+        };
+        let routed = resolve_routed_request(
+            &ctx,
+            &store,
+            &HeaderMap::new(),
+            AGENT.into(),
+            OWNER.into(),
+            RequestHint {
+                provider: Some("openai"),
+                model: None,
+            },
+            RequestSignals {
+                query: Some("summarise the latest research".into()),
+                turn_ordinal: 1,
+                is_tool_continuation: false,
+            },
+            None,
+        )
+        .await
+        .expect("a discovered agent's call is accepted");
+        assert_eq!(routed.owner_id, OWNER);
+        assert_eq!(routed.flow_id, None);
+        assert!(routed.resolved.is_discovered_agent);
+        assert!(!routed.resolved.is_coding_agent);
+    }
+
+    #[tokio::test]
     async fn unregistered_provider_is_bad_request() {
         // A non-built-in provider with no active custom_providers row is a client
         // error (400), resolved before any provider client is built — it must not
@@ -3247,6 +3871,7 @@ mod tests {
                 embedding_model_override: false,
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
         let body = json!({ "model": "gpt-4o", "messages": [{ "role": "user", "content": "hi" }] });
@@ -3318,6 +3943,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: true,
         };
         let resp = chat_core(&ctx, &store, &auth_headers(&token()), body, format, None)
@@ -3564,6 +4190,7 @@ mod tests {
                 ..openai_config()
             }),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: true,
         }
     }
@@ -3684,6 +4311,7 @@ mod tests {
         let store = Store {
             config: Some(openai_config()),
             is_coding_agent: false,
+            is_discovered_agent: false,
             compress_enabled: false,
         };
 
@@ -3915,6 +4543,7 @@ mod tests {
                     ..openai_config()
                 }),
                 is_coding_agent: false,
+                is_discovered_agent: false,
                 compress_enabled: true,
             },
             custom: crate::resolver::CustomProvider {

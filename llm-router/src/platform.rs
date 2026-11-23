@@ -294,6 +294,8 @@ impl PlatformLlm {
             attribution_source: None,
             request_bytes: None,
             routing_metadata: None,
+            // A platform component's call is never part of a replay eval.
+            eval_attempt: None,
         }
     }
 
@@ -338,6 +340,7 @@ impl PlatformLlm {
             compact_tools_bytes: None,
             request_bytes: None,
             failure: None,
+            eval_attempt: None,
         };
         let write = tokio::spawn(async move {
             usage::log_usage(db, pricing.as_ref(), ledger.as_ref(), record).await
@@ -547,6 +550,8 @@ fn platform_chat_config(
         platform_paid: true,
         custom_endpoint: None,
         is_coding_agent: false,
+        coding_integration: None,
+        is_discovered_agent: false,
         compress_enabled: false,
         agent_id: String::new(),
     })

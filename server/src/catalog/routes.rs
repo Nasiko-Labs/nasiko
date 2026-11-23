@@ -58,6 +58,9 @@ fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str
         "opencode" => Some(("opencode", "OpenCode")),
         "codex" => Some(("codex", "Codex")),
         "cursor" => Some(("cursor", "Cursor")),
+        // The replay-eval runner's own identity: its calls may carry an attempt tag
+        // (`x-nasiko-eval-attempt`), which the router keeps for this integration only.
+        "eval" => Some(("nasiko-eval", "Nasiko Eval")),
         _ => None,
     }
 }
@@ -688,11 +691,14 @@ pub(crate) async fn live_status(state: &AppState, agent_id: Uuid, status: &str) 
     if status != "running" {
         return None;
     }
-    let live = state
-        .runtime
-        .status(&ContainerId::from_uuid(agent_id))
-        .await
-        .ok()?;
+    let container = ContainerId::from_uuid(agent_id);
+    // A serving agent is running: `is_serving` is answered from the runtime's own view (the
+    // Kubernetes pod watch) where `status` asks the cluster's API, once per agent per listing.
+    // Only an agent that isn't serving pays for the full `status`.
+    if state.runtime.is_serving(&container).await.unwrap_or(false) {
+        return None;
+    }
+    let live = state.runtime.status(&container).await.ok()?;
     use nasiko_runtime::RuntimeState;
     matches!(
         live.state,

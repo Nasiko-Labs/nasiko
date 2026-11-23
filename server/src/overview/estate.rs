@@ -317,6 +317,7 @@ fn harness_label(kind: &str) -> &str {
         "codex" => "Codex",
         "cursor" => "Cursor",
         "opencode" => "OpenCode",
+        "eval" => "Nasiko Eval",
         other => other,
     }
 }

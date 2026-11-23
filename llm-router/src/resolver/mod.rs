@@ -18,6 +18,8 @@
 //! onto the owner's config and keys is [`crate::payer::SharedCallPayer`] answering
 //! [`crate::payer::Payer::Owner`], which selects [`ConfigSubject::Sponsored`] instead: the
 //! owner's config and keys, and the platform's own key where the config stores none.
+//! [`ConfigSubject::Platform`] is a call the deployment covers outright: the platform defaults
+//! and the platform's own key, with no config, no agent pin and no requested model read.
 //!
 //! **When the agent resolves to a config it is authoritative** — the incoming request's
 //! `model`/provider are ignored (a configured agent is routed where its config says).
@@ -131,6 +133,13 @@ pub struct ResolvedConfig {
     /// model-routing boundary signals from the transcript instead of the (permanently
     /// unreachable, for these agents) `flows`-table lookup.
     pub is_coding_agent: bool,
+    /// The coding-agent integration this agent is (`agents.coding_agent_integration_id`:
+    /// `claude`, `opencode`, `codex`, `cursor`, `eval`), `None` for any other agent. See
+    /// [`AgentConfigResult::coding_integration`].
+    pub coding_integration: Option<String>,
+    /// Whether this agent is an A2A agent the CLI discovered on a user's machine. See
+    /// [`AgentConfigResult::is_discovered_agent`].
+    pub is_discovered_agent: bool,
     /// Whether this agent opted into payload compression. Per-agent by design: compression
     /// changes what the model sees, so its blast radius is one agent. See `crate::compress`.
     pub compress_enabled: bool,
@@ -247,6 +256,15 @@ pub struct AgentConfigResult {
     /// `flows` row; the chat handler uses this to derive boundary signals from the
     /// transcript instead ([`crate::routing::BoundarySignals::for_coding_agent`]).
     pub is_coding_agent: bool,
+    /// Which coding-agent integration the agent is (`agents.coding_agent_integration_id`),
+    /// `None` for any other agent. Server-managed like the flag above, so it can gate what
+    /// only one integration may do (the `eval` identity's attempt tag, `crate::eval_tag`).
+    pub coding_integration: Option<String>,
+    /// Whether this agent is an A2A agent the CLI discovered running on a user's machine
+    /// (`agents.discovered_on` set). Like a coding agent it is never dispatched through the
+    /// orchestrator, so its calls carry no flow to attribute and are billed to its owner; unlike
+    /// one it is an ordinary agent in every other respect (brevity, tool compaction).
+    pub is_discovered_agent: bool,
     /// Per-agent opt-in for payload compression (`agents.compress_enabled`).
     pub compress_enabled: bool,
 }
@@ -465,15 +483,23 @@ fn row_to_config(r: ConfigRow) -> LLMConfig {
     }
 }
 
-/// `agents` columns the resolver reads: attached config id, owner, pin, coding-agent flag,
-/// compression flag.
-type AgentColumns = (Option<Uuid>, Uuid, Option<String>, bool, bool);
+/// `agents` columns the resolver reads: attached config id, owner, pin, coding-agent
+/// integration, discovered-agent flag, compression flag.
+type AgentColumns = (
+    Option<Uuid>,
+    Uuid,
+    Option<String>,
+    Option<String>,
+    bool,
+    bool,
+);
 
 impl PgRegistry {
     async fn load_agent(&self, agent_id: Uuid) -> Result<Option<AgentColumns>, sqlx::Error> {
         sqlx::query_as(
             "SELECT llm_config_id, owner_id, pinned_model, \
-                    coding_agent_integration_id IS NOT NULL, \
+                    coding_agent_integration_id, \
+                    discovered_on IS NOT NULL, \
                     compress_enabled \
              FROM agents WHERE id = $1",
         )
@@ -513,8 +539,14 @@ impl RegistryStore for PgRegistry {
         // The agent's attached config id, owner, agent-level pin, and server-managed
         // coding-agent identity. Generic agent metadata must never grant this exemption.
         // A missing row → NoRegistryEntry upstream.
-        let Some((config_id, owner_id, agent_pinned_model, is_coding_agent, compress_enabled)) =
-            self.load_agent(agent_id).await?
+        let Some((
+            config_id,
+            owner_id,
+            agent_pinned_model,
+            coding_integration,
+            is_discovered_agent,
+            compress_enabled,
+        )) = self.load_agent(agent_id).await?
         else {
             return Ok(None);
         };
@@ -531,7 +563,9 @@ impl RegistryStore for PgRegistry {
         Ok(Some(AgentConfigResult {
             config,
             agent_pinned_model,
-            is_coding_agent,
+            is_coding_agent: coding_integration.is_some(),
+            coding_integration,
+            is_discovered_agent,
             compress_enabled,
         }))
     }
@@ -565,11 +599,22 @@ impl RegistryStore for PgRegistry {
         agent_id: Uuid,
     ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
         Ok(self.load_agent(agent_id).await?.map(
-            |(_, _, agent_pinned_model, is_coding_agent, compress_enabled)| AgentConfigResult {
-                config: None,
+            |(
+                _,
+                _,
                 agent_pinned_model,
-                is_coding_agent,
+                coding_integration,
+                is_discovered_agent,
                 compress_enabled,
+            )| {
+                AgentConfigResult {
+                    config: None,
+                    agent_pinned_model,
+                    is_coding_agent: coding_integration.is_some(),
+                    coding_integration,
+                    is_discovered_agent,
+                    compress_enabled,
+                }
             },
         ))
     }
@@ -766,6 +811,11 @@ pub enum ConfigSubject<'a> {
     /// A user the agent is shared with: their own chosen-or-default config and keys. The agent's
     /// attached config and its owner's keys are never read for them.
     SharedUser(Uuid),
+    /// A call the deployment covers ([`crate::payer::Payer::Platform`]): the platform's default
+    /// provider and model on the platform's own key. No config, no agent pin and no user secret
+    /// is read, and the requested chat model is ignored: the agent is user code, and honouring
+    /// its choice would let it pick a pricier model on the platform's key.
+    Platform,
 }
 
 impl<'a> ConfigSubject<'a> {
@@ -786,6 +836,7 @@ impl<'a> ConfigSubject<'a> {
         match self {
             Self::Owner(owner_id) | Self::Sponsored(owner_id) => (*owner_id).to_string(),
             Self::SharedUser(user) => user.to_string(),
+            Self::Platform => String::new(),
         }
     }
 
@@ -793,7 +844,7 @@ impl<'a> ConfigSubject<'a> {
     /// the platform's own key for a sponsored call, else the one agents may fall back to.
     fn platform_key<'c>(&self, cfg: &'c GatewayConfig, provider: &str) -> &'c str {
         match self {
-            Self::Sponsored(_) => cfg.service_key_for(provider),
+            Self::Sponsored(_) | Self::Platform => cfg.service_key_for(provider),
             Self::Owner(_) | Self::SharedUser(_) => cfg.platform_key_for(provider),
         }
     }
@@ -826,11 +877,17 @@ pub async fn resolve_for(
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
     let agent_result = load_subject_config(store, cache, agent_uuid, agent_id, subject).await?;
+    let hint = match subject {
+        ConfigSubject::Platform => RequestHint::default(),
+        _ => hint,
+    };
     let key_holder = subject.key_holder();
     let owner_id = key_holder.as_str();
     let llm_config = agent_result.config;
     let agent_pinned_model = agent_result.agent_pinned_model;
     let is_coding_agent = agent_result.is_coding_agent;
+    let coding_integration = agent_result.coding_integration;
+    let is_discovered_agent = agent_result.is_discovered_agent;
     let compress_enabled = agent_result.compress_enabled;
     let has_llm_config = llm_config.is_some();
     let secret_name = plan_secret_name(&llm_config);
@@ -902,6 +959,8 @@ pub async fn resolve_for(
             dialect: c.dialect.clone(),
         }),
         is_coding_agent,
+        coding_integration,
+        is_discovered_agent,
         compress_enabled,
         agent_id: agent_id.to_string(),
     };
@@ -911,6 +970,7 @@ pub async fn resolve_for(
         has_llm_config,
         shared_user = matches!(subject, ConfigSubject::SharedUser(_)),
         sponsored = matches!(subject, ConfigSubject::Sponsored(_)),
+        platform = matches!(subject, ConfigSubject::Platform),
         provider = %resolved.provider,
         model = %resolved.model,
         litellm_model = %resolved.litellm_model,
@@ -1175,7 +1235,7 @@ fn plan_secret_name(llm_config: &Option<LLMConfig>) -> Option<String> {
 }
 
 /// The agent's flags plus the config `subject` runs on: the owner's through
-/// [`load_llm_config`], a shared user's own otherwise.
+/// [`load_llm_config`], a shared user's own, or none for a platform call.
 async fn load_subject_config(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -1190,7 +1250,27 @@ async fn load_subject_config(
         ConfigSubject::SharedUser(user) => {
             load_shared_user_config(store, agent_uuid, agent_id, user).await
         }
+        ConfigSubject::Platform => load_agent_flags_only(store, agent_uuid, agent_id).await,
     }
+}
+
+/// The agent's flags alone, for a platform-covered call: the config and the agent's model pin are
+/// cleared, since a platform call runs on the platform defaults.
+async fn load_agent_flags_only(
+    store: &dyn RegistryStore,
+    agent_uuid: Uuid,
+    agent_id: &str,
+) -> Result<AgentConfigResult, GatewayError> {
+    let flags = store
+        .fetch_agent_flags(agent_uuid)
+        .await
+        .map_err(|e| GatewayError::Internal(format!("registry read failed: {e}")))?
+        .ok_or_else(|| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
+    Ok(AgentConfigResult {
+        config: None,
+        agent_pinned_model: None,
+        ..flags
+    })
 }
 
 /// A shared user's own config (their choice for this agent, else their default), with the agent's
@@ -1256,11 +1336,17 @@ async fn load_llm_config(
             .as_ref()
             .and_then(|r| r.agent_pinned_model.clone());
         let compress_enabled = agent_row.as_ref().is_some_and(|r| r.compress_enabled);
-        let is_coding_agent = agent_row.is_some_and(|r| r.is_coding_agent);
+        let is_coding_agent = agent_row.as_ref().is_some_and(|r| r.is_coding_agent);
+        let coding_integration = agent_row
+            .as_ref()
+            .and_then(|r| r.coding_integration.clone());
+        let is_discovered_agent = agent_row.is_some_and(|r| r.is_discovered_agent);
         return Ok(AgentConfigResult {
             config: hit,
             agent_pinned_model: agent_pin,
             is_coding_agent,
+            coding_integration,
+            is_discovered_agent,
             compress_enabled,
         });
     }
@@ -1597,6 +1683,8 @@ mod tests {
                 // Coding-agent detection and compression opt-in are exercised at the
                 // handler level (handlers::chat), where they're actually consumed.
                 is_coding_agent: false,
+                coding_integration: None,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
         }
@@ -1828,6 +1916,87 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::NoApiKey { .. }));
+    }
+
+    /// An agent whose owner attached a keyed config and pinned a model: a platform call must
+    /// read neither.
+    fn configured_and_pinned_agent() -> MockRegistry {
+        MockRegistry {
+            config: Some(Some(llm_config("gemini", "owner-model", Some("KEY")))),
+            secret: Some("user-key".into()),
+            agent_pinned_model: Some("pinned-pro".into()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_platform_call_runs_on_the_platform_defaults_and_its_own_key() {
+        let r = resolve_for(
+            &configured_and_pinned_agent(),
+            &cache(),
+            &free_plane_cfg(),
+            AGENT,
+            ConfigSubject::Platform,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "gemini");
+        assert_eq!(r.model, "gemini-4-hydrogen");
+        assert_eq!(r.api_key, "sk-platform-gemini");
+        assert!(r.platform_paid);
+        assert!(!r.has_llm_config);
+        assert!(r.pinned_model.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_platform_call_ignores_the_requested_model() {
+        let hints = [
+            RequestHint {
+                provider: Some("gemini"),
+                model: Some("gemini-pro-x"),
+            },
+            RequestHint {
+                provider: None,
+                model: Some("anthropic/claude-x"),
+            },
+        ];
+        for hint in hints {
+            let r = resolve_for(
+                &configured_and_pinned_agent(),
+                &cache(),
+                &free_plane_cfg(),
+                AGENT,
+                ConfigSubject::Platform,
+                hint,
+            )
+            .await
+            .unwrap();
+            assert_eq!(r.provider, "gemini");
+            assert_eq!(r.model, "gemini-4-hydrogen");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_platform_embedding_call_runs_on_the_platform_key() {
+        let cfg = GatewayConfig {
+            service_openai_api_key: "sk-platform-openai".into(),
+            ..free_plane_cfg()
+        };
+        let r = resolve_embeddings_for(
+            &configured_and_pinned_agent(),
+            &cache(),
+            &cfg,
+            AGENT,
+            ConfigSubject::Platform,
+            Some("text-embedding-3-small"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(r.provider, "openai");
+        assert_eq!(r.model, "text-embedding-3-small");
+        assert_eq!(r.api_key, "sk-platform-openai");
+        assert!(r.platform_paid);
     }
 
     #[tokio::test]
@@ -2689,6 +2858,8 @@ mod shared_user_tests {
                 config: Some(config("anthropic", "owner-model", Some("OWNER_KEY"))),
                 agent_pinned_model: Some("owner-pin".into()),
                 is_coding_agent: false,
+                coding_integration: None,
+                is_discovered_agent: false,
                 compress_enabled: true,
             }))
         }
@@ -3031,6 +3202,27 @@ mod shared_user_tests {
         .execute(pool)
         .await
         .map(|_| ())
+    }
+
+    /// A config that is neither the owner's default nor attached to the agent is not the agent's,
+    /// so the owner's call finds no key and a deployment may cover it.
+    #[sqlx::test(migrator = "MIGRATIONS")]
+    #[ignore = "requires disposable PostgreSQL"]
+    async fn an_owner_config_neither_default_nor_attached_resolves_to_none(
+        pool: PgPool,
+    ) -> Result<(), sqlx::Error> {
+        let store = PgRegistry::new(pool.clone());
+        let alice = insert_user(&pool).await?;
+        let agent = insert_agent(&pool, alice).await?;
+        insert_config(&pool, alice, "spare", false).await?;
+        let read = store.fetch_llm_config(agent).await?.expect("agent row");
+        assert!(read.config.is_none());
+
+        insert_config(&pool, alice, "alice-default", true).await?;
+        let read = store.fetch_llm_config(agent).await?.expect("agent row");
+        let model = read.config.and_then(|c| c.model);
+        assert_eq!(model.as_deref(), Some("alice-default"));
+        Ok(())
     }
 
     #[sqlx::test(migrator = "MIGRATIONS")]

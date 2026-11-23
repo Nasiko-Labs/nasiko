@@ -92,6 +92,9 @@ pub struct UsageRecord {
     /// adds to `error_count`, and when the provider reported no usage its prompt is estimated
     /// from `request_bytes` (never priced, see [`estimated_prompt_tokens`]).
     pub failure: Option<CallFailure>,
+    /// The replay-eval attempt this call belongs to (`crate::eval_tag`), written to
+    /// `trace_usage.eval_attempt`. `None` for every call but the `eval` identity's tagged ones.
+    pub eval_attempt: Option<String>,
 }
 
 /// Why a call that reached the provider failed, as its usage row records it.
@@ -133,6 +136,8 @@ pub struct CallScope {
     /// The request's `metadata.routing` block: the model was chosen once, so every attempt of the
     /// fallback chain was routed the same way and counts the same.
     pub routing_metadata: Option<serde_json::Value>,
+    /// The request's replay-eval attempt: a failed attempt is part of what the eval cost.
+    pub eval_attempt: Option<String>,
 }
 
 /// One provider attempt that reached the provider and failed.
@@ -172,6 +177,7 @@ impl UsageRecord {
             compact_tools_bytes: None,
             request_bytes: scope.request_bytes,
             failure: Some(attempt.failure),
+            eval_attempt: scope.eval_attempt.clone(),
         }
     }
 }
@@ -343,6 +349,7 @@ pub async fn log_usage(
         agent,
         component_label,
         flow_id: record.flow_id.clone(),
+        eval_attempt: record.eval_attempt,
         model: record.model.clone(),
         provider: record.provider.clone(),
         input_tokens: input.unwrap_or(0).max(0),
@@ -409,6 +416,8 @@ struct LiveSpend {
     /// `agent_name` for a platform component call (no agent uuid).
     component_label: Option<String>,
     flow_id: Option<String>,
+    /// `trace_usage.eval_attempt`: kept from the first call that set it.
+    eval_attempt: Option<String>,
     model: String,
     provider: String,
     input_tokens: i64,
@@ -483,7 +492,8 @@ static UPSERT: LazyLock<String> = LazyLock::new(|| {
                router_cache_creation_tokens, router_cost_usd, router_prompt_cost_usd,
                router_completion_cost_usd,
                latency_ms, started_at, source, priced_by, materialized_at, metadata,
-               error_count, router_error_count, router_estimated_input_tokens, cost_estimated
+               error_count, router_error_count, router_estimated_input_tokens, cost_estimated,
+               eval_attempt
            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,
                      $8,$9,$10,$11,$12,$13,$14,
                      $15,now(),$16,'router',now(),$17,
@@ -492,7 +502,8 @@ static UPSERT: LazyLock<String> = LazyLock::new(|| {
                      NULLIF($18, 0), $18, $19,
                      -- An unreported prompt means the cost may be understated; an
                      -- inferred rate means it may be wrong either way.
-                     CASE WHEN $19 > 0 OR $20 THEN true END)
+                     CASE WHEN $19 > 0 OR $20 THEN true END,
+                     $21)
            ON CONFLICT (trace_id, agent_name) DO UPDATE SET
                error_count                  = CASE WHEN EXCLUDED.router_error_count > 0
                                                    THEN COALESCE(trace_usage.error_count, 0) + EXCLUDED.router_error_count
@@ -522,6 +533,7 @@ static UPSERT: LazyLock<String> = LazyLock::new(|| {
                provider                     = CASE WHEN EXCLUDED.router_error_count > 0
                                                    THEN COALESCE(trace_usage.provider, EXCLUDED.provider) ELSE EXCLUDED.provider END,
                agent_id                     = COALESCE(trace_usage.agent_id, EXCLUDED.agent_id),
+               eval_attempt                 = COALESCE(trace_usage.eval_attempt, EXCLUDED.eval_attempt),
                user_id                      = COALESCE(trace_usage.user_id, EXCLUDED.user_id),
                latency_ms                   = COALESCE(trace_usage.latency_ms, 0) + EXCLUDED.latency_ms,
                source                       = CASE WHEN EXCLUDED.source = 'agent' THEN trace_usage.source ELSE EXCLUDED.source END,
@@ -631,6 +643,7 @@ async fn write_trace_usage(
         .bind(live.error_count)
         .bind(live.estimated_input_tokens)
         .bind(live.price_estimated)
+        .bind(live.eval_attempt.as_deref())
         .execute(&mut *tx)
         .await?;
     Ok(())
@@ -889,6 +902,7 @@ mod tests {
             attribution_source: None,
             request_bytes: Some(800),
             routing_metadata: Some(serde_json::json!({ "calls": 1, "classified": 1 })),
+            eval_attempt: Some("run:task:1".into()),
         };
         let record = UsageRecord::failed_attempt(
             &scope,
@@ -909,6 +923,8 @@ mod tests {
         );
         assert!(!record.platform_paid);
         assert_eq!(record.latency_ms, 29_000);
+        // A failed attempt is part of what its eval attempt cost.
+        assert_eq!(record.eval_attempt.as_deref(), Some("run:task:1"));
         // A failed attempt was routed like the call that followed it, so it counts the same way
         // (NAS-1263) — a chain whose first model was classified and whose fallback answered must
         // not look like a call that never classified.

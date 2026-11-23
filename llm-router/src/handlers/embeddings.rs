@@ -15,7 +15,7 @@ use crate::error::GatewayError;
 use crate::inbound::{InboundFormat, inbound_for};
 use crate::payer;
 use crate::providers::execute_embeddings_once;
-use crate::resolver::{PgRegistry, RegistryStore, resolve_embeddings_for};
+use crate::resolver::{ConfigSubject, PgRegistry, RegistryStore, resolve_embeddings_for};
 use crate::routing::boundary::{TRACEPARENT_HEADER, parse_flow_id};
 use crate::usage::{self, UsageRecord};
 
@@ -76,16 +76,30 @@ async fn embeddings_core(
         attribution.user_id,
     )
     .await?;
-    let resolved = resolve_embeddings_for(
-        store,
-        &ctx.cache,
-        &ctx.cfg,
-        &agent_id,
-        subject,
-        req.model.as_deref(),
-    )
-    .await
-    .map_err(|e| payer::allowance_error(e, retry_after))?;
+    let resolve = |subject| {
+        resolve_embeddings_for(
+            store,
+            &ctx.cache,
+            &ctx.cfg,
+            &agent_id,
+            subject,
+            req.model.as_deref(),
+        )
+    };
+    let resolved = match resolve(subject).await {
+        // An owner's own call that found no key: the deployment may cover it.
+        Err(no_key @ GatewayError::NoApiKey { .. })
+            if matches!(subject, ConfigSubject::Owner(_)) =>
+        {
+            match payer::cover_owner_call(ctx.payer.as_ref(), &owner_id, attribution.user_id)
+                .await?
+            {
+                Some(covered) => resolve(covered).await?,
+                None => return Err(no_key),
+            }
+        }
+        resolved => resolved.map_err(|e| payer::allowance_error(e, retry_after))?,
+    };
 
     // Exactly one attempt. A failure here is the caller's answer — swapping in another
     // embedding model would return vectors in a different space, which is worse than an
@@ -112,6 +126,8 @@ async fn embeddings_core(
         // `/v1/embeddings` picks its model in the resolver, not through the precedence chain, so
         // there is no routing decision to record (`embeddings::select_model`).
         routing_metadata: None,
+        // Only a coding agent's chat calls are eval-tagged.
+        eval_attempt: None,
     };
     usage::spawn_log_failed(
         &ctx.db,
@@ -155,6 +171,7 @@ async fn embeddings_core(
             request_bytes: None,
             platform_paid: resolved.platform_paid,
             failure: None,
+            eval_attempt: None,
         },
     );
 
@@ -220,6 +237,8 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
+                coding_integration: None,
+                is_discovered_agent: false,
                 compress_enabled: false,
             }))
         }
@@ -287,6 +306,7 @@ mod tests {
             marker_signer: None,
             ledger: Arc::new(nasiko_pricing::NoUsageLedger),
             payer: Arc::new(crate::payer::CallerPays),
+            turn_recorder: Arc::new(crate::turns::NoTurnRecorder),
         }
     }
 
@@ -553,5 +573,54 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, GatewayError::BadRequest(_)));
+    }
+
+    #[tokio::test]
+    async fn an_owner_without_a_key_embeds_on_the_platform_key() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/embeddings")
+            .match_header("authorization", "Bearer sk-service")
+            .match_body(mockito::Matcher::PartialJson(
+                json!({ "model": "text-embedding-3-small" }),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                json!({
+                    "object": "list",
+                    "data": [{ "object": "embedding", "embedding": [0.1, 0.2], "index": 0 }],
+                    "model": "text-embedding-3-small",
+                    "usage": { "prompt_tokens": 4, "total_tokens": 4 }
+                })
+                .to_string(),
+            )
+            .expect(1)
+            .create_async()
+            .await;
+        let base = ctx_with(server.url());
+        // Agents get no platform key; the platform keeps its own.
+        let cfg = GatewayConfig {
+            generic_key_fallback: false,
+            platform_openai_api_key: String::new(),
+            service_openai_api_key: "sk-service".into(),
+            ..(*base.cfg).clone()
+        };
+        let ctx = LlmRouterCtx {
+            cfg: Arc::new(cfg),
+            payer: crate::payer::RecordingPayer::answering(Some(crate::payer::Payer::Platform)),
+            ..base
+        };
+        let store = Store {
+            flow_user: Uuid::parse_str(OWNER).ok(),
+            ..Store::default()
+        };
+        let token =
+            crate::auth::mint_agent_token(AGENT, OWNER, SECRET, 3600, Algorithm::HS256).unwrap();
+        let body = json!({ "model": "text-embedding-3-small", "input": "hello" });
+        embeddings_core(&ctx, &store, &auth_headers(&token), body)
+            .await
+            .unwrap();
+        mock.assert_async().await;
     }
 }

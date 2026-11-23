@@ -37,6 +37,7 @@ mod compact_tools;
 mod compress;
 pub mod config;
 pub mod error;
+mod eval_tag;
 pub mod handlers;
 pub mod inbound;
 pub mod inject;
@@ -50,6 +51,7 @@ pub mod recovery;
 pub mod resolver;
 pub mod routing;
 mod savings;
+pub mod turns;
 pub mod usage;
 
 pub use config::GatewayConfig;
@@ -111,6 +113,9 @@ pub struct LlmRouterCtx {
     /// Who pays for a call another user makes through an agent. [`payer::CallerPays`] unless the host
     /// supplies its own.
     pub payer: Arc<dyn payer::SharedCallPayer>,
+    /// Where a discovered A2A agent's calls go as conversation turns. [`turns::NoTurnRecorder`]
+    /// by default; the server swaps in one that keeps them as a chat session.
+    pub turn_recorder: Arc<dyn turns::TurnRecorder>,
 }
 
 impl LlmRouterCtx {
@@ -184,6 +189,7 @@ impl LlmRouterCtx {
             marker_signer,
             ledger: Arc::new(NoUsageLedger),
             payer: Arc::new(payer::CallerPays),
+            turn_recorder: Arc::new(turns::NoTurnRecorder),
         }
     }
 
