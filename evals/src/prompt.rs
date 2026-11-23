@@ -8,7 +8,7 @@ use crate::session::TaskSource;
 use crate::spec::{self, EnvSpec};
 
 /// Recorded with every run, so a result can be traced to the exact wording.
-pub const PROMPT_VERSION: &str = "2026-11-24.1";
+pub const PROMPT_VERSION: &str = "2026-11-24.2";
 
 /// A system + user message pair.
 #[derive(Debug, Clone, PartialEq)]
@@ -47,8 +47,9 @@ Rules:
 2. Do not add requirements the developer did not state. Ignore messages about other tasks.
 3. Do not describe the solution: no code, no diffs, no "edit line N of file X". The commit subject and file list are only there to help you find the right request: do not copy them. You may name a file, function or command only if the developer named it as part of what they wanted.
 4. Messages that only steer the assistant during the work ("look in router.rs", "no, try a different approach", "run the tests again", "OK", "raise a PR") are not requirements. Put useful ones, shortened, into "hints".
-5. Remove secrets, keys, tokens, internal hostnames, personal names and emails.
-6. If the messages do not say what this change was for, answer REJECT.
+5. Leave out instructions about the developer's own workflow rather than the change: committing, pushing, branches, pull requests, which commands or tests to run, and writing tests. The benchmark runs the tests itself, and a statement that asks for a commit makes the agent hand in nothing.
+6. Remove secrets, keys, tokens, internal hostnames, personal names and emails.
+7. If the messages do not say what this change was for, answer REJECT.
 
 Answer with JSON only, no other text:
 {"status": "OK" | "REJECT", "title": "<one line, max 80 characters>", "problem_statement": "<markdown issue body>", "hints": "<steering messages, shortened, or empty string>", "reason": "<only for REJECT: one sentence>"}"#;
@@ -246,6 +247,13 @@ fn from_reply<T: for<'de> Deserialize<'de>>(reply: &str) -> Result<T, PromptErro
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distill_prompt_drops_workflow_instructions() {
+        // A rewrite that kept "commit your change" made agents commit and hand in nothing.
+        assert!(P1_USER.contains("committing, pushing"));
+        assert!(P1_USER.contains("writing tests"));
+    }
 
     #[test]
     fn distill_replies_in_fences_parse() {
