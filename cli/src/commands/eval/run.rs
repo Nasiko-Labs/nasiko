@@ -430,7 +430,7 @@ impl ModelRun<'_> {
                 task,
                 &spec,
                 &dir,
-                test_limits(&spec, self.config.storage_mib),
+                test_limits(&spec, self.config.grade_storage_mib),
                 self.run_id,
             )?
         };

@@ -57,9 +57,14 @@ pub struct EvalConfig {
     pub attempt_minutes: u32,
     #[serde(default = "default_workers")]
     pub workers: u32,
-    /// Disk space each eval container may use, in MiB.
+    /// Disk the agent's container may use, in MiB.
     #[serde(default = "default_storage_mib")]
     pub storage_mib: u32,
+    /// Disk the grading and gate containers may use, in MiB. They are the harness, not the
+    /// agent: building a crate's test binaries can need more than the agent's budget, and a
+    /// correct fix must never fail because the grader ran out of room.
+    #[serde(default = "default_grade_storage_mib")]
+    pub grade_storage_mib: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -90,6 +95,10 @@ fn default_attempt_minutes() -> u32 {
 
 /// 2 GiB of disk per eval container unless configured otherwise.
 pub const DEFAULT_STORAGE_MIB: u32 = 2048;
+
+fn default_grade_storage_mib() -> u32 {
+    8192
+}
 
 fn default_storage_mib() -> u32 {
     DEFAULT_STORAGE_MIB
@@ -200,6 +209,7 @@ mod tests {
         let c: EvalConfig = serde_json::from_str("{}").expect("empty config parses");
         assert_eq!(c.workers, 4);
         assert_eq!(c.storage_mib, 2048);
+        assert_eq!(c.grade_storage_mib, 8192);
     }
 
     #[test]

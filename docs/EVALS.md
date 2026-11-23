@@ -80,7 +80,10 @@ own figure (its `trace_usage` rows, priced by its price book).
   every task goes to `nasiko eval review`.
 * `control`: a model to re-run in the same harness as the fair comparison. Without one, models
   are compared with the original sessions (whose real fixes solved every task) and their cost.
-* `storage_mib`: disk each container may write before it is stopped (2 GiB by default).
+* `storage_mib`: disk the agent's container may write before it is stopped (2 GiB by default).
+  When it is stopped for a limit, its changes are saved first and graded as usual.
+* `grade_storage_mib`: disk for the grading and gate containers (8 GiB by default): they build
+  the crate's test binaries, and a correct fix must not fail because the grader ran out of room.
 * `max_steps`, `attempt_minutes`: the agent's step and time budget per attempt.
 
 ## Commands

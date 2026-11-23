@@ -60,7 +60,10 @@ pub fn build(
     containers: &dyn Containers,
     args: &BuildArgs,
 ) -> Result<Vec<BuildReport>> {
-    let disk_mib = store.load_config()?.unwrap_or_default().storage_mib;
+    let disk_mib = match store.load_config()? {
+        Some(c) => c.grade_storage_mib,
+        None => serde_json::from_str::<super::store::EvalConfig>("{}")?.grade_storage_mib,
+    };
     let tasks: Vec<TaskInstance> = store
         .tasks()?
         .into_iter()
