@@ -289,12 +289,11 @@ pub struct Config {
     /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
     /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod` or `harness-agent`. Docker is the OSS default and
+    /// (default), `pod`, `shared-pod` or `harness-agent`. Docker is the OSS default and
     /// needs no cluster; the others are implemented by enterprise crates and
     /// selected at cluster create. An unknown value fails startup rather than
     /// silently falling back, because running sessions on the wrong provider
-    /// changes isolation and cost. So does a retired one (`shared-pod`), with a
-    /// message naming its replacement.
+    /// changes isolation and cost.
     pub sandbox_provider: SandboxProviderSetting,
     /// Whether users can open coding sessions on this server, from `HARNESS_SESSIONS_ENABLED`
     /// (**default `false`**). Off, startup creates no harness agents and hides (soft-deletes)
@@ -680,7 +679,8 @@ pub struct Config {
     /// since users without a key would silently run on that shared one.
     /// Holds API keys — deliver it as a secret. Example:
     /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart seeds exactly these by default).
+    /// (both per-user; the Helm chart's default seeds these plus Tavily, also
+    /// `oauth2`).
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
@@ -1294,13 +1294,10 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
 pub enum SandboxProviderSetting {
     Docker,
     Pod,
+    SharedPod,
     /// Each user's own harness agent runs every session of that user and harness.
     HarnessAgent,
 }
-
-/// Providers that were once accepted and are no longer: an install still naming one is refused
-/// with the replacement, not with the generic list of allowed values.
-const RETIRED_SANDBOX_PROVIDERS: [&str; 2] = ["shared-pod", "substrate"];
 
 impl std::str::FromStr for SandboxProviderSetting {
     type Err = String;
@@ -1309,13 +1306,10 @@ impl std::str::FromStr for SandboxProviderSetting {
         match raw.trim().to_ascii_lowercase().as_str() {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
+            "shared-pod" => Ok(Self::SharedPod),
             "harness-agent" => Ok(Self::HarnessAgent),
-            retired if RETIRED_SANDBOX_PROVIDERS.contains(&retired) => Err(format!(
-                "SANDBOX_PROVIDER {raw:?} was retired: set harness-agent (each user's sessions in \
-                 their own harness agent) or pod (a pod per session)"
-            )),
             _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, harness-agent, got {raw:?}"
+                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, harness-agent, got {raw:?}"
             )),
         }
     }
@@ -1576,7 +1570,8 @@ mod tests {
         for (raw, want) in [
             ("docker", SandboxProviderSetting::Docker),
             ("Pod", SandboxProviderSetting::Pod),
-            (" Harness-Agent ", SandboxProviderSetting::HarnessAgent),
+            (" Shared-Pod ", SandboxProviderSetting::SharedPod),
+            ("harness-agent", SandboxProviderSetting::HarnessAgent),
         ] {
             assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
         }
@@ -1586,16 +1581,10 @@ mod tests {
     fn unknown_sandbox_provider_names_key_and_allowed_values() {
         let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
         assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(err.contains("docker, pod, harness-agent"), "{err}");
-    }
-
-    #[test]
-    fn a_retired_sandbox_provider_names_its_replacement() {
-        for retired in ["shared-pod", " Shared-Pod ", "substrate"] {
-            let err = retired.parse::<SandboxProviderSetting>().unwrap_err();
-            assert!(err.contains("was retired"), "{err}");
-            assert!(err.contains("harness-agent"), "{err}");
-        }
+        assert!(
+            err.contains("docker, pod, shared-pod, harness-agent"),
+            "{err}"
+        );
     }
 
     #[test]
