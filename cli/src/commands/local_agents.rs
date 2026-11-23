@@ -3254,7 +3254,7 @@ mod tests {
             mcp: (routed && McpClient::for_id(id).is_some()).then(|| McpSummary {
                 source: McpSource::WithRouting,
                 cluster: "prod".into(),
-                cluster_url: "https://cp.example".into(),
+                cluster_url: "http://localhost:8080".into(),
                 principal_id: Some("me".into()),
                 agent_id: format!("id-{id}"),
                 agent_name: format!("me-{id}"),
@@ -3276,7 +3276,7 @@ mod tests {
         view.mcp = Some(McpSummary {
             source: McpSource::Nasiko,
             cluster: cluster.into(),
-            cluster_url: "https://cp.example".into(),
+            cluster_url: "http://localhost:8080".into(),
             principal_id: Some(principal.into()),
             agent_id: format!("id-{id}"),
             agent_name: format!("me-{id}"),
@@ -3573,7 +3573,7 @@ mod tests {
             accepts_chat_history: Some(true),
             ..here()
         };
-        // Report? yes · sync chat history? yes.
+        // MCP gateway? no · Report? yes · sync chat history? yes.
         let plan = build_plan(
             vec![view("claude", false, false)],
             &ConnectOptions {
@@ -3581,7 +3581,7 @@ mod tests {
                 ..ConnectOptions::default()
             },
             Some(&enterprise),
-            &Scripted::new(&[true, true], &[]),
+            &Scripted::new(&[false, true, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3596,14 +3596,15 @@ mod tests {
 
     #[test]
     fn a_hosted_cluster_is_never_offered_chat_history() {
-        // Asked about reporting only: a chat-history question would be an unexpected confirm.
+        // Asked about the MCP gateway and reporting only: a chat-history question would be an
+        // unexpected confirm.
         let asked = hosted_plan(
             view("claude", false, false),
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[false, true], &[]),
         );
         assert_eq!(asked.agents[0].reporting, TOKENS_ONLY);
 
@@ -3679,7 +3680,8 @@ mod tests {
 
     #[test]
     fn new_reporting_to_a_cluster_that_cant_be_asked_is_usage_only_unasked() {
-        // Report? yes · no chat-history question: it would be an unexpected confirm.
+        // MCP gateway? no · Report? yes · no chat-history question: it would be an unexpected
+        // confirm.
         let plan = build_plan(
             vec![view("claude", false, false)],
             &ConnectOptions {
@@ -3687,7 +3689,7 @@ mod tests {
                 ..ConnectOptions::default()
             },
             Some(&unreachable()),
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[false, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3702,14 +3704,14 @@ mod tests {
         from_hosted.local.capture_content = true;
         from_hosted.local.reporting_destination = Some(hosted());
 
-        // Yes to the move, no to chat history.
+        // No to the MCP gateway, yes to the move, no to chat history.
         let asked = plan_for(
             vec![from_hosted.clone()],
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true, false], &[]),
+            &Scripted::new(&[false, true, false], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3749,7 +3751,7 @@ mod tests {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true, true], &[]),
+            &Scripted::new(&[false, true, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
