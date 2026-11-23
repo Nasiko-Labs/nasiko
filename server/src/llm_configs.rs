@@ -659,7 +659,7 @@ pub(crate) async fn create(
     if let Err(e) = tx.commit().await {
         return db_error("commit", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
 
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::created(cfg, "LLM config created successfully").into_response(),
@@ -952,7 +952,7 @@ pub(crate) async fn update(
     if let Err(e) = result {
         return db_error("update", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::ok(cfg, "LLM config updated successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
@@ -1015,7 +1015,7 @@ pub(crate) async fn delete_config(
     .await;
     match result {
         Ok(_) => {
-            state.llm_configs_changed();
+            state.llm_config_cache.clear();
             ApiResponse::ok(json!(null), "LLM config deleted successfully").into_response()
         }
         Err(e) => db_error("delete", e),
@@ -1083,7 +1083,7 @@ pub(crate) async fn set_default(
     if let Err(e) = tx.commit().await {
         return db_error("commit", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::ok(cfg, "LLM config set as default successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
@@ -1138,7 +1138,7 @@ pub(crate) async fn clear_default(
     {
         return db_error("clear default", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => {
             ApiResponse::ok(cfg, "LLM config default cleared successfully").into_response()

@@ -400,7 +400,7 @@ pub(crate) async fn update_agent(
         tracing::error!(%e, %agent_id, "update: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
-    state.wake_build_worker().await;
+    let _ = state.build_tx.send(()).await;
 
     (
         StatusCode::ACCEPTED,
@@ -964,7 +964,7 @@ pub(crate) async fn rollback_agent(
         tracing::error!(%e, %agent_id, "rollback: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
-    state.wake_build_worker().await;
+    let _ = state.build_tx.send(()).await;
 
     (
         StatusCode::ACCEPTED,

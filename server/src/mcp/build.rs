@@ -179,7 +179,7 @@ async fn queue_upload(
 
     tx.commit().await?;
 
-    state.wake_build_worker().await;
+    let _ = state.build_tx.send(()).await;
 
     Ok((connector_id, build_id))
 }

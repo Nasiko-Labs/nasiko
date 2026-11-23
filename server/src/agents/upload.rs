@@ -818,7 +818,7 @@ pub(crate) async fn upload_and_deploy(
     }
 
     // Notify the build worker immediately so it doesn't wait for the 5s poll interval.
-    state.wake_build_worker().await;
+    let _ = state.build_tx.send(()).await;
 
     // Seed the upload_status row now (with the real agent_id) so that
     // GET /api/agents/my-uploads returns the correct agent_id immediately.

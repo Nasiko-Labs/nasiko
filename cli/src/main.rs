@@ -532,6 +532,22 @@ mod tests {
     }
 
     #[test]
+    fn the_mcp_gateway_connects_and_disconnects_on_its_own() {
+        let cli =
+            Cli::try_parse_from(["nasiko", "connect", "claude", "--no-routing", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Connect { coding_agent, .. }) = cli.command else {
+            panic!("expected connect command");
+        };
+        assert!(coding_agent.no_routing && coding_agent.mcp);
+
+        let cli = Cli::try_parse_from(["nasiko", "disconnect", "claude", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Disconnect { options, .. }) = cli.command else {
+            panic!("expected disconnect command");
+        };
+        assert!(options.mcp && !options.routing && !options.reporting);
+    }
+
+    #[test]
     fn parses_connect_with_name_and_url() {
         let cli = Cli::try_parse_from([
             "nasiko",

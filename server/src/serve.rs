@@ -20,12 +20,9 @@ use std::time::Duration;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo, TokioTimer};
 use hyper_util::server::conn::auto;
-use hyper_util::server::graceful::GracefulShutdown;
 use hyper_util::service::TowerToHyperService;
 use tokio::net::TcpListener;
 use tower::Service;
-
-use crate::shutdown::ShutdownSignal;
 
 /// How long a kept-alive connection may wait for its next request before the server closes it.
 pub const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
@@ -33,21 +30,17 @@ pub const IDLE_CONNECTION_TIMEOUT: Duration = Duration::from_secs(60);
 /// A failed `accept` (out of file descriptors, say) is retried after this, not in a hot loop.
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(50);
 
-/// Serve `app` on `listener` until `shutdown` stops it, as `axum::serve` does with peer addresses
+/// Serve `app` on `listener` until the process ends, as `axum::serve` does with peer addresses
 /// (`ConnectInfo<SocketAddr>`) and upgrades (WebSockets), closing connections idle for
-/// [`IDLE_CONNECTION_TIMEOUT`]. Once stopped it accepts nothing more, asks each open connection to
-/// close after its current response, and returns when they have, or after `grace` (an SSE stream
-/// or a slow LLM call may not end by itself).
-pub async fn serve(listener: TcpListener, app: Router, shutdown: ShutdownSignal, grace: Duration) {
-    serve_with_idle_timeout(listener, app, IDLE_CONNECTION_TIMEOUT, shutdown, grace).await;
+/// [`IDLE_CONNECTION_TIMEOUT`].
+pub async fn serve(listener: TcpListener, app: Router) {
+    serve_with_idle_timeout(listener, app, IDLE_CONNECTION_TIMEOUT).await;
 }
 
 pub(crate) async fn serve_with_idle_timeout(
     listener: TcpListener,
     app: Router,
     idle_timeout: Duration,
-    shutdown: ShutdownSignal,
-    grace: Duration,
 ) {
     let mut make_service = app.into_make_service_with_connect_info::<SocketAddr>();
     let mut builder = auto::Builder::new(TokioExecutor::new());
@@ -55,13 +48,8 @@ pub(crate) async fn serve_with_idle_timeout(
         .http1()
         .timer(TokioTimer::new())
         .header_read_timeout(idle_timeout);
-    let connections = GracefulShutdown::new();
     loop {
-        let accepted = tokio::select! {
-            accepted = listener.accept() => accepted,
-            _ = shutdown.cancelled() => break,
-        };
-        let (stream, peer) = match accepted {
+        let (stream, peer) = match listener.accept().await {
             Ok(accepted) => accepted,
             Err(e) => {
                 tracing::warn!(error = %e, "accepting a connection failed; retrying");
@@ -73,28 +61,18 @@ pub(crate) async fn serve_with_idle_timeout(
             Ok(service) => service,
             Err(never) => match never {},
         };
-        let connection = builder
-            .serve_connection_with_upgrades(TokioIo::new(stream), TowerToHyperService::new(service))
-            .into_owned();
-        let watched = connections.watch(connection);
+        let builder = builder.clone();
         tokio::spawn(async move {
-            if let Err(e) = watched.await {
+            let served = builder
+                .serve_connection_with_upgrades(
+                    TokioIo::new(stream),
+                    TowerToHyperService::new(service),
+                )
+                .await;
+            if let Err(e) = served {
                 tracing::debug!(error = %e, %peer, "connection ended with an error");
             }
         });
-    }
-    drop(listener);
-    let open = connections.count();
-    tracing::info!(
-        open,
-        grace_secs = grace.as_secs(),
-        "closing open connections"
-    );
-    if tokio::time::timeout(grace, connections.shutdown())
-        .await
-        .is_err()
-    {
-        tracing::warn!("shutdown grace over with connections still open; exiting anyway");
     }
 }
 
@@ -114,16 +92,6 @@ mod tests {
     }
 
     async fn start_with(idle_timeout: Duration) -> SocketAddr {
-        start_stoppable(idle_timeout, ShutdownSignal::new(), Duration::from_secs(5))
-            .await
-            .0
-    }
-
-    async fn start_stoppable(
-        idle_timeout: Duration,
-        shutdown: ShutdownSignal,
-        grace: Duration,
-    ) -> (SocketAddr, tokio::task::JoinHandle<()>) {
         let app =
             Router::new()
                 .route("/ping", get(|| async { "pong" }))
@@ -155,14 +123,8 @@ mod tests {
                 );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let served = tokio::spawn(serve_with_idle_timeout(
-            listener,
-            app,
-            idle_timeout,
-            shutdown,
-            grace,
-        ));
-        (addr, served)
+        tokio::spawn(serve_with_idle_timeout(listener, app, idle_timeout));
+        addr
     }
 
     /// One request on a kept-alive connection, read up to the end of its body.
@@ -240,38 +202,6 @@ mod tests {
         for n in 0..3 {
             assert!(body.contains(&format!("data: {n}")), "{body}");
         }
-    }
-
-    #[tokio::test]
-    async fn a_stop_lets_the_request_in_flight_finish_then_refuses_new_connections() {
-        let shutdown = ShutdownSignal::new();
-        let (addr, served) = start_stoppable(IDLE, shutdown.clone(), Duration::from_secs(5)).await;
-        let mut conn = TcpStream::connect(addr).await.unwrap();
-        let in_flight = tokio::spawn(async move { request(&mut conn, "/slow").await });
-        tokio::time::sleep(IDLE).await;
-        shutdown.stop();
-        assert!(in_flight.await.unwrap().ends_with("done"));
-        tokio::time::timeout(Duration::from_secs(5), served)
-            .await
-            .expect("serve should return once its connections close")
-            .unwrap();
-        assert!(TcpStream::connect(addr).await.is_err());
-    }
-
-    #[tokio::test]
-    async fn a_stop_gives_up_on_a_response_that_outlasts_the_grace() {
-        let shutdown = ShutdownSignal::new();
-        let (addr, served) = start_stoppable(IDLE, shutdown.clone(), IDLE).await;
-        let mut conn = TcpStream::connect(addr).await.unwrap();
-        conn.write_all(b"GET /stream HTTP/1.1\r\nHost: test\r\n\r\n")
-            .await
-            .unwrap();
-        tokio::time::sleep(IDLE / 3).await;
-        shutdown.stop();
-        tokio::time::timeout(IDLE * 3, served)
-            .await
-            .expect("serve should return after the grace")
-            .unwrap();
     }
 
     #[tokio::test]

@@ -75,6 +75,58 @@ fn resolve_agent_id(client: &Client, name_or_id: &str) -> Result<String> {
     }
 }
 
+fn resolve_connector_id(client: &Client, agent_id: &str, reference: &str) -> Result<String> {
+    if uuid::Uuid::parse_str(reference).is_ok() {
+        return Ok(reference.to_string());
+    }
+    let resp: Value = client.get_json(&format!("/mcp/agents/{agent_id}/connectors"))?;
+    let connectors = resp
+        .get("data")
+        .and_then(|v| v.get("connectors"))
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let id_of = |c: &Value| {
+        c.get("connector_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    };
+    let named: Vec<String> = connectors
+        .iter()
+        .filter(|c| c.get("name").and_then(|v| v.as_str()) == Some(reference))
+        .filter_map(id_of)
+        .collect();
+    match named.as_slice() {
+        [id] => return Ok(id.clone()),
+        [] => {}
+        ids => bail!(
+            "connector name '{reference}' is ambiguous — {} connectors visible to this agent share it: {}. Use the connector ID instead.",
+            ids.len(),
+            ids.join(", ")
+        ),
+    }
+    if connectors
+        .iter()
+        .filter_map(id_of)
+        .any(|id| id == reference)
+    {
+        return Ok(reference.to_string());
+    }
+    let mut names: Vec<&str> = connectors
+        .iter()
+        .filter_map(|c| c.get("name").and_then(|v| v.as_str()))
+        .collect();
+    names.sort_unstable();
+    names.dedup();
+    if names.is_empty() {
+        bail!("no connector '{reference}' is visible to this agent");
+    }
+    bail!(
+        "no connector '{reference}' is visible to this agent; visible: {}",
+        names.join(", ")
+    )
+}
+
 /// Parse repeatable `--header "Key: Value"` flags into a map.
 fn parse_headers(raw: &[String]) -> Result<HashMap<String, String>> {
     let mut out = HashMap::new();
@@ -1211,15 +1263,16 @@ pub fn agent_tools_connectors(agent: &str, json: bool) -> Result<()> {
     })
 }
 
-fn set_connector_enabled(agent: &str, connector_id: &str, enabled: bool) -> Result<()> {
+fn set_connector_enabled(agent: &str, connector: &str, enabled: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
+    let connector_id = resolve_connector_id(&client, &agent_id, connector)?;
     let _: Value = client.put_json(
         &format!("/mcp/agents/{agent_id}/connectors/{connector_id}"),
         &serde_json::json!({ "enabled": enabled }),
     )?;
     println!(
-        "Connector {connector_id} {} for agent '{agent}'.",
+        "Connector {connector} {} for agent '{agent}'.",
         if enabled { "enabled" } else { "disabled" }
     );
     Ok(())
@@ -1233,9 +1286,10 @@ pub fn agent_tools_disable(agent: &str, connector_id: &str) -> Result<()> {
     set_connector_enabled(agent, connector_id, false)
 }
 
-pub fn agent_tools_tools(agent: &str, connector_id: &str, json: bool) -> Result<()> {
+pub fn agent_tools_tools(agent: &str, connector: &str, json: bool) -> Result<()> {
     let client = Client::from_active_cluster()?;
     let agent_id = resolve_agent_id(&client, agent)?;
+    let connector_id = resolve_connector_id(&client, &agent_id, connector)?;
     let resp: Value = client.get_json(&format!(
         "/mcp/agents/{agent_id}/connectors/{connector_id}/tools"
     ))?;
@@ -1342,11 +1396,12 @@ pub fn agent_tools_set_rule(
 fn agent_tools_set_rule_with(
     client: &Client,
     agent: &str,
-    connector_id: &str,
+    connector: &str,
     pattern: &str,
     stance: &str,
 ) -> Result<()> {
     let agent_id = resolve_agent_id(client, agent)?;
+    let connector_id = resolve_connector_id(client, &agent_id, connector)?;
 
     let existing: Value = client.get_json(&format!("/mcp/agents/{agent_id}/tools"))?;
     let existing_rules = existing
@@ -1355,7 +1410,7 @@ fn agent_tools_set_rule_with(
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let rules = merge_tool_rule(&existing_rules, connector_id, pattern, stance);
+    let rules = merge_tool_rule(&existing_rules, &connector_id, pattern, stance);
 
     let count = rules.len();
     let _: Value = client.put_json(
@@ -1363,7 +1418,7 @@ fn agent_tools_set_rule_with(
         &serde_json::json!({ "rules": rules }),
     )?;
     println!(
-        "Set '{pattern}' → {stance} for connector {connector_id} on agent '{agent}' ({count} rule(s) now active for this connector)."
+        "Set '{pattern}' → {stance} for connector {connector} on agent '{agent}' ({count} rule(s) now active for this connector)."
     );
     Ok(())
 }
@@ -1874,6 +1929,15 @@ mod tests {
     fn set_rule_sends_only_the_target_connectors_merged_rules() {
         let mut server = mockito::Server::new();
         let agent_id = "550e8400-e29b-41d4-a716-446655440000";
+        let _connectors = server
+            .mock(
+                "GET",
+                format!("/api/mcp/agents/{agent_id}/connectors").as_str(),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data": {"connectors": [{"connector_id": "conn-a", "name": "crm"}]}}"#)
+            .create();
 
         let _get = server
             .mock("GET", format!("/api/mcp/agents/{agent_id}/tools").as_str())
@@ -1915,6 +1979,15 @@ mod tests {
     fn set_rule_by_agent_name_resolves_before_reading_tools() {
         let mut server = mockito::Server::new();
         let agent_id = "550e8400-e29b-41d4-a716-446655440000";
+        let _connectors = server
+            .mock(
+                "GET",
+                format!("/api/mcp/agents/{agent_id}/connectors").as_str(),
+            )
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"data": {"connectors": [{"connector_id": "conn-a", "name": "crm"}]}}"#)
+            .create();
 
         let _agents = server
             .mock("GET", "/api/agents")
@@ -1939,6 +2012,69 @@ mod tests {
 
         let client = Client::for_test(&server.url(), None);
         agent_tools_set_rule_with(&client, "research-agent-1", "conn-a", "echo", "allow").unwrap();
+    }
+
+    fn connectors_server(body: &str) -> (mockito::ServerGuard, Client) {
+        let mut server = mockito::Server::new();
+        server
+            .mock("GET", "/api/mcp/agents/agent/connectors")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(body)
+            .create();
+        let client = Client::for_test(&server.url(), None);
+        (server, client)
+    }
+
+    #[test]
+    fn a_connector_uuid_is_used_as_is_without_a_lookup() {
+        let client = Client::for_test("http://127.0.0.1:1", None);
+        let id = "650e8400-e29b-41d4-a716-446655440000";
+        assert_eq!(resolve_connector_id(&client, "agent", id).unwrap(), id);
+    }
+
+    #[test]
+    fn a_connector_name_resolves_to_its_id() {
+        let (_server, client) = connectors_server(
+            r#"{"data": {"connectors": [
+                {"connector_id": "w-1", "name": "workspace"},
+                {"connector_id": "p-1", "name": "platform-control"}
+            ]}}"#,
+        );
+        assert_eq!(
+            resolve_connector_id(&client, "agent", "platform-control").unwrap(),
+            "p-1"
+        );
+        assert_eq!(
+            resolve_connector_id(&client, "agent", "w-1").unwrap(),
+            "w-1"
+        );
+    }
+
+    #[test]
+    fn an_ambiguous_or_unknown_connector_name_is_refused_with_the_choices() {
+        let (_server, client) = connectors_server(
+            r#"{"data": {"connectors": [
+                {"connector_id": "a-1", "name": "crm"},
+                {"connector_id": "a-2", "name": "crm"},
+                {"connector_id": "w-1", "name": "workspace"}
+            ]}}"#,
+        );
+        let ambiguous = resolve_connector_id(&client, "agent", "crm")
+            .unwrap_err()
+            .to_string();
+        assert!(ambiguous.contains("ambiguous"), "{ambiguous}");
+        assert!(ambiguous.contains("a-1, a-2"), "{ambiguous}");
+        let unknown = resolve_connector_id(&client, "agent", "nope")
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("visible: crm, workspace"), "{unknown}");
+
+        let (_server, client) = connectors_server(r#"{"data": {"connectors": []}}"#);
+        let none = resolve_connector_id(&client, "agent", "nope")
+            .unwrap_err()
+            .to_string();
+        assert_eq!(none, "no connector 'nope' is visible to this agent");
     }
 
     #[test]

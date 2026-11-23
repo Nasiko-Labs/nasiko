@@ -359,7 +359,13 @@ pub fn adopt_legacy(client: McpClient) -> Result<bool> {
                 return Ok(false);
             };
             opencode_mcp::check(&opencode_mcp::plugin_path())?;
-            let api = coding_agent_router::client_for_binding(&binding)?;
+            let api = coding_agent_router::client_for_binding(
+                &binding,
+                &format!(
+                    "run: {} connect opencode",
+                    crate::commands::local_agents::cli_name()
+                ),
+            )?;
             let credential =
                 coding_agent_router::mcp_credential(&api, &binding.agent_id, &binding.cluster_url)
                     .context("could not move the MCP gateway out of OpenCode's router plugin")?;

@@ -36,6 +36,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nasiko_runtime::{ContainerRuntime, InstanceInfo, SandboxProvider};
 use sqlx::PgPool;
+use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 pub mod sandbox;
@@ -43,8 +44,7 @@ pub mod sandbox;
 /// Background loop: reconcile once per `poll` interval, forever.
 ///
 /// Spawned from `AppState::from_config_with_db` (both editions); a failed tick
-/// is logged and skipped — the loop itself never exits. Runs on one replica (the leader for
-/// [`LOCK`]): every replica lists the same runtime, so one pass a period is enough.
+/// is logged and skipped — the loop itself never exits.
 pub async fn run(
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
@@ -52,19 +52,19 @@ pub async fn run(
     agent_runtime: String,
     poll: Duration,
 ) {
-    const LOCK: nasiko_leader::LockKey = nasiko_leader::LockKey::named("server.hours_meter");
     let kind = runtime_kind(&agent_runtime);
+    let mut interval = tokio::time::interval(poll);
+    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tracing::info!(
         poll_secs = poll.as_secs(),
         runtime = kind,
         "hours meter started (container-hours and sandbox-minutes)"
     );
-    let sandbox_failing = std::sync::atomic::AtomicBool::new(false);
-    nasiko_leader::every(db.clone(), LOCK, poll, || async {
+    let mut sandbox_failing = false;
+    loop {
+        interval.tick().await;
         if sandbox.is_available() {
-            let mut failing = sandbox_failing.load(std::sync::atomic::Ordering::Relaxed);
-            reconcile_sandboxes_logged(&db, sandbox.as_ref(), &mut failing).await;
-            sandbox_failing.store(failing, std::sync::atomic::Ordering::Relaxed);
+            reconcile_sandboxes_logged(&db, sandbox.as_ref(), &mut sandbox_failing).await;
         }
         match reconcile_once(&db, runtime.as_ref(), kind).await {
             Ok(stats) => tracing::debug!(
@@ -75,8 +75,7 @@ pub async fn run(
             ),
             Err(e) => tracing::warn!(error = %e, "hours meter tick skipped"),
         }
-    })
-    .await;
+    }
 }
 
 /// One sandbox pass; a failure is logged once per streak, and the tick carries on.

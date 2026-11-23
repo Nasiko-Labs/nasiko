@@ -145,9 +145,6 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
 
         if !needs_deploy {
-            if let Some(agent) = &existing {
-                repair_stale_status(&state.db, agent, &agent_name).await;
-            }
             info!(agent = %agent_name, "seed agent already running, skipping");
             continue;
         }
@@ -504,9 +501,6 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
     };
     if !needs_deploy {
-        if let Some(agent) = &existing {
-            repair_stale_status(&state.db, agent, &agent_name).await;
-        }
         info!(agent = %agent_name, "internal agent already running, skipping");
         return;
     }
@@ -647,44 +641,6 @@ async fn deploy_internal_agent(
         agent_url,
     ));
     Ok(())
-}
-
-/// Statuses a seed leaves behind when its deploy failed or was cut short. The resolver routes only
-/// `running` and `parked` agents, so a row left at one of these refuses every call (503) however
-/// healthy its workload is.
-const STALE_SEED_STATUSES: [&str; 2] = ["failed", "deploying"];
-
-fn is_stale_seed_status(status: &str) -> bool {
-    STALE_SEED_STATUSES.contains(&status)
-}
-
-/// Marks a platform agent whose workload the runtime reports running `running` again when an
-/// earlier seed left its row `failed` or `deploying`. A deploy judged failed mid-rollout (the old
-/// pod still showing a pull error) leaves the row `failed` after the rollout completes; the seed
-/// then skips the unchanged, running agent on every boot, so nothing else would repair it. Guarded
-/// on the status, so a row that moved on meanwhile is not overwritten.
-async fn repair_stale_status(db: &sqlx::PgPool, agent: &Agent, agent_name: &str) {
-    if !is_stale_seed_status(&agent.status) {
-        return;
-    }
-    match sqlx::query(
-        "UPDATE agents SET status = 'running', updated_at = now() \
-         WHERE id = $1 AND status = ANY($2)",
-    )
-    .bind(agent.id)
-    .bind(&STALE_SEED_STATUSES[..])
-    .execute(db)
-    .await
-    {
-        Ok(done) if done.rows_affected() > 0 => {
-            warn!(agent = %agent_name, stale = %agent.status,
-                "seed agent's workload is running but its row was not; marked running")
-        }
-        Ok(_) => {}
-        Err(e) => {
-            warn!(agent = %agent_name, error = %e, "repairing a stale seed agent status failed")
-        }
-    }
 }
 
 /// Keeps a platform agent (a seed or an internal agent) `resident`: it always runs. Written on
@@ -1230,23 +1186,6 @@ mod unmatched_settings_tests {
             .collect();
         let images = "registry.nasiko.com/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
         assert_eq!(unmatched_settings(&settings, images), ["summariser"]);
-    }
-}
-
-#[cfg(test)]
-mod stale_status_tests {
-    use super::is_stale_seed_status;
-
-    #[test]
-    fn only_a_failed_or_unfinished_deploy_is_repaired_once_the_workload_runs() {
-        for status in ["failed", "deploying"] {
-            assert!(is_stale_seed_status(status), "{status}");
-        }
-        // `parked` is never woken by a seed; `stopped` and `crashed` belong to the operator
-        // and the crash guardian; `running` needs nothing.
-        for status in ["running", "parked", "stopped", "crashed", "registered"] {
-            assert!(!is_stale_seed_status(status), "{status}");
-        }
     }
 }
 
