@@ -26,6 +26,9 @@ pub struct JobSpec {
     pub limits: JobLimits,
     /// Value of the [`LABEL_KEY`] label, e.g. the run id.
     pub label: String,
+    /// Run inside the container (`sh -c`) before it is stopped for a limit, to keep its work
+    /// (e.g. save the agent's diff); `None` for nothing.
+    pub before_stop: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -266,6 +269,9 @@ impl Containers for DockerCli {
                 stopped = Some(StopReason::DiskLimit);
             }
             if stopped.is_some() {
+                if let Some(cmd) = &job.before_stop {
+                    let _ = self.run(&["exec", &job.name, "sh", "-c", cmd]);
+                }
                 let _ = self.run(&["kill", &job.name]);
                 break None;
             }
@@ -453,6 +459,7 @@ pub mod tests {
                 disk_mib: 2048,
             },
             label: "run-1".into(),
+            before_stop: None,
         };
         let args = run_args(&job).join(" ");
         for part in [

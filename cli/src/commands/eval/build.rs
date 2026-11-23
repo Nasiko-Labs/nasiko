@@ -248,6 +248,7 @@ impl GateCtx<'_> {
             env: Vec::new(),
             limits,
             label: format!("gate-{}", task.instance_id),
+            before_stop: None,
         })?;
         let log = format!("{}\n--- stderr ---\n{}", outcome.stdout, outcome.stderr);
         fs::write(dir.join("output.log"), &log)?;

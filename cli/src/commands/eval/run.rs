@@ -68,6 +68,10 @@ pub struct RunInfo {
     pub finished_at: Option<chrono::DateTime<Utc>>,
 }
 
+/// Saves the agent's changes; run by the agent script at the end, and before a stop.
+const SAVE_DIFF: &str =
+    "cd /testbed && git add -A && git diff --cached --binary HEAD > /eval/out/raw.patch";
+
 /// Parallel compile jobs inside eval containers.
 const CARGO_JOBS: &str = "2";
 
@@ -398,6 +402,8 @@ impl ModelRun<'_> {
                 disk_mib: self.config.storage_mib,
             },
             label: self.run_id.to_string(),
+            // A run stopped for time or disk still hands in what it changed.
+            before_stop: Some(SAVE_DIFF.to_string()),
         })?;
         fs::write(
             out_dir.join("container.log"),
@@ -477,7 +483,7 @@ fn agent_script(agent_timeout_secs: u64) -> String {
          echo $? > /eval/out/exit_code\n\
          SID=$(node -e 'const l=require(\"fs\").readFileSync(\"/eval/out/events.jsonl\",\"utf8\").split(\"\\n\");for(const x of l){{try{{const j=JSON.parse(x);if(j.sessionID){{console.log(j.sessionID);break}}}}catch(e){{}}}}')\n\
          if [ -n \"$SID\" ]; then opencode export \"$SID\" > /eval/out/session-export.json 2>> /eval/out/agent.log; fi\n\
-         git add -A && git diff --cached --binary HEAD > /eval/out/raw.patch\n",
+         {SAVE_DIFF}\n",
         model = opencode::MODEL_ARG,
     )
 }
@@ -544,6 +550,7 @@ pub fn grade_patch(
         env: vec![("CARGO_BUILD_JOBS".into(), CARGO_JOBS.into())],
         limits,
         label: label.to_string(),
+        before_stop: None,
     })?;
     let log = format!("{}\n--- stderr ---\n{}", outcome.stdout, outcome.stderr);
     fs::write(grade_dir.join("output.log"), &log)?;
