@@ -12,10 +12,18 @@ use std::time::Duration;
 ///
 /// `timeout` applies to a call that sets none of its own; most agent calls set their
 /// own per request.
+///
+/// It follows no redirects: an agent's answer, 3xx included, goes back as it is. A
+/// member can register an agent by URL, and only that URL is checked
+/// (`catalog::routes::agent_url_to_store`); following a `302` from it to
+/// `http://169.254.169.254/...` would hand the cloud metadata server's answer to
+/// the member, as the MCP gateway's guarded client once did (its redirect policy,
+/// `nasiko_mcp_gateway::net`).
 pub fn build(timeout: Duration) -> reqwest::Client {
     reqwest::Client::builder()
         .pool_max_idle_per_host(0)
         .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .expect("failed to build the agent http client")
 }
@@ -72,6 +80,28 @@ mod tests {
         let (url, accepted) = counting_listener().await;
         get_twice(&build(Duration::from_secs(5)), &url).await;
         assert_eq!(accepted.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_redirect_from_an_agent_is_returned_not_followed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let reply = b"HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/computeMetadata/v1/\r\nContent-Length: 0\r\n\r\n";
+                    let _ = socket.write_all(reply).await;
+                });
+            }
+        });
+        let response = build(Duration::from_secs(5))
+            .post(&url)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::FOUND);
     }
 
     /// The control: the same listener sees a pooled client reuse one connection, so
