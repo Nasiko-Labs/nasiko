@@ -41,6 +41,14 @@ pub struct HarnessTarget {
     pub hitl_enabled: bool,
 }
 
+impl HarnessTarget {
+    /// Whether this is the platform's own harness agent, the one boot seeding names after its
+    /// harness (`sessions::PLATFORM_HARNESS_AGENT`), rather than a user's own.
+    pub fn is_platform(&self) -> bool {
+        self.name == self.harness_id
+    }
+}
+
 /// What an A2A request to a code-driving agent resolves to.
 #[derive(Debug, Clone)]
 pub enum AgentTarget {

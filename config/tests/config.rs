@@ -884,17 +884,19 @@ fn sandbox_provider_is_read_from_env_and_unknown_fails_startup() {
     set_required_vars();
     unset_vars(&SESSION_KEYS);
 
-    unsafe { std::env::set_var("SANDBOX_PROVIDER", " Shared-Pod ") };
+    unsafe { std::env::set_var("SANDBOX_PROVIDER", " Harness-Agent ") };
     assert_eq!(
         Config::from_env().unwrap().sandbox_provider,
-        SandboxProviderSetting::SharedPod
+        SandboxProviderSetting::HarnessAgent
     );
 
     unsafe { std::env::set_var("SANDBOX_PROVIDER", "firecracker") };
     let err = Config::from_env().unwrap_err().to_string();
-    assert!(
-        err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, shared-pod, harness-agent")
-    );
+    assert!(err.contains("SANDBOX_PROVIDER") && err.contains("docker, pod, harness-agent"));
+
+    unsafe { std::env::set_var("SANDBOX_PROVIDER", "shared-pod") };
+    let err = Config::from_env().unwrap_err().to_string();
+    assert!(err.contains("SANDBOX_PROVIDER") && err.contains("was retired"));
 
     unset_vars(&SESSION_KEYS);
     unset_required_vars();

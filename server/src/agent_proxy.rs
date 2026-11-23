@@ -204,6 +204,23 @@ pub async fn agent_proxy(
         return Ok(refusal);
     }
 
+    // A platform harness agent is only the door: the caller's message runs as their own harness
+    // agent (`sessions::own_agent`, created by their first message once the admission above let
+    // it), so the session, transcript, flow, participant and turn below all name that agent.
+    let (agent_id, agent, coding_target) =
+        match own_harness_door(&state, &claims, coding_target.as_ref(), &body_bytes).await? {
+            Door::Keep => (agent_id, agent, coding_target),
+            Door::Own {
+                agent_id,
+                agent,
+                target,
+            } => {
+                proxy_span.record("agent.id", tracing::field::display(agent_id));
+                (agent_id, agent, Some(target))
+            }
+            Door::Answered(response) => return Ok(response),
+        };
+
     // A harness session's ownership is decided before anything is written under its contextId:
     // `ensure_chat_session` persists the transcript and the flow row below, and a foreign
     // contextId must not collect either.
@@ -250,11 +267,7 @@ pub async fn agent_proxy(
             .await
         {
             tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
-            // Still a 503: a wrapping runtime may translate one it recorded a refusal for.
-            return Ok(axum::response::IntoResponse::into_response((
-                StatusCode::SERVICE_UNAVAILABLE,
-                msg,
-            )));
+            return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
         let caller = Caller {
             flow_id: Some(flow_ctx.flow_id.clone()),
@@ -814,7 +827,7 @@ pub async fn agent_proxy(
 /// The answer to a request whose agent could not be resolved: its status, and a `Retry-After`
 /// when a retry can get past it (the agent was parked as the request reached it).
 fn resolve_refusal(e: &crate::agent_resolver::ResolveError) -> Response {
-    let mut response = Response::new(Body::from(e.client_message()));
+    let mut response = Response::new(Body::empty());
     *response.status_mut() = e.http_status();
     if let Some(secs) = e.retry_after_secs() {
         response.headers_mut().insert(
@@ -897,6 +910,85 @@ async fn reject_foreign_harness_session(
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
     session.map(Some).ok_or(StatusCode::NOT_FOUND)
+}
+
+/// What [`own_harness_door`] decided.
+enum Door {
+    /// Serve the addressed agent.
+    Keep,
+    /// Serve the caller's own harness agent instead, loaded.
+    Own {
+        agent_id: Uuid,
+        agent: crate::agent_resolver::AgentRow,
+        target: crate::coding::proxy::AgentTarget,
+    },
+    /// Refused, with the answer to send.
+    Answered(Response),
+}
+
+/// The caller's own harness agent when their message to a platform harness agent runs as it
+/// (`sessions::own_agent::for_message`). Any other request is served where it was addressed.
+async fn own_harness_door(
+    state: &AppState,
+    claims: &Claims,
+    target: Option<&crate::coding::proxy::AgentTarget>,
+    body: &[u8],
+) -> Result<Door, StatusCode> {
+    use crate::sessions::own_agent::{OwnAgentError, for_message};
+    let Some(crate::coding::proxy::AgentTarget::Harness(target)) = target else {
+        return Ok(Door::Keep);
+    };
+    let Some(id) = message_send_id(body) else {
+        return Ok(Door::Keep);
+    };
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let context_id = message_send_context_id(body);
+    let image_prefix = &state.config.harness_image_prefix;
+    let own = match for_message(
+        &state.db,
+        image_prefix,
+        user_id,
+        target,
+        context_id.as_deref(),
+    )
+    .await
+    {
+        Ok(Some(own)) => own,
+        Ok(None) => return Ok(Door::Keep),
+        Err(e @ OwnAgentError::NameTaken(_)) => {
+            let error = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {
+                    "code": crate::sessions::admission::SESSION_REFUSED,
+                    "message": e.to_string(),
+                },
+            });
+            return Ok(Door::Answered(axum::response::IntoResponse::into_response(
+                axum::Json(error),
+            )));
+        }
+        Err(OwnAgentError::Db(e)) => {
+            tracing::error!(error = %e, %user_id, "agent proxy: the user's harness agent could not be had");
+            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+        }
+    };
+    let agent = load_agent(state, own).await.map_err(|e| e.http_status())?;
+    let target = crate::coding::proxy::load_agent_target(&state.db, own)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, agent_id = %own, "agent proxy: the user's harness agent could not be loaded");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .ok_or_else(|| {
+            tracing::error!(agent_id = %own, "agent proxy: the user's harness agent is not a harness");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
+    Ok(Door::Own {
+        agent_id: own,
+        agent,
+        target,
+    })
 }
 
 /// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
@@ -1010,12 +1102,18 @@ async fn answer_harness_task(
             tracing::error!(error = %e, %agent_id, "agent proxy: target lookup failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    if !matches!(target, Some(crate::coding::proxy::AgentTarget::Harness(_))) {
+    let Some(crate::coding::proxy::AgentTarget::Harness(harness)) = target else {
         return Ok(EarlyAnswer::Continue(restored()));
-    }
+    };
     let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let agents = crate::sessions::own_agent::task_agents(&state.db, user_id, &harness)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, %agent_id, "agent proxy: harness task agents lookup failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?;
     Ok(EarlyAnswer::Answered(
-        crate::sessions::tasks::handle(state, agent_id, user_id, method, &rpc).await,
+        crate::sessions::tasks::handle(state, &agents, user_id, method, &rpc).await,
     ))
 }
 
@@ -1898,26 +1996,13 @@ mod tests {
 
     #[test]
     fn a_request_that_met_a_park_is_told_when_to_try_again() {
-        let parked = resolve_refusal(&ResolveError::ParkedMidRequest("parked".to_owned()));
+        let parked = resolve_refusal(&ResolveError::ParkedMidRequest);
         assert_eq!(parked.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(parked.headers()[RETRY_AFTER], "2");
 
         let gone = resolve_refusal(&ResolveError::NotFound);
         assert_eq!(gone.status(), StatusCode::NOT_FOUND);
         assert!(gone.headers().get(RETRY_AFTER).is_none());
-    }
-
-    #[tokio::test]
-    async fn a_request_refused_after_a_declined_wake_is_told_why_and_when_to_try_again() {
-        let reason = "This workspace cannot start more agents.";
-        let refused = resolve_refusal(&ResolveError::ParkedMidRequest(reason.to_owned()));
-
-        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(refused.headers()[RETRY_AFTER], "2");
-        let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
-            .await
-            .expect("body");
-        assert_eq!(body, reason);
     }
 
     #[test]

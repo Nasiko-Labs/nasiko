@@ -1,18 +1,15 @@
-//! `harness-supervisor`: many sessions of one harness image inside one shared pod.
+//! `harness-supervisor`: many sessions of one harness image inside one pod (one user's harness
+//! agent, so the pod is the boundary between users).
 //!
 //! Per session it creates the session's directory (and, when the pod has a scratch area, the
 //! session's scratch directory in it), starts one `harness-shim` in handshake mode with that
 //! directory as its workspace and `HOME`, reports the session's resource use, and stops the shim
 //! when the platform suspends or releases the session. The platform tells it which port
 //! each session listens on: its placement record owns a session's port for the life of the
-//! session, so a port picked here could disagree with the one the platform dials. Each session's
-//! process tree is confined to its own directories and a tightened syscall policy (`confine`).
+//! session, so a port picked here could disagree with the one the platform dials.
 
-mod confine;
 mod routes;
 mod session;
-
-pub use confine::Confinement;
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -58,20 +55,15 @@ pub struct SupervisorConfig {
     pub workspace_root: PathBuf,
     /// The directory holding one scratch directory per session, `<root>/<id>`: the pod's
     /// node-local scratch volume, where the server's session env points package caches and build
-    /// output (`HARNESS_SCRATCH_ROOT`). `None` (unset) makes none, and a confined session then
-    /// reaches no scratch at all.
+    /// output (`HARNESS_SCRATCH_ROOT`). `None` (unset) makes none.
     pub scratch_root: Option<PathBuf>,
     /// Running sessions allowed at once; a `PUT` past it is a `409`, which the platform reads as
     /// "place this session elsewhere".
     pub max_sessions: usize,
-    /// The layers that confine each session's process tree
-    /// (`HARNESS_SUPERVISOR_CONFINE_FS`, `HARNESS_SUPERVISOR_CONFINE_SYSCALLS`, both on).
-    pub confinement: Confinement,
 }
 
 impl SupervisorConfig {
-    /// Reads the settings from the environment; a missing token or an unrecognised confinement
-    /// switch is a startup error.
+    /// Reads the settings from the environment; a missing token is a startup error.
     pub fn from_env() -> Result<Self> {
         Self::from_lookup(|key| std::env::var(key).ok())
     }
@@ -112,7 +104,6 @@ impl SupervisorConfig {
             workspace_root,
             scratch_root,
             max_sessions: max_sessions(get(MAX_SESSIONS_ENV))?,
-            confinement: Confinement::from_lookup(get)?,
         })
     }
 }
@@ -147,8 +138,6 @@ pub async fn run(
     if let Some(root) = config.scratch_root.as_ref().filter(|root| !root.is_dir()) {
         bail!("{SCRATCH_ROOT_ENV} `{}` is not a directory", root.display());
     }
-    // Likewise a kernel that cannot confine the sessions as configured.
-    confine::startup_check(config.confinement)?;
     let mut terminate = signal(SignalKind::terminate()).context("installing SIGTERM handler")?;
     let mut interrupt = signal(SignalKind::interrupt()).context("installing SIGINT handler")?;
     let listener = TcpListener::bind(config.listen)
@@ -160,7 +149,6 @@ pub async fn run(
     tracing::info!(
         %addr,
         max_sessions = config.max_sessions,
-        confinement = %config.confinement,
         "harness supervisor listening"
     );
     if let Some(bound) = bound {
@@ -297,7 +285,6 @@ mod tests {
         assert_eq!(config.workspace_root, PathBuf::from(DEFAULT_WORKSPACE_ROOT));
         assert_eq!(config.scratch_root, None);
         assert_eq!(config.max_sessions, DEFAULT_MAX_SESSIONS);
-        assert_eq!(config.confinement, Confinement::default());
     }
 
     #[test]
@@ -309,8 +296,6 @@ mod tests {
             (WORKSPACE_ROOT_ENV, "/data"),
             (SCRATCH_ROOT_ENV, "/scratch"),
             (MAX_SESSIONS_ENV, "3"),
-            (confine::FS_ENV, "0"),
-            (confine::SYSCALLS_ENV, "off"),
         ])
         .unwrap();
         assert_eq!(config.listen.port(), 9);
@@ -318,11 +303,6 @@ mod tests {
         assert_eq!(config.workspace_root, PathBuf::from("/data"));
         assert_eq!(config.scratch_root, Some(PathBuf::from("/scratch")));
         assert_eq!(config.max_sessions, 3);
-        let off = Confinement {
-            fs: false,
-            syscalls: false,
-        };
-        assert_eq!(config.confinement, off);
     }
 
     #[test]
@@ -340,8 +320,6 @@ mod tests {
             (MAX_SESSIONS_ENV, "0"),
             (MAX_SESSIONS_ENV, "-1"),
             (MAX_SESSIONS_ENV, "many"),
-            (confine::FS_ENV, "maybe"),
-            (confine::SYSCALLS_ENV, "2"),
         ] {
             assert!(
                 config(&[(TOKEN_ENV, "t"), (key, value)]).is_err(),

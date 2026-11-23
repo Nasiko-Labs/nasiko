@@ -238,6 +238,18 @@ impl SessionStore {
         .await
     }
 
+    /// The user and agent of the chat session `session_id`, of any kind and deleted or not: what
+    /// holds the id. `None` when no row does.
+    pub async fn holder(
+        &self,
+        session_id: &str,
+    ) -> sqlx::Result<Option<(Option<Uuid>, Option<Uuid>)>> {
+        sqlx::query_as("SELECT user_id, agent_id FROM chat_sessions WHERE session_id = $1")
+            .bind(session_id)
+            .fetch_optional(&self.db)
+            .await
+    }
+
     /// A harness session by id, with the catalog id of the harness its agent runs; any other
     /// kind of chat session is `None`.
     pub async fn get_with_harness(

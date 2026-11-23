@@ -16,6 +16,17 @@ while a turn is running, and is suspended when the session goes idle. The worksp
 `/workspace` persists across suspends, so files the harness wrote are still there on the next turn.
 Three harnesses ship in the catalog (`harness_catalog`): `opencode`, `claude-code` and `codex`.
 
+Each user's sessions of one harness run as that user's own **harness agent**: an agent of kind
+`harness` named `harness-<harness id>`, owned by the user, never public and never shared, which the
+platform creates on the user's first session of that harness, whatever the sandbox provider. The
+platform agent is the one users pick; a message sent to it runs as the caller's own harness agent.
+Because that agent is the user's, a session's model calls use the user's own LLM settings and keys
+(a config attached to their harness agent, else their default config), its tool calls use the
+connectors the user connected and the tool rules set on their harness agent, and its sandbox time is
+counted as theirs. A session opened on the platform agent before users had their own stays there.
+An edition that limits how many agents a user may have counts the harness agent as one of them, and
+may refuse the first session of a harness for that reason.
+
 A harness agent belongs to one user and is never shared. Making one public, granting it to a user
 or a group, or giving it to another owner is refused with `409` and the code
 `agent_not_shareable`, and a grant that exists anyway gives nobody access: someone else's harness
@@ -96,15 +107,15 @@ A variable the session's profile sets keeps the profile's value. An `env`-mode s
 the scratch area existed keeps the env it was created with, and so its caches in `HOME`, until it is
 created again.
 
-How long the scratch area lasts depends on the provider (Docker is the only one this edition ships; the
-pod, shared-runtime and harness-agent providers below come with other distributions). On Docker it
-is a volume of the sandbox's own: a suspend keeps it, a release removes it, and Docker does not cap its size. A provider that
-deletes the sandbox's pod on suspend loses it on every suspend. On a shared runtime pod it lasts while
-the pod runs: a suspend keeps it, and a release removes the session's directory. On a user's own
-harness agent it lasts while the agent's pod runs, which is until the agent is parked. Providers that run
-sandboxes in pods give each session a configured size of scratch (a pod that holds several sessions
-gets it once per session they may hold, and they share the total), cap the pod's whole local disk use
-at that size, and evict a pod that goes over it.
+How long the scratch area lasts depends on the provider (Docker is the only one this edition ships;
+the pod and harness-agent providers below come with other distributions). On Docker it is a volume
+of the sandbox's own: a suspend keeps it, a release removes it, and Docker does not cap its size. A
+provider that deletes the sandbox's pod on suspend loses it on every suspend. On a user's own harness
+agent it lasts while the agent's pod runs, which is until the agent is parked: a suspend keeps it,
+and a release removes the session's directory. Providers that run sandboxes in pods give each
+session a configured size of scratch (a pod that holds several sessions gets it once per session
+they may hold, and they share the total), cap the pod's whole local disk use at that size, and evict
+a pod that goes over it.
 
 A turn that arrives while a suspend is in progress waits for it to settle, up to 15 seconds
 (`SUSPEND_WAIT`), and then resumes the sandbox. If the suspend is still running after that, the
@@ -116,8 +127,11 @@ There are two entry points, both A2A JSON-RPC (see [A2A_PROTOCOL.md](A2A_PROTOCO
 
 | Entry point | Notes |
 |-------------|-------|
-| `POST /api/agents/{id}` | The agent proxy. `{id}` is the harness agent's UUID. |
-| `POST /api/orchestrator/a2a` | Dispatch. Set the `agent_id` metadata to the harness agent's name or UUID. |
+| `POST /api/agents/{id}` | The agent proxy. `{id}` is the platform harness agent's UUID, or the caller's own harness agent's (a session's `agent_id`). |
+| `POST /api/orchestrator/a2a` | Dispatch. Set the `agent_id` metadata to either agent's name or UUID. |
+
+A message to the platform harness agent runs as the caller's own harness agent, which it creates if
+the caller has none; the task methods sent to the platform agent find the caller's tasks on either.
 
 The `contextId` of a `message/send` or `message/stream` is the session id:
 
@@ -342,7 +356,7 @@ open, since the process that asked them is gone.
 | `CODING_AGENT_TURN_LEASE_SECS` | `60` | How long a turn's lock on a session lasts without renewal. Bounds how long a crashed turn blocks the next one. |
 | `CODING_AGENT_LEASE_HEARTBEAT_SECS` | `20` | How often a running turn renews its lease. |
 | `AGENT_CALL_TIMEOUT_SECS` | `600` | Per-turn deadline. Also caps how long a turn waits for a human approval. |
-| `SANDBOX_PROVIDER` | `docker` | Where sandboxes run. Docker is the only provider in this edition: `pod`, `shared-pod` and `harness-agent` are accepted but leave this edition with an unavailable provider that refuses every sandbox operation, so no turn can run; those providers come with other distributions. An unknown value fails startup. |
+| `SANDBOX_PROVIDER` | `docker` | Where sandboxes run. Docker is the only provider in this edition: `pod` and `harness-agent` are accepted but leave this edition with an unavailable provider that refuses every sandbox operation, so no turn can run; those providers come with other distributions. An unknown value fails startup, and so does the retired `shared-pod`, with a message naming `harness-agent` or `pod`. |
 | `HARNESS_SHIM_MODE` | `env` | Read by the shim inside the sandbox, not by the server: `env` or `handshake` (section 8). Set by the provider on the sandbox, not by an operator. |
 | `HARNESS_SHIM_LISTEN` | `0.0.0.0:7000` | Read by the shim: the address it serves on. The `--listen` flag wins. |
 | `HARNESS_WORKSPACE` | `/workspace` | Read by the shim: the session's working directory and clone target. Must be absolute. The `--workspace` flag wins. |
@@ -353,12 +367,15 @@ The server validates these at startup and refuses to boot when they conflict:
 - `CODING_AGENT_IDLE_TTL_SECS` must be `0` or at least `SESSION_IDLE_GRACE_SECS`.
 - `CODING_AGENT_TURN_LEASE_SECS` must be positive, and `CODING_AGENT_LEASE_HEARTBEAT_SECS` must be
   positive and at most half of it, so a live turn renews at least twice per lease.
-- `AGENT_CALL_TIMEOUT_SECS` must not exceed 3600, the lifetime of the per-turn token.
+- `AGENT_CALL_TIMEOUT_SECS` must not exceed 3600 (`SESSION_TOKEN_TTL_SECS`), the longest a turn
+  may wait for a human approval.
 
 ## 7. Identity and credentials
 
 A harness calls back into the platform: its model requests go to the platform's LLM router and its
-tool calls go to the MCP gateway, both as the session's user. Two tokens make that work.
+tool calls go to the MCP gateway, both as the session's user. One token, the session's sandbox
+token, makes that work. It names the session's agent, the user's own harness agent, so the router
+and the gateway resolve the user's settings.
 
 The per-sandbox token is placed in the sandbox environment (as `OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY` and `NASIKO_SESSION_TOKEN`, with `MCP_GATEWAY_URL` and
@@ -370,10 +387,12 @@ new environment suspends it, and one that fixes the environment when it creates 
 sandbox is cleared, and when it is renewed. Treat it as readable by any process inside the sandbox,
 including the code the harness runs.
 
-The per-turn token lives one hour and is handed to the harness only as the ACP MCP header. It is
-revoked when the turn ends.
+The same token is the ACP MCP header the harness reaches the MCP gateway with. The harness keeps
+its MCP connection from one turn to the next, so a credential of a single turn would leave every
+later turn without tools; when the token is replaced, the sandbox is stopped first, so the harness
+connects again with the new one. The gateway attributes each call to the turn it falls in.
 
-Both are signed with `AGENT_JWT_SECRET`. If it is unset, harness agents are not seeded and the
+It is signed with `AGENT_JWT_SECRET`. If it is unset, harness agents are not seeded and the
 server logs an error at startup. Rotating the secret invalidates every sandbox's token: the next
 turn on each sandbox notices and replaces it, as above. The shim's WebSocket endpoint
 (`/acp`) is authenticated with a per-sandbox bearer derived from the same secret.
@@ -427,28 +446,26 @@ wants.
 | Mode | Settings arrive | Used by |
 |------|-----------------|---------|
 | `env` (default) | In the shim's process environment, set when the sandbox is created. The harness starts at once and the shim exits when it does. | Providers whose sandbox environment is chosen per sandbox, such as Docker |
-| `handshake` | By `POST /control/configure`, after the sandbox is attached. The shim binds its port and answers `/healthz` first, and starts nothing until it is configured. | Shared-runtime providers, whose pod is created before any of its sessions is known |
+| `handshake` | By `POST /control/configure`, after the sandbox is attached. The shim binds its port and answers `/healthz` first, and starts nothing until it is configured. | Providers that run several sessions in one pod under a supervisor (the per-user harness agent), whose pod is created before any of its sessions is known |
 
 In handshake mode the configuration is held in memory only, so a resumed shim, a new process, is
 configured again. If the harness process exits, a handshake shim keeps serving
 (`child` reads `exited`) and starts it again on the next configure or restart.
 
-The shared-runtime and per-user harness-agent providers described here are not part of this
-edition; they come with other distributions. On a shared-runtime provider many shims share one pod under a pod-level supervisor
-(`harness-supervisor`). Each session gets its own directory, which its shim serves as its workspace
+The per-user harness-agent provider described here is not part of this edition; it comes with other
+distributions. It gives each user one harness agent per harness: an agent of kind `harness` owned by
+that user (named `harness-<harness id>`, never public and never shared; see section 1), which this
+provider deploys from the harness image on the first acquire of one of its sessions. Its pod runs a pod-level supervisor
+(`harness-supervisor`), and every session of that user and harness is a shim under it. Each session
+gets its own directory in the agent's writable folder, which its shim serves as its workspace
 (`--workspace` / `HARNESS_WORKSPACE`), and the server runs the ACP session there. When the pod has a
 scratch area (`HARNESS_SCRATCH_ROOT`), each session also gets its own scratch directory in it,
 `<root>/<sandbox key>`, the directory the server's env points at, and its `TMPDIR` is that
 directory's `tmp/`, which the supervisor creates (node-local, and writable where the pod's root
-filesystem is not). The supervisor confines a session to those two directories when confinement is on,
-and a release removes both.
+filesystem is not). A release removes both. The supervisor does not confine a session to its
+directories: the pod holds one user's sessions, so the pod is the isolation boundary.
 
-A provider may instead give each user one harness agent per harness: an agent of kind `harness`
-owned by that user (named `harness-<harness id>`, never public and never shared), created by the
-platform from the harness image on the user's first session for it. Its pod runs the supervisor, and
-every session of that user and harness is a shim in it, with its directory in the agent's writable
-folder and its scratch directory on the pod's local disk. The agent is parked while none of its
-sessions runs and woken by the next turn; what was in the scratch area goes with the parked pod.
+The agent is parked while none of its sessions runs and woken by the next turn; what was in the scratch area goes with the parked pod.
 Calling that agent directly starts a session on it, as for the platform's own harness agent. The
 platform deploys it: restarting or redeploying it through the agent lifecycle API, or uploading an
 agent under its name, is refused with `409`.
@@ -518,19 +535,18 @@ files, then starts the harness.
 
 If the provider drains the node under a sandbox, it may signal the shim's process with `SIGTERM`. In
 handshake mode the shim does not exit: it sets `evicting` (shown on `status` and `stats`) and keeps
-relaying. A provider can also report `evicting` itself, as a shared-runtime provider does for a pod
-that is being deleted. The server's idle reaper suspends an `evicting` session at once, busy or not,
-unless a turn holds it. In `env` mode `SIGTERM` ends the shim as before.
+relaying. A provider can also report `evicting` itself, for a pod that is being deleted. The
+server's idle reaper suspends an `evicting` session at once, busy or not, unless a turn holds it. In
+`env` mode `SIGTERM` ends the shim as before.
 
 ## 9. Limitations
 
 - On a provider whose shim runs in `env` mode (Docker, pods), the profile and the HITL setting are
   frozen into a sandbox when it is created, so a change reaches an existing sandbox only after it
   is released and created again. Handshake-mode sandboxes pick them up on the next turn.
-- The router routes a harness agent's calls by the dialect the harness speaks and the harness
-  agent row's own config, not the session user's: a user's default config on another provider
-  is not used, and a config attached to the harness agent (or its owner's default) overrides the
-  model the profile asks for.
+- The router routes a session's calls by the dialect the harness speaks and the config of the
+  session's harness agent (one attached to it, else the user's default): a config on a provider of
+  another dialect is not used, and the config overrides the model the harness asks for.
 - Of the A2A methods, harness agents answer `message/send`, `message/stream` and the three task
   methods above. Task history (`tasks/list`) and push notifications are not supported.
 - `tasks/resubscribe` on a replica that does not run the turn streams every chunk only while Redis

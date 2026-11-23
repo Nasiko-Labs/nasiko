@@ -21,6 +21,7 @@ use uuid::Uuid;
 use super::admission::refuse_session;
 use super::catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT};
 use super::model::{ListedSession, SessionFilter, SessionRow, SessionRuntimeState, SessionStore};
+use super::own_agent;
 use super::suspend::{ReapError, Suspend, claim_suspend, claim_unaccounted};
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -150,7 +151,10 @@ async fn create_session(
     if let Some(refusal) = refuse_session(&state, user_id, &harness.id).await {
         return Ok(refusal.into_response());
     }
-    let agent_id = harness_agent(&state, &harness.id).await?;
+    // The platform's agent is the readiness gate (seeding creates it only when sessions can run);
+    // the session is bound to the user's own agent for the harness.
+    harness_agent(&state, &harness.id).await?;
+    let agent_id = own_harness_agent(&state, user_id, &harness).await?;
 
     let row = SessionStore::new(state.db.clone())
         .create(agent_id, user_id, repo)
@@ -227,6 +231,26 @@ async fn harness_agent(state: &AppState, harness_id: &str) -> ApiResult<Uuid> {
         "harness_not_ready",
         "harness agent is not registered yet",
     ))
+}
+
+/// The user's own harness agent for `harness` (`own_agent`), created if they have none.
+async fn own_harness_agent(state: &AppState, user_id: Uuid, harness: &Harness) -> ApiResult<Uuid> {
+    own_agent::ensure(
+        &state.db,
+        user_id,
+        harness,
+        &state.config.harness_image_prefix,
+    )
+    .await
+    .map_err(|e| match e {
+        own_agent::OwnAgentError::NameTaken(_) => ApiError(
+            StatusCode::CONFLICT,
+            "harness_agent_name_taken",
+            "you already have an agent named after this harness's agent \
+                 (harness-<harness id>); rename it to open a session of this harness",
+        ),
+        own_agent::OwnAgentError::Db(e) => ApiError::internal("create the user's harness agent", e),
+    })
 }
 
 /// The caller's own harness session and its harness id, or the not-found response.

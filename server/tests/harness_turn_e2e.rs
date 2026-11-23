@@ -141,6 +141,18 @@ async fn settled_session(db: &PgPool, session_id: &str) -> sqlx::postgres::PgRow
     panic!("turn lease was never released");
 }
 
+/// `user`'s own harness agent for opencode, which their first message to the platform's created.
+async fn own_harness_agent(db: &PgPool, user: Uuid) -> Uuid {
+    sqlx::query_scalar(
+        "SELECT id FROM agents WHERE owner_id = $1 AND name = 'harness-opencode' \
+         AND workload_kind = 'harness' AND deleted_at IS NULL",
+    )
+    .bind(user)
+    .fetch_one(db)
+    .await
+    .unwrap()
+}
+
 struct World {
     server: common::TestServer,
     agent_id: Uuid,
@@ -248,6 +260,25 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     .unwrap();
     assert_eq!(reply, 1, "the reply is persisted to the transcript");
 
+    // The message went to the platform's agent and ran as alice's own harness agent: the session,
+    // and the flow it ran under, are bound to it.
+    let own = own_harness_agent(&server.db, alice).await;
+    assert_ne!(own, agent_id);
+    let bound: Option<Uuid> =
+        sqlx::query_scalar("SELECT agent_id FROM chat_sessions WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(bound, Some(own));
+    let roots: Vec<Option<Uuid>> =
+        sqlx::query_scalar("SELECT root_agent_id FROM flows WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(roots, [Some(own)]);
+
     // Second turn, same contextId: same session row, the provider is asked again (resume).
     let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 200);
@@ -262,9 +293,9 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     assert_eq!(rows, 1);
     assert_eq!(server.sandbox.acquire_count(&key), 2);
 
-    // The sandbox's credential is the one minted when it was created, and it is still live
-    // on turn 2; the per-turn tokens are revoked as their turns end.
-    assert_sandbox_credentials_live(&server, &key, &sid, agent_id, &first_env).await;
+    // The sandbox's credential is the one minted when it was created, names alice's own agent,
+    // and is still live on turn 2; no turn mints a token of its own.
+    assert_sandbox_credentials_live(&server, &key, &sid, own, &first_env).await;
 
     // Someone else's contextId is a 404 (not a 403, which would confirm it exists) and writes
     // nothing under it: no transcript row, no flow.
@@ -281,6 +312,15 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     let resp = turn_over_proxy(&server, agent_id, (bob, "bob"), &sid).await;
     assert_eq!(resp.status(), 404);
     assert_eq!(server.sandbox.acquire_count(&key), 2);
+    let bobs_agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE owner_id = $1")
+        .bind(bob)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(
+        bobs_agents, 0,
+        "a refused message creates no harness agent for its sender"
+    );
     let after: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_messages WHERE session_id = $1")
         .bind(&sid)
         .fetch_one(&server.db)
@@ -326,8 +366,8 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     server.cleanup().await;
 }
 
-/// Every acquire is given the same full env, and it is the stored, never-revoked sandbox token;
-/// exactly the two turn tokens are revoked.
+/// Every acquire is given the same full env, and it is the stored, never-revoked sandbox token,
+/// naming `agent_id`; no turn token is minted, so nothing is revoked.
 async fn assert_sandbox_credentials_live(
     server: &common::TestServer,
     key: &SandboxKey,
@@ -359,6 +399,7 @@ async fn assert_sandbox_credentials_live(
         nasiko_session_token::parse_algorithm("HS256"),
     )
     .expect("the sandbox token verifies");
+    assert_eq!(claims.agent_id, agent_id.to_string());
     let stored: Option<String> =
         sqlx::query_scalar("SELECT sandbox_token_jti FROM chat_sessions WHERE session_id = $1")
             .bind(sid)
@@ -376,13 +417,13 @@ async fn assert_sandbox_credentials_live(
         revoked, 0,
         "the sandbox token must outlive the turns that used the sandbox"
     );
-    let turn_tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
+    let revoked: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
         .fetch_one(&server.db)
         .await
         .unwrap();
     assert_eq!(
-        turn_tokens, 2,
-        "exactly the two turn tokens are revoked, never the sandbox's"
+        revoked, 0,
+        "a harness turn mints no token of its own to revoke"
     );
 }
 
@@ -1139,8 +1180,8 @@ async fn a_claim_after_the_key_is_recorded_stops_the_turn_and_revokes_the_token_
         .await
         .unwrap();
     assert_eq!(
-        revoked, 2,
-        "the minted sandbox token and the turn's own token are both revoked"
+        revoked, 1,
+        "the minted sandbox token is revoked; the turn mints no token of its own"
     );
     server.cleanup().await;
 }
@@ -1727,10 +1768,12 @@ async fn cancelling_during_a_permission_wait_closes_the_request_and_ends_cancele
         text.push_str(&String::from_utf8_lossy(&chunk));
     }
     assert!(text.contains("TASK_STATE_CANCELED"), "{text}");
+    // The turn ran as alice's own harness agent, which took the platform agent's approval
+    // setting when her first message created it.
     let status: String = sqlx::query_scalar(
         "SELECT status FROM hitl_requests WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(agent_id)
+    .bind(own_harness_agent(&server.db, alice).await)
     .fetch_one(&server.db)
     .await
     .unwrap();
@@ -2087,5 +2130,71 @@ async fn a_refused_turn_writes_nothing_and_answers_a_json_rpc_error_over_both_fr
         }),
         0
     );
+    server.cleanup().await;
+}
+
+/// A fake agent that advertises HTTP MCP, so the turn attaches the gateway, and appends every
+/// `session/new` request it gets to `<dir>/new`. Like [`FAKE_ACP`] it does not load sessions, so
+/// every turn opens one.
+fn recording_acp(dir: &std::path::Path) -> String {
+    let dir = dir.display();
+    format!(
+        r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E 's/^\{{"jsonrpc":"2\.0","id":("[^"]*"|[0-9]+),.*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"protocolVersion\":1,\"agentCapabilities\":{{\"mcpCapabilities\":{{\"http\":true}}}}}}}}" ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' "$line" >> {dir}/new
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"sessionId\":\"sh-session\"}}}}" ;;
+    *'"method":"session/prompt"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\"}}}}" ;;
+  esac
+done
+"#
+    )
+}
+
+/// The harness reaches the MCP gateway with the session's sandbox token on every turn, not with a
+/// token of the turn's own that the turn revokes: the harness keeps its MCP client across turns,
+/// so a revoked one would leave the next turn without tools.
+#[tokio::test]
+#[serial]
+async fn every_turn_attaches_the_gateway_with_the_sandbox_token() {
+    let World {
+        server,
+        agent_id,
+        alice,
+        ..
+    } = world_with(|c| c.mcp_gateway_public_url = Some("http://gateway.test/api/mcp".into())).await;
+    let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (key, sid) = session_with_script(&server, &recording_acp(&dir)).await;
+
+    for _ in 0..2 {
+        completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+        settled_session(&server.db, &sid).await;
+    }
+
+    let token = server
+        .sandbox
+        .last_acquire_spec(&key)
+        .expect("acquired")
+        .env["NASIKO_SESSION_TOKEN"]
+        .clone();
+    let opened = std::fs::read_to_string(dir.join("new")).unwrap();
+    let headers: Vec<&str> = opened.lines().collect();
+    assert_eq!(headers.len(), 2, "{opened}");
+    for line in headers {
+        assert!(line.contains("http://gateway.test/api/mcp"), "{line}");
+        assert!(line.contains(&format!("Bearer {token}")), "{line}");
+    }
+    let revoked: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(revoked, 0);
+    let _ = std::fs::remove_dir_all(&dir);
     server.cleanup().await;
 }

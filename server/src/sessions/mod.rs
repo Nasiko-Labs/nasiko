@@ -15,6 +15,7 @@ pub mod identity;
 pub mod keys;
 pub mod live;
 pub mod model;
+pub mod own_agent;
 pub mod pending;
 pub mod profile;
 pub mod reaper;

@@ -138,6 +138,110 @@ async fn session_is_created_parked_and_visible_only_to_its_owner() {
     server.cleanup().await;
 }
 
+fn agent_of(session: &Value) -> Uuid {
+    session["agent_id"].as_str().unwrap().parse().unwrap()
+}
+
+/// A session is bound to its user's own harness agent: created by their first session of that
+/// harness and reused by the next, owned by them, never public, parked until a provider runs it.
+/// Each user gets their own; the platform's agent stays as boot seeding wrote it.
+#[tokio::test]
+#[serial]
+async fn a_session_is_bound_to_its_users_own_harness_agent() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let bob = create_member(&server, &admin).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+
+    let first = create_session(&server, &admin, "opencode").await;
+    let second = create_session(&server, &admin, "opencode").await;
+    let resp = common::as_member(server.client.post(server.url("/api/sessions")), &bob, "bob")
+        .json(&json!({ "harness": "opencode" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    let bobs = resp.json::<Value>().await.unwrap()["data"].clone();
+
+    assert_eq!(agent_of(&first), agent_of(&second));
+    assert_ne!(agent_of(&first), agent_of(&bobs));
+    for (session, owner) in [(&first, &admin), (&bobs, &bob)] {
+        let row: (String, Uuid, bool, String, String) = sqlx::query_as(
+            "SELECT name, owner_id, is_public, status, workload_kind FROM agents WHERE id = $1",
+        )
+        .bind(agent_of(session))
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            (
+                row.0.as_str(),
+                row.1.to_string(),
+                row.2,
+                row.3.as_str(),
+                row.4.as_str()
+            ),
+            (
+                "harness-opencode",
+                owner.clone(),
+                false,
+                "parked",
+                "harness"
+            )
+        );
+    }
+    let platform: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM agents \
+         WHERE name = 'opencode' AND workload_kind = 'harness' AND is_public",
+    )
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert_eq!(platform, 1);
+    server.cleanup().await;
+}
+
+/// An agent of the user's that already holds the name their harness agent takes is never taken
+/// over: the session is refused with a 409 and nothing is written.
+#[tokio::test]
+#[serial]
+async fn a_session_is_refused_when_its_harness_agents_name_is_taken() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let admin_id: Uuid = admin.parse().unwrap();
+    sqlx::query(
+        "INSERT INTO agents (name, owner_id, status, workload_kind) \
+         VALUES ('harness-opencode', $1, 'running', 'agent')",
+    )
+    .bind(admin_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+
+    let resp = common::as_superuser(
+        server.client.post(server.url("/api/sessions")),
+        &admin,
+        "admin",
+    )
+    .json(&json!({ "harness": "opencode" }))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 409);
+    assert_eq!(
+        resp.json::<Value>().await.unwrap()["code"],
+        "harness_agent_name_taken"
+    );
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE user_id = $1")
+        .bind(admin_id)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(sessions, 0);
+    server.cleanup().await;
+}
+
 #[tokio::test]
 #[serial]
 async fn unknown_harness_is_a_400() {

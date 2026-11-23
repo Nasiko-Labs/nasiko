@@ -455,9 +455,7 @@ async fn reconnect_stream(
     // dedicated `mcp_tool` resume dispatcher (`oss/hitl::dispatcher`) never touches
     // `continuation_events` at all. A standalone, never-mirrored `mcp_tool` row's id would
     // otherwise `watch()` the same kind of buffer nothing will ever terminate.
-    if row.origin == nasiko_hitl::HitlOrigin::McpTool
-        && !state.continuation_events.exists(row.id).await
-    {
+    if row.origin == nasiko_hitl::HitlOrigin::McpTool && !state.continuation_events.exists(row.id) {
         return Err(A2aDispatchError::InvalidRequest(
             "this HITL request has no agent-visible continuation to reconnect to — poll GET /api/hitl/pending instead"
                 .into(),
@@ -3043,22 +3041,25 @@ async fn harness_task_reply(
     if !crate::acl::can_access_agent(state, claims, agent.id).await {
         return Err(A2aDispatchError::AgentNotFound(target.to_string()));
     }
-    let is_harness = agent.may_drive_code()
-        && matches!(
-            crate::coding::proxy::load_agent_target(&state.db, agent.id)
-                .await
-                .map_err(|e| A2aDispatchError::Internal(e.to_string()))?,
-            Some(crate::coding::proxy::AgentTarget::Harness(_))
-        );
-    if !is_harness {
+    if !agent.may_drive_code() {
         return Ok(None);
     }
+    let Some(crate::coding::proxy::AgentTarget::Harness(harness)) =
+        crate::coding::proxy::load_agent_target(&state.db, agent.id)
+            .await
+            .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+    else {
+        return Ok(None);
+    };
     let user_id = match claims.user_uuid() {
         Ok(id) => id,
         Err(e) => return Ok(Some(e.into_response())),
     };
+    let agents = crate::sessions::own_agent::task_agents(&state.db, user_id, &harness)
+        .await
+        .map_err(|e| A2aDispatchError::Internal(e.to_string()))?;
     Ok(Some(
-        crate::sessions::tasks::handle(state, agent.id, user_id, method, &rpc).await,
+        crate::sessions::tasks::handle(state, &agents, user_id, method, &rpc).await,
     ))
 }
 
@@ -3138,6 +3139,21 @@ async fn harness_agent_stream(
             id: serde_json::to_value(request_id).unwrap_or(serde_json::Value::Null),
         });
     }
+    // A platform harness agent is only the door: the message runs as the caller's own harness
+    // agent (`sessions::own_agent`, created by their first message once the admission above let
+    // it), so the session, transcript, flow and turn below all name that agent.
+    let own_row;
+    let (turn, target) = match own_harness_agent(state, &target, &turn).await? {
+        None => (turn, target),
+        Some((row, own_target)) => {
+            own_row = row;
+            let turn = CodingDispatch {
+                agent: &own_row,
+                ..turn
+            };
+            (turn, own_target)
+        }
+    };
     let session = crate::sessions::SessionStore::new(state.db.clone())
         .find_or_create_for_harness(turn.agent.id, turn.user_id, turn.context_id)
         .await
@@ -3177,6 +3193,41 @@ async fn harness_agent_stream(
             A2aDispatchError::Internal(e.to_string())
         }
     })
+}
+
+/// The caller's own harness agent, with its row and target, when their message to the harness
+/// agent `target` runs as it (`sessions::own_agent::for_message`); `None` to keep `target`.
+async fn own_harness_agent(
+    state: &AppState,
+    target: &crate::coding::proxy::HarnessTarget,
+    turn: &CodingDispatch<'_>,
+) -> Result<Option<(AgentRow, crate::coding::proxy::HarnessTarget)>, A2aDispatchError> {
+    use crate::sessions::own_agent::{OwnAgentError, for_message};
+    let own = for_message(
+        &state.db,
+        &state.config.harness_image_prefix,
+        turn.user_id,
+        target,
+        Some(turn.context_id),
+    )
+    .await
+    .map_err(|e| match e {
+        OwnAgentError::NameTaken(_) => A2aDispatchError::InvalidRequest(e.to_string()),
+        OwnAgentError::Db(e) => A2aDispatchError::Internal(e.to_string()),
+    })?;
+    let Some(own) = own else {
+        return Ok(None);
+    };
+    let row = resolve_agent(state, &own.to_string()).await?;
+    match crate::coding::proxy::load_agent_target(&state.db, own)
+        .await
+        .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
+    {
+        Some(crate::coding::proxy::AgentTarget::Harness(own_target)) => Ok(Some((row, own_target))),
+        _ => Err(A2aDispatchError::Internal(format!(
+            "the user's harness agent {own} is not a harness"
+        ))),
+    }
 }
 
 /// Open the flow a code-driving turn's session token binds to — same shape as `agent_stream`'s

@@ -5,10 +5,10 @@
 //! The exec-based coding path (`coding::turn`) does the same job against a container it execs
 //! into; this one talks to the shim inside a per-session sandbox. Everything that does not
 //! depend on the transport is shared with it: the lease, the permission policy, the ACP session
-//! open/restore, the turn driver (heartbeat, deadline, reply persistence, telemetry, token
-//! revocation) and the SSE mapping.
+//! open/restore, the turn driver (heartbeat, deadline, reply persistence, telemetry) and the SSE
+//! mapping.
 //!
-//! # Two credentials
+//! # The credential
 //!
 //! A sandbox's environment is applied whenever the provider creates or recreates it, and the
 //! provider contract is that every acquire passes the full, stable env. So the *sandbox token*
@@ -16,16 +16,22 @@
 //! decrypts it and rebuilds the whole env from it. It is replaced only when missing, unusable
 //! (secret rotated) or within 24 h of expiry, and then the sandbox is stopped first so the new
 //! env lands: suspended where the provider resumes it on the new env, released only where it
-//! cannot (`sessions::token::stop_for_new_env`), so its files stay. The *turn token* is minted
-//! per turn and handed to the agent only as the ACP MCP header, and is revoked when the turn
-//! ends. A failed acquire revokes nothing: a container or pod that survived the failure still
-//! carries the token.
+//! cannot (`sessions::token::stop_for_new_env`), so its files stay. The same token is the ACP
+//! MCP header the harness reaches the MCP gateway with ([`begin_prompt`]): the harness and its MCP
+//! client outlive a turn, so a credential of the turn's own would be dead on the next one. A
+//! failed acquire revokes nothing: a container or pod that survived the failure still carries
+//! the token.
+//!
+//! The token names the session's agent: the user's own harness agent (`sessions::own_agent`) for
+//! every session opened since users had one, so the router and the gateway resolve the user's
+//! settings, not those of the admin who owns the platform's agent.
 //!
 //! # The profile
 //!
 //! The model the harness asks the router for, and the per-harness settings that point it there,
-//! are the session's *profile* (`sessions::profile`), rendered on every turn from the user's
-//! default LLM config and the HITL toggle. It joins the env (and, for a harness that reads its
+//! are the session's *profile* (`sessions::profile`), rendered on every turn from the LLM config
+//! the router resolves for the session's agent (the one attached to it, else its owner's
+//! default) and the HITL toggle. It joins the env (and, for a harness that reads its
 //! settings from disk, the `files` the shim writes before the harness starts). A handshake-mode
 //! shim restarts the harness when the configuration changes, so a changed profile reaches a
 //! running sandbox on the next turn; an env-mode sandbox carries the profile it was created with
@@ -56,19 +62,18 @@ use super::handshake::{
     Configure, ControlClient, HandshakeError, acp_tls, configure_body, control_http, prepare,
     sanitize_routing, upgrade_headers,
 };
-use super::identity::{mint_session_token, session_env, shim_token};
+use super::identity::{session_env, shim_token};
 use super::keys::{session_key, set_sandbox_key};
 use super::live::{LiveRegistration, LiveTurn};
 use super::model::{SessionRow, SessionRuntimeState, SessionStore};
 use super::pending::{clear_pending, set_pending};
-use super::profile::{HarnessProfile, ModelChoice, ProfileInputs, model_choice_for_user};
+use super::profile::{HarnessProfile, ModelChoice, ProfileInputs, model_choice_for_agent};
 use super::scratch::add_scratch_env;
 use super::token::{TokenNeeds, ensure_sandbox_token};
 use crate::coding::lifecycle::{self, TurnLease};
 use crate::coding::permission::PendingPermissionSink;
 use crate::coding::proxy::{CodingAgentKind, HarnessTarget, codex_hitl_args};
 use crate::coding::questions::TurnQuestions;
-use crate::coding::revocation::{RevokedTokenId, revoke_session_token};
 use crate::coding::turn::{
     CodingTurnError, CodingTurnEvent, DriveTurn, HitlPolicyInput, ShimRestart, TelemetryKeys,
     hitl_permission_policy, new_turn_telemetry, open_acp_session, replica_id, session_params,
@@ -213,21 +218,6 @@ async fn start_harness_turn(
     };
     let req = HarnessTurnRequest { session, ..req };
 
-    let minted = match mint_session_token(
-        &state.config,
-        req.target.agent_id,
-        req.user_id,
-        &session_id,
-        req.flow_id,
-    ) {
-        Ok(minted) => minted,
-        Err(e) => {
-            let _ = lifecycle::release_turn(&state.db, &lease).await;
-            return Err(CodingTurnError::from_credential("session credential", e));
-        }
-    };
-    let token_id = RevokedTokenId::from_minted(&minted);
-
     let (setup_beat, lease_lost) = StartHeartbeat::spawn(state, &lease);
     let ctx = TurnCtx {
         state,
@@ -238,7 +228,7 @@ async fn start_harness_turn(
         lease_lost,
         questions: TurnQuestions::default(),
     };
-    let started = start_turn(&ctx, minted.token, &token_id).await;
+    let started = start_turn(&ctx).await;
     drop(setup_beat);
     match started {
         Ok(rx) => Ok(rx),
@@ -250,7 +240,6 @@ async fn start_harness_turn(
                 .await;
             warn_missed_write("leave state", &session_id, left);
             let _ = lifecycle::release_turn(&state.db, &lease).await;
-            let _ = revoke_session_token(&state.db, &token_id.jti, token_id.expires_at).await;
             Err(failure.error)
         }
     }
@@ -398,8 +387,6 @@ impl TurnCtx<'_, '_> {
 /// Everything between holding the lease and handing back the event stream.
 async fn start_turn(
     ctx: &TurnCtx<'_, '_>,
-    turn_token: String,
-    token_id: &RevokedTokenId,
 ) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, StartFailure> {
     // The first fenced write is the gate: a suspend claim that took the lease since it was
     // acquired makes it miss, and the turn stops here, before it touches the sandbox.
@@ -413,16 +400,23 @@ async fn start_turn(
     let keyed = set_sandbox_key(&ctx.state.db, ctx.lease, &session_key(&ctx.req.session)).await;
     require_fence(keyed).map_err(|e| StartFailure::before_acquire(&ctx.req.session, e))?;
 
-    let (handle, env) = provision_sandbox(ctx).await?;
+    let Provisioned { handle, env, token } = provision_sandbox(ctx).await?;
     ctx.gate().map_err(StartFailure::running)?;
-    begin_prompt(ctx, turn_token, token_id, &handle, env).await
+    begin_prompt(ctx, token, &handle, env).await
+}
+
+/// A session's sandbox, ready for its turn.
+struct Provisioned {
+    handle: SandboxHandle,
+    /// The env it runs with, the platform's additions included.
+    env: HashMap<String, String>,
+    /// The session's sandbox token, which the env carries too.
+    token: String,
 }
 
 /// Get the session a sandbox with its full env: harness, token, spec, acquire, record the ref.
 /// Nothing here revokes a credential when `acquire` fails.
-async fn provision_sandbox(
-    ctx: &TurnCtx<'_, '_>,
-) -> Result<(SandboxHandle, HashMap<String, String>), StartFailure> {
+async fn provision_sandbox(ctx: &TurnCtx<'_, '_>) -> Result<Provisioned, StartFailure> {
     let (state, req) = (ctx.state, ctx.req);
     let early = |e: CodingTurnError| StartFailure::before_acquire(&req.session, e);
     let hitl = hitl_kind(&req.target.harness_id, req.target.hitl_enabled).map_err(early)?;
@@ -473,14 +467,21 @@ async fn provision_sandbox(
         &state.config,
         &spec.key,
     ));
-    Ok((handle, env))
+    Ok(Provisioned { handle, env, token })
 }
 
 /// Attach to the sandbox, open the agent session, send the prompt and hand the turn to its driver.
+///
+/// The MCP gateway is attached with the session's sandbox token, not a token of this turn's: the
+/// shim keeps the harness, and the MCP client it opened, from one turn to the next, so a
+/// credential revoked when its turn ended would leave every later turn without tools. The
+/// sandbox token lives as long as the session's sandbox, which carries it already; replacing it
+/// stops the sandbox (`token::ensure_sandbox_token`), so the harness that next opens or loads
+/// the session connects with the new one. The gateway attributes each call to the turn it falls
+/// in, whichever token carried it.
 async fn begin_prompt(
     ctx: &TurnCtx<'_, '_>,
-    turn_token: String,
-    token_id: &RevokedTokenId,
+    sandbox_token: String,
     handle: &SandboxHandle,
     env: HashMap<String, String>,
 ) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, StartFailure> {
@@ -514,8 +515,13 @@ async fn begin_prompt(
     require_fence(running).map_err(StartFailure::running)?;
 
     let cwd = session_cwd(workspace.as_deref());
-    let params = session_params(state, &Some(turn_token), cwd, conn.capabilities().mcp_http)
-        .map_err(StartFailure::running)?;
+    let params = session_params(
+        state,
+        &Some(sandbox_token),
+        cwd,
+        conn.capabilities().mcp_http,
+    )
+    .map_err(StartFailure::running)?;
     let acp_session = open_acp_session(&state.db, &conn, lease, params)
         .await
         .map_err(StartFailure::running)?;
@@ -547,7 +553,7 @@ async fn begin_prompt(
         lease_secs: state.config.coding_agent_turn_lease_secs,
         heartbeat_secs: state.config.coding_agent_lease_heartbeat_secs.max(1),
         telemetry,
-        session_token_id: Some(token_id.clone()),
+        session_token_id: None,
         cancel_session,
         turn_timeout: Duration::from_secs(state.config.agent_call_timeout_secs),
         turn_id: ctx.turn_id.to_owned(),
@@ -668,7 +674,7 @@ async fn turn_profile(
         tracing::info!(harness = %req.target.harness_id, "harness has no known kind; no profile rendered");
         return HarnessProfile::default();
     };
-    let choice = model_choice_for_user(&state.db, req.user_id, gateway).await;
+    let choice = model_choice_for_agent(&state.db, req.target.agent_id, gateway).await;
     let platform = ModelChoice {
         provider: gateway.default_provider.clone(),
         model: gateway.default_model.clone(),

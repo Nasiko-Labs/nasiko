@@ -124,7 +124,7 @@ fn build_spec(
     }
 }
 
-fn qualified_image(image: &str, prefix: &str) -> String {
+pub(crate) fn qualified_image(image: &str, prefix: &str) -> String {
     if image.contains('/') {
         image.to_owned()
     } else {

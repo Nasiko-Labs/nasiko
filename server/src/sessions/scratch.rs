@@ -45,7 +45,7 @@ const SCRATCH_DEFAULTS: [(&str, &str); 1] = [
 ];
 
 /// The session's own directory in the scratch area: `<scratch>/<key name>`, the name the
-/// shared runtime's supervisor gives the same session.
+/// harness agent's supervisor gives the same session.
 fn session_scratch_dir(key: &SandboxKey) -> String {
     format!("{HARNESS_SCRATCH_DIR}/{}", key.name())
 }

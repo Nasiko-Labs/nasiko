@@ -344,10 +344,10 @@ pub async fn token_use(state: &AppState, token: &str) -> Result<TokenUse, Coding
 
 /// Stop the session's sandbox, if it has one, so the next acquire brings it up on a new env, and
 /// keep its files. Where a resumed sandbox runs on the resuming env it is only suspended: the
-/// bare pod recreates its pod from the resuming spec, and on shared runtime pods (which never
-/// read the spec's env) the restarted shim starts unconfigured and the turn's handshake
-/// configures it with the new env. A release there can take the files with it (shared runtime
-/// pods purge the session's directory). Elsewhere (Docker, whose resumed container keeps the env
+/// bare pod recreates its pod from the resuming spec, and in a harness agent (which never reads
+/// the spec's env) the restarted shim starts unconfigured and the turn's handshake configures it
+/// with the new env. A release there can take the files with it (a harness agent purges the
+/// session's directory). Elsewhere (Docker, whose resumed container keeps the env
 /// it was created with) it is released, the only way its env changes; the persistent workspace,
 /// which holds the harness's home too, survives that.
 ///

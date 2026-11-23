@@ -134,21 +134,21 @@ impl TaskRow {
     }
 }
 
-/// The caller's task, by id: live (`active_turn_id` with a live lease) or the last finished one.
-/// `None` for an unknown id or another user's session.
+/// The caller's task, by id, on a session of one of `agent_ids`: live (`active_turn_id` with a
+/// live lease) or the last finished one. `None` for an unknown id or another user's session.
 pub async fn find_task(
     state: &AppState,
-    agent_id: Uuid,
+    agent_ids: &[Uuid],
     user_id: Uuid,
     task_id: &str,
 ) -> sqlx::Result<Option<TaskView>> {
     let row: Option<TaskRow> = sqlx::query_as(&format!(
         "SELECT {TASK_COLUMNS} FROM chat_sessions \
-         WHERE agent_id = $1 AND user_id = $2 AND deleted_at IS NULL \
+         WHERE agent_id = ANY($1) AND user_id = $2 AND deleted_at IS NULL \
            AND (active_turn_id = $3 OR last_turn_id = $3) \
          LIMIT 1"
     ))
-    .bind(agent_id)
+    .bind(agent_ids)
     .bind(user_id)
     .bind(task_id)
     .fetch_optional(&state.db)
@@ -242,10 +242,11 @@ pub fn requested_task_id(rpc: &Value) -> Option<String> {
     (!id.is_empty()).then(|| id.to_owned())
 }
 
-/// Answer one task request for the caller. `rpc` is the whole JSON-RPC request.
+/// Answer one task request for the caller, about a session of one of `agent_ids` (see
+/// `own_agent::task_agents`). `rpc` is the whole JSON-RPC request.
 pub async fn handle(
     state: &AppState,
-    agent_id: Uuid,
+    agent_ids: &[Uuid],
     user_id: Uuid,
     method: TaskMethod,
     rpc: &Value,
@@ -254,7 +255,7 @@ pub async fn handle(
     let Some(task_id) = requested_task_id(rpc) else {
         return rpc_error(&id, INVALID_PARAMS, "params.id is required");
     };
-    let view = match find_task(state, agent_id, user_id, &task_id).await {
+    let view = match find_task(state, agent_ids, user_id, &task_id).await {
         Ok(Some(view)) => view,
         Ok(None) => return rpc_error(&id, TASK_NOT_FOUND, &format!("Task not found: {task_id}")),
         Err(e) => {

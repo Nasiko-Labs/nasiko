@@ -979,9 +979,10 @@ pub(crate) async fn resolve_routed_request(
                 s.user_id.clone(),
                 Some(attributed.source.into()),
                 signals.query,
-                // A session token's agent is the user's own coding-agent integration or a
-                // platform harness; neither is an agent shared through access settings, so it
-                // keeps resolving on the agent owner.
+                // A session token's agent is the user's own: their coding-agent integration or
+                // their harness agent (a session opened before users had one names the platform's
+                // harness agent). None is shared through access settings, so it keeps resolving
+                // on the agent owner, which for the user's own agent is the user.
                 None,
             )
         } else if runs_outside_flows(store, &agent_id).await? {
