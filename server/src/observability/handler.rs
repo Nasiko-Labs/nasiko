@@ -449,10 +449,7 @@ pub async fn get_trace_details(
     headers: axum::http::HeaderMap,
     Path(trace_id): Path<String>,
 ) -> impl IntoResponse {
-    let resp = match svc(&state)
-        .get_trace_details(&trace_id, &claims.sub)
-        .await
-    {
+    let resp = match svc(&state).get_trace_details(&trace_id, &claims.sub).await {
         Ok(resp) => resp,
         Err(e) => return obs_err(e),
     };

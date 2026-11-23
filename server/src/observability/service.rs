@@ -2455,8 +2455,7 @@ impl ObservabilityService {
                 }
                 other => other,
             })?;
-        self.authorize_session(&session_id, user_id, "span")
-            .await?;
+        self.authorize_session(&session_id, user_id, "span").await?;
         let details = if from_sql {
             let span = trace
                 .spans
