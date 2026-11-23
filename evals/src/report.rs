@@ -146,6 +146,7 @@ fn summarise_model(
 fn failure_name(f: FailureClass) -> &'static str {
     match f {
         FailureClass::InfraError => "infra_error",
+        FailureClass::AgentCrashed => "agent_crashed",
         FailureClass::NoPatch => "no_patch",
         FailureClass::Budget => "budget",
         FailureClass::PatchFailed => "patch_failed",

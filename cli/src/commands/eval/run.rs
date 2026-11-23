@@ -23,7 +23,7 @@ use nasiko_evals::{TaskInstance, TestPathRules, cost, diff, testlog};
 use serde::{Deserialize, Serialize};
 
 use super::build::{sanitize, test_limits};
-use super::containers::{Containers, JobLimits, JobSpec, Mount, Network, StopReason};
+use super::containers::{Containers, JobLimits, JobOutcome, JobSpec, Mount, Network, StopReason};
 use super::dataset;
 use super::gateway::{self, GatewayPlan};
 use super::images::opencode_version;
@@ -67,6 +67,9 @@ pub struct RunInfo {
     pub started_at: chrono::DateTime<Utc>,
     pub finished_at: Option<chrono::DateTime<Utc>>,
 }
+
+/// Parallel compile jobs inside eval containers.
+const CARGO_JOBS: &str = "2";
 
 /// Router tokens last 10 minutes; refresh well before.
 const TOKEN_REFRESH: Duration = Duration::from_secs(8 * 60);
@@ -384,6 +387,8 @@ impl ModelRun<'_> {
                 ("OPENAI_BASE_URL".into(), base_url.to_string()),
                 ("EVAL_GATEWAY_SECRET".into(), key.secret.clone()),
                 ("HOME".into(), "/tmp/home".into()),
+                // Fewer parallel rustc jobs: lower peak memory, so builds are not OOM-killed.
+                ("CARGO_BUILD_JOBS".into(), CARGO_JOBS.into()),
             ],
             limits: JobLimits {
                 wall: Duration::from_secs(wall),
@@ -396,25 +401,33 @@ impl ModelRun<'_> {
         })?;
         fs::write(
             out_dir.join("container.log"),
-            format!("{}\n--- stderr ---\n{}", outcome.stdout, outcome.stderr),
+            format!(
+                "container exit: {:?}, stopped: {:?}\n{}\n--- stderr ---\n{}",
+                outcome.exit_code, outcome.stopped, outcome.stdout, outcome.stderr
+            ),
         )?;
         let export = fs::read_to_string(out_dir.join("session-export.json")).ok();
         let agent_record = export
             .as_deref()
             .and_then(|e| opencode::parse_export(e).ok());
-        let exit = agent_exit(&outcome.stopped, &out_dir, agent_record.as_ref());
+        let exit = agent_exit(&outcome, &out_dir, agent_record.as_ref());
         let raw = fs::read_to_string(out_dir.join("raw.patch")).unwrap_or_default();
         let rules = TestPathRules::from_globs(&spec.test_paths);
         let model_patch = diff::join(&diff::without_tests(diff::parse_unified(&raw)?, &rules));
         fs::write(dir.join("model.patch"), &model_patch)?;
-        let (script_exit, results) = grade_patch(
-            self.containers,
-            task,
-            &spec,
-            &dir,
-            test_limits(&spec, self.config.storage_mib),
-            self.run_id,
-        )?;
+        // Nothing to grade: an empty patch cannot resolve anything, so skip the test build.
+        let (script_exit, results) = if model_patch.trim().is_empty() {
+            (Some(0), testlog::TestResults::new())
+        } else {
+            grade_patch(
+                self.containers,
+                task,
+                &spec,
+                &dir,
+                test_limits(&spec, self.config.storage_mib),
+                self.run_id,
+            )?
+        };
         let grade = grade::grade(&GradeInput {
             fail_to_pass: &task.fail_to_pass,
             pass_to_pass: &task.pass_to_pass,
@@ -470,11 +483,11 @@ fn agent_script(agent_timeout_secs: u64) -> String {
 }
 
 fn agent_exit(
-    stopped: &Option<StopReason>,
+    outcome: &JobOutcome,
     out: &Path,
     record: Option<&opencode::AgentRecord>,
 ) -> AgentExit {
-    match stopped {
+    match &outcome.stopped {
         Some(StopReason::DiskLimit) => return AgentExit::DiskLimit,
         Some(StopReason::TimeLimit) => return AgentExit::TimeLimit,
         None => {}
@@ -487,6 +500,9 @@ fn agent_exit(
         _ if record.is_some_and(|r| r.hit_step_limit) => AgentExit::StepLimit,
         Some(0) => AgentExit::Finished,
         Some(_) => AgentExit::Crashed,
+        // The script never wrote its exit code: the container itself died (e.g. killed for
+        // memory, exit 137) before the agent finished.
+        None if outcome.exit_code.is_some() => AgentExit::Crashed,
         None => AgentExit::InfraError,
     }
 }
@@ -525,7 +541,7 @@ pub fn grade_patch(
             container: "/eval".into(),
             read_only: true,
         }],
-        env: Vec::new(),
+        env: vec![("CARGO_BUILD_JOBS".into(), CARGO_JOBS.into())],
         limits,
         label: label.to_string(),
     })?;
@@ -691,25 +707,50 @@ mod tests {
         );
     }
 
+    fn outcome(exit_code: Option<i32>, stopped: Option<StopReason>) -> JobOutcome {
+        JobOutcome {
+            exit_code,
+            stopped,
+            stdout: String::new(),
+            stderr: String::new(),
+            wall: Duration::from_secs(1),
+        }
+    }
+
     #[test]
     fn exits_are_classified() {
         let dir = tempfile::tempdir().expect("temp dir");
+        let d = dir.path();
         assert_eq!(
-            agent_exit(&Some(StopReason::DiskLimit), dir.path(), None),
+            agent_exit(&outcome(None, Some(StopReason::DiskLimit)), d, None),
             AgentExit::DiskLimit
         );
-        assert_eq!(agent_exit(&None, dir.path(), None), AgentExit::InfraError);
-        fs::write(dir.path().join("exit_code"), "124\n").expect("write");
-        assert_eq!(agent_exit(&None, dir.path(), None), AgentExit::TimeLimit);
-        fs::write(dir.path().join("exit_code"), "0\n").expect("write");
+        assert_eq!(
+            agent_exit(&outcome(None, None), d, None),
+            AgentExit::InfraError
+        );
+        assert_eq!(
+            agent_exit(&outcome(Some(137), None), d, None),
+            AgentExit::Crashed,
+            "a container killed before the script ended is a crash"
+        );
+        fs::write(d.join("exit_code"), "124\n").expect("write");
+        assert_eq!(
+            agent_exit(&outcome(Some(0), None), d, None),
+            AgentExit::TimeLimit
+        );
+        fs::write(d.join("exit_code"), "0\n").expect("write");
         let limited = opencode::AgentRecord {
             hit_step_limit: true,
             ..Default::default()
         };
         assert_eq!(
-            agent_exit(&None, dir.path(), Some(&limited)),
+            agent_exit(&outcome(Some(0), None), d, Some(&limited)),
             AgentExit::StepLimit
         );
-        assert_eq!(agent_exit(&None, dir.path(), None), AgentExit::Finished);
+        assert_eq!(
+            agent_exit(&outcome(Some(0), None), d, None),
+            AgentExit::Finished
+        );
     }
 }

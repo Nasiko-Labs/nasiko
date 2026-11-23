@@ -31,6 +31,8 @@ pub enum Resolution {
 #[serde(rename_all = "snake_case")]
 pub enum FailureClass {
     InfraError,
+    /// The agent's container died (e.g. out of memory) before its changes were collected.
+    AgentCrashed,
     NoPatch,
     Budget,
     PatchFailed,
@@ -100,6 +102,7 @@ fn failure_class(input: &GradeInput, broke_something: bool) -> FailureClass {
             AgentExit::StepLimit | AgentExit::TimeLimit | AgentExit::DiskLimit => {
                 FailureClass::Budget
             }
+            AgentExit::Crashed => FailureClass::AgentCrashed,
             _ => FailureClass::NoPatch,
         },
         (_, Some(EXIT_MODEL_PATCH)) => FailureClass::PatchFailed,
@@ -162,6 +165,10 @@ mod tests {
         i.patch_is_empty = true;
         i.agent_exit = AgentExit::StepLimit;
         assert_eq!(grade(&i).failure, Some(FailureClass::Budget));
+        i.agent_exit = AgentExit::Crashed;
+        assert_eq!(grade(&i).failure, Some(FailureClass::AgentCrashed));
+        i.agent_exit = AgentExit::Finished;
+        assert_eq!(grade(&i).failure, Some(FailureClass::NoPatch));
         i.script_exit = None;
         assert_eq!(grade(&i).failure, Some(FailureClass::InfraError));
     }
