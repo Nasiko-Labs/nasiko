@@ -64,7 +64,10 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
         "RUN {} || true",
         spec::with_scope(&spec.build_cmd, scope)
     );
-    df.push_str("ENV CARGO_NET_OFFLINE=true HOME=/root\n");
+    // No `CARGO_NET_OFFLINE` here: the containers that use this image already have no network,
+    // and changing that variable after the warm build makes build scripts that watch it (such as
+    // `ort-sys`, which downloads ONNX Runtime) run again offline and fail to link.
+    df.push_str("ENV HOME=/root\n");
     df
 }
 
@@ -81,7 +84,8 @@ pub fn task_image_tag(spec: &EnvSpec, base_commit: &str, scope: &[String]) -> St
     format!(
         "nasiko-eval/task-{}:{base}-{}",
         slug(&spec.repo),
-        short_hash(&scope.join(" "))
+        // The whole recipe, so a change to it (or to the env image) never reuses a stale image.
+        short_hash(&task_dockerfile(&env_image_tag(spec), spec, scope))
     )
 }
 
@@ -128,6 +132,8 @@ mod tests {
         assert!(df.contains("git init -q"));
         assert!(df.contains("RUN cargo fetch"));
         assert!(df.contains("RUN cargo test -p nasiko-compress --no-run || true"));
+        // Changing it after the warm build would re-run build scripts that watch it, offline.
+        assert!(!df.contains("CARGO_NET_OFFLINE"));
     }
 
     #[test]
@@ -138,5 +144,8 @@ mod tests {
         let b = task_image_tag(&s, "0123456789abcdef", &["-p b".into()]);
         assert!(a.starts_with("nasiko-eval/task-nasiko-cloud-rs:0123456789ab-"));
         assert_ne!(a, b);
+        let mut t = rust_spec();
+        t.setup.push("cargo build".into());
+        assert_ne!(a, task_image_tag(&t, "0123456789abcdef", &["-p a".into()]));
     }
 }

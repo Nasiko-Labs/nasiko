@@ -9,7 +9,7 @@ use crate::testlog::LogParserKind;
 pub struct EnvSpec {
     pub repo: String,
     pub language: Language,
-    /// Image the eval image starts from (the toolchain), e.g. `rust:1.92-bookworm`.
+    /// Image the eval image starts from (the toolchain), e.g. `rust:1.92-trixie`.
     pub toolchain_image: String,
     /// Extra Debian packages the build needs.
     #[serde(default)]
@@ -37,8 +37,10 @@ pub enum Language {
     Rust,
 }
 
-/// Default Rust toolchain image when the repo pins none.
-pub const DEFAULT_RUST_IMAGE: &str = "rust:1-bookworm";
+/// Default Rust toolchain image when the repo pins none. Debian 13 (trixie), not 12: prebuilt
+/// native libraries that crates download at build time (ONNX Runtime via `ort-sys`, for one)
+/// need glibc 2.38+ and GCC 14's C++ runtime.
+pub const DEFAULT_RUST_IMAGE: &str = "rust:1-trixie";
 
 /// Proposes a spec from the files at the repo root; `toolchain` is the content of
 /// `rust-toolchain.toml` / `rust-toolchain` when present. `None` for unsupported repos.
@@ -48,7 +50,7 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
     }
     let image = toolchain
         .and_then(rust_channel)
-        .map(|v| format!("rust:{v}-bookworm"))
+        .map(|v| format!("rust:{v}-trixie"))
         .unwrap_or_else(|| DEFAULT_RUST_IMAGE.to_string());
     Some(EnvSpec {
         repo: repo.to_string(),
@@ -144,7 +146,7 @@ mod tests {
     fn proposes_rust_for_cargo_repos() {
         let spec =
             propose("o/r", &["Cargo.toml".into()], Some("channel = \"1.92\"")).expect("rust");
-        assert_eq!(spec.toolchain_image, "rust:1.92-bookworm");
+        assert_eq!(spec.toolchain_image, "rust:1.92-trixie");
         assert!(propose("o/r", &["package.json".into()], None).is_none());
     }
 
