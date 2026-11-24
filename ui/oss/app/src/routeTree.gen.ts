@@ -31,7 +31,6 @@ import { Route as AppBuildsBuildIdRouteImport } from './../../../shared/app-shel
 import { Route as AppChatIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/chat.index'
 import { Route as AppChatSessionIdRouteImport } from './../../../shared/app-shell/src/routes/_app/chat.$sessionId'
 import { Route as AppEvalsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/evals.index'
-import { Route as AppEvalsHarnessRouteImport } from './../../../shared/app-shell/src/routes/_app/evals.$harness'
 import { Route as AppFlowsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/flows.index'
 import { Route as AppFlowsFlowIdRouteImport } from './../../../shared/app-shell/src/routes/_app/flows.$flowId'
 import { Route as AppMcpIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/mcp.index'
@@ -161,11 +160,6 @@ const AppEvalsIndexRoute = AppEvalsIndexRouteImport.update({
   path: '/evals/',
   getParentRoute: () => AppRoute,
 } as any)
-const AppEvalsHarnessRoute = AppEvalsHarnessRouteImport.update({
-  id: '/evals/$harness',
-  path: '/evals/$harness',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppFlowsIndexRoute = AppFlowsIndexRouteImport.update({
   id: '/flows/',
   path: '/flows/',
@@ -281,7 +275,6 @@ export interface FileRoutesByFullPath {
   '/agents/mine': typeof AppAgentsMineRoute
   '/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/chat/$sessionId': typeof AppChatSessionIdRoute
-  '/evals/$harness': typeof AppEvalsHarnessRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/mcp/builds': typeof AppMcpBuildsRoute
@@ -324,7 +317,6 @@ export interface FileRoutesByTo {
   '/agents/mine': typeof AppAgentsMineRoute
   '/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/chat/$sessionId': typeof AppChatSessionIdRoute
-  '/evals/$harness': typeof AppEvalsHarnessRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/mcp/builds': typeof AppMcpBuildsRoute
@@ -369,7 +361,6 @@ export interface FileRoutesById {
   '/_app/agents/mine': typeof AppAgentsMineRoute
   '/_app/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/_app/chat/$sessionId': typeof AppChatSessionIdRoute
-  '/_app/evals/$harness': typeof AppEvalsHarnessRoute
   '/_app/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/_app/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/_app/mcp/builds': typeof AppMcpBuildsRoute
@@ -414,7 +405,6 @@ export interface FileRouteTypes {
     | '/agents/mine'
     | '/builds/$buildId'
     | '/chat/$sessionId'
-    | '/evals/$harness'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
     | '/mcp/builds'
@@ -457,7 +447,6 @@ export interface FileRouteTypes {
     | '/agents/mine'
     | '/builds/$buildId'
     | '/chat/$sessionId'
-    | '/evals/$harness'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
     | '/mcp/builds'
@@ -501,7 +490,6 @@ export interface FileRouteTypes {
     | '/_app/agents/mine'
     | '/_app/builds/$buildId'
     | '/_app/chat/$sessionId'
-    | '/_app/evals/$harness'
     | '/_app/flows/$flowId'
     | '/_app/mcp/$connectorId'
     | '/_app/mcp/builds'
@@ -688,13 +676,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEvalsIndexRouteImport
       parentRoute: typeof AppRoute
     }
-    '/_app/evals/$harness': {
-      id: '/_app/evals/$harness'
-      path: '/evals/$harness'
-      fullPath: '/evals/$harness'
-      preLoaderRoute: typeof AppEvalsHarnessRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/_app/flows/': {
       id: '/_app/flows/'
       path: '/flows'
@@ -848,7 +829,6 @@ interface AppRouteChildren {
   AppAgentsMineRoute: typeof AppAgentsMineRoute
   AppBuildsBuildIdRoute: typeof AppBuildsBuildIdRoute
   AppChatSessionIdRoute: typeof AppChatSessionIdRoute
-  AppEvalsHarnessRoute: typeof AppEvalsHarnessRoute
   AppFlowsFlowIdRoute: typeof AppFlowsFlowIdRoute
   AppMcpConnectorIdRoute: typeof AppMcpConnectorIdRoute
   AppMcpBuildsRoute: typeof AppMcpBuildsRoute
@@ -891,7 +871,6 @@ const AppRouteChildren: AppRouteChildren = {
   AppAgentsMineRoute: AppAgentsMineRoute,
   AppBuildsBuildIdRoute: AppBuildsBuildIdRoute,
   AppChatSessionIdRoute: AppChatSessionIdRoute,
-  AppEvalsHarnessRoute: AppEvalsHarnessRoute,
   AppFlowsFlowIdRoute: AppFlowsFlowIdRoute,
   AppMcpConnectorIdRoute: AppMcpConnectorIdRoute,
   AppMcpBuildsRoute: AppMcpBuildsRoute,

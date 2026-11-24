@@ -1,7 +1,7 @@
 // The shared composites (plan §8 Phase 1), one story each. Every story runs as a browser test with axe
 // (`npm run test:stories`), in light and dark.
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { Bot } from 'lucide-react'
+import { Bot, Database, ListChecks, Scale, SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
 import { expect, userEvent, within } from 'storybook/test'
 import { Badge } from '@nasiko/ui/primitives/badge'
@@ -19,6 +19,7 @@ import { PrevNext } from './prev-next'
 import { Panel, PanelEmpty, PanelError, PanelSkeleton } from './panel'
 import { SearchInput } from './search-input'
 import { EmptyState, StateCard } from './state-card'
+import { Stepper } from './stepper'
 import { TimeControl } from './time-control'
 
 const meta: Meta = { title: 'Shared/Composites' }
@@ -205,4 +206,45 @@ export const PrevNextSteps: Story = {
       />
     </div>
   ),
+}
+
+// Clicking an open step moves there; Continue opens the next; the last step stays locked until the one before it ran.
+function StepperDemo() {
+  const [active, setActive] = useState(1)
+  const [reached, setReached] = useState(1)
+  const steps = [
+    { title: 'Harness', icon: SquareTerminal, detail: 'Claude Code' },
+    { title: 'Sessions', icon: ListChecks },
+    { title: 'Dataset', icon: Database },
+    { title: 'Compare', icon: Scale },
+  ]
+  const next = () => {
+    setActive(active + 1)
+    setReached(Math.max(reached, active + 1))
+  }
+  return (
+    <Stepper
+      label="Demo steps"
+      steps={steps}
+      active={active}
+      canOpen={(i) => i <= reached}
+      onStepChange={setActive}
+      action={active < steps.length - 1 ? <Button onClick={next}>Continue</Button> : undefined}
+    >
+      <p className="text-sm text-muted-foreground">The {steps[active]?.title} step's content.</p>
+    </Stepper>
+  )
+}
+
+export const StepperSteps: Story = {
+  render: () => <StepperDemo />,
+  play: async ({ canvasElement }) => {
+    const c = within(canvasElement)
+    await expect(c.getByRole('button', { name: 'Compare step' })).toBeDisabled()
+    await userEvent.click(c.getByRole('button', { name: 'Continue' }))
+    await expect(c.getByRole('button', { name: 'Dataset step' })).toHaveAttribute(
+      'aria-current',
+      'step',
+    )
+  },
 }

@@ -39,6 +39,14 @@ export const transitions = {
   morph: {},
   /** The tour's spotlight gliding from one target to the next: damped, so a long move settles without bouncing. */
   spotlight: { type: 'spring', stiffness: 320, damping: 34 },
+  /** The stepper (composites/stepper.tsx), shadcn-space's stepper-03 values: the progress track filling, the dot
+   *  leading it, the current step's lift, and a step's icon popping in (a check spins in once a step is done). */
+  stepTrack: { type: 'spring', stiffness: 120, damping: 20 },
+  stepDot: { type: 'spring', stiffness: 160, damping: 24 },
+  stepLift: { type: 'spring', stiffness: 320, damping: 18 },
+  stepIcon: { type: 'spring', stiffness: 400, damping: 22 },
+  /** The current step's ring breathing out and back, 2.2 s each way; never under reduced motion. */
+  stepPulse: { duration: 2.2, repeat: Infinity, repeatType: 'mirror', ease: 'easeInOut' },
 } as const
 
 /** Row entrances: rise 6 px (new live rows drop 8 px), 30 ms stagger, `standard` timing. */
