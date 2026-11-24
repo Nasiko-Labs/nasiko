@@ -3,12 +3,9 @@
 //! A harness agent belongs to one user. It is never made public, no `agent_grants` row is ever
 //! created for it, and a grant row that exists anyway (written straight to the database) confers
 //! nothing: every access check and listing ANDs [`grants_reach_sql`] onto its grant branches, so a
-//! harness agent is reached by its owner, a superuser, or its `is_public` flag only.
-//!
-//! The platform's harness catalog rows (the agents users start sessions from) are the one public
-//! kind: the seed creates them public, the share routes refuse to make them private, and they refuse
-//! to make any other harness agent public, so `is_public` on a harness agent means a platform
-//! catalog row. A user's own harness agent may always be made private.
+//! harness agent is seen by its owner or a superuser only (the share routes refuse to make one
+//! public, so its `is_public` stays false), and talked to by its owner only: a superuser opens or
+//! resumes no session on someone else's. Making one private is always allowed.
 
 /// `agents.workload_kind` of a harness agent.
 pub const HARNESS_WORKLOAD_KIND: &str = "harness";

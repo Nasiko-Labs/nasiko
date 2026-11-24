@@ -1,5 +1,6 @@
-//! `/api/harnesses` and `/api/sessions`: list harnesses, open a session on one, read it back,
-//! list them, suspend a sandbox, and delete a session.
+//! `/api/harnesses` and `/api/sessions`: list harnesses, open a session on one (which creates the
+//! user's harness agent for it if they have none and starts the session's sandbox, `super::start`),
+//! read it back, list them, suspend a sandbox, and delete a session.
 //!
 //! A session is owner-only. Anyone else gets the same 404 as for a session that does not
 //! exist, so ids cannot be probed. Bodies follow `docs/API_CONVENTIONS.md`: `{"data": ...}`
@@ -19,7 +20,7 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::admission::refuse_session;
-use super::catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT};
+use super::catalog::{Harness, HarnessCatalog};
 use super::model::{ListedSession, SessionFilter, SessionRow, SessionRuntimeState, SessionStore};
 use super::own_agent;
 use super::suspend::{ReapError, Suspend, claim_suspend, claim_unaccounted};
@@ -90,9 +91,12 @@ impl From<Harness> for HarnessView {
     }
 }
 
-/// The harnesses a session can be opened on: none while coding sessions are switched off.
+/// The harnesses a session can be opened on: none while coding sessions are switched off or
+/// cannot run on this server (`sessions::readiness`).
 async fn list_harnesses(State(state): State<AppState>, _claims: Claims) -> ApiResult<Response> {
-    let harnesses = if state.config.harness_sessions_enabled {
+    let harnesses = if state.config.harness_sessions_enabled
+        && super::readiness::unavailable(&state).is_none()
+    {
         HarnessCatalog::new(state.db.clone())
             .list_enabled()
             .await
@@ -151,15 +155,27 @@ async fn create_session(
     if let Some(refusal) = refuse_session(&state, user_id, &harness.id).await {
         return Ok(refusal.into_response());
     }
-    // The platform's agent is the readiness gate (seeding creates it only when sessions can run);
-    // the session is bound to the user's own agent for the harness.
-    harness_agent(&state, &harness.id).await?;
+    if super::readiness::unavailable(&state).is_some() {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "harness_not_ready",
+            "coding sessions are not set up on this server",
+        ));
+    }
     let agent_id = own_harness_agent(&state, user_id, &harness).await?;
 
-    let row = SessionStore::new(state.db.clone())
+    let store = SessionStore::new(state.db.clone());
+    let mut row = store
         .create(agent_id, user_id, repo)
         .await
         .map_err(|e| ApiError::internal("create harness session", e))?;
+    // The click that opened the session starts its sandbox; the row is answered as the start
+    // left it (`starting`, or `running` if it was quick).
+    if super::start::begin(&state, &row.session_id, agent_id).await
+        && let Ok(Some(started)) = store.get(&row.session_id).await
+    {
+        row = started;
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({ "data": SessionView::new(row, Some(harness.id)) })),
@@ -212,24 +228,6 @@ async fn enabled_harness(state: &AppState, id: &str) -> ApiResult<Harness> {
         StatusCode::BAD_REQUEST,
         "unknown_harness",
         "unknown or disabled harness",
-    ))
-}
-
-/// The platform's `agents` row for a harness; created by boot seeding. Never a user's own agent
-/// for the harness, which shares its kind and `harness_id`.
-async fn harness_agent(state: &AppState, harness_id: &str) -> ApiResult<Uuid> {
-    sqlx::query_scalar(&format!(
-        "SELECT id FROM agents WHERE {PLATFORM_HARNESS_AGENT} AND harness_id = $1 \
-         AND deleted_at IS NULL ORDER BY created_at LIMIT 1"
-    ))
-    .bind(harness_id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(|e| ApiError::internal("resolve harness agent", e))?
-    .ok_or(ApiError(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "harness_not_ready",
-        "harness agent is not registered yet",
     ))
 }
 

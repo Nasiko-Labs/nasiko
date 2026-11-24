@@ -4,8 +4,7 @@
 //! first session of that harness; a sandbox provider that runs sessions inside it finds it by
 //! [`name`].
 
-/// A user's harness agent is `harness-<harness id>`: never the bare harness id, which the
-/// platform's own harness agent takes under the superuser who owns it.
+/// A user's harness agent is `harness-<harness id>`.
 pub const NAME_PREFIX: &str = "harness-";
 
 /// The name of the user's harness agent for `harness_id`, unique per user.
@@ -31,9 +30,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_users_harness_agent_never_takes_the_platform_agents_name() {
+    fn a_users_harness_agent_is_named_after_its_harness() {
         assert_eq!(name("claude-code"), "harness-claude-code");
-        assert_ne!(name("opencode"), "opencode");
         assert_eq!(display_name("OpenCode"), "OpenCode sessions");
         assert!(description("Codex").contains("Codex sessions"));
     }

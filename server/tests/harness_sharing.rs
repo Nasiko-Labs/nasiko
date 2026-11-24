@@ -1,15 +1,15 @@
 //! Harness agents are never shared. The OSS share routes refuse to make one public, grant it to a
-//! user or hand it to another owner (409 `agent_not_shareable`); a user's own may be made private,
-//! the platform's may not. A grant row on a user's harness agent written straight to the database
-//! reaches nobody: not the access check, the catalog listing, the user registry, the
-//! accessible-agents view or the A2A registry. The platform's harness catalog rows stay visible to
-//! everyone, and the seed keeps them public.
+//! user or hand it to another owner (409 `agent_not_shareable`); making one private is always
+//! allowed. A grant row on a user's harness agent written straight to the database reaches
+//! nobody: not the access check, the catalog listing, the user registry, the accessible-agents
+//! view or the A2A registry.
 //!
 //! Requires infra (Postgres :5432, Redis, S3); skips when Postgres is unreachable:
 //!   cargo test -p nasiko-server --test harness_sharing -- --test-threads=1
 
 mod common;
 
+use nasiko_server::sessions::{HarnessCatalog, own_agent};
 use reqwest::StatusCode;
 use serde_json::{Value, json};
 use serial_test::serial;
@@ -26,16 +26,34 @@ async fn insert_user(server: &common::TestServer, name: &str) -> Uuid {
     .unwrap()
 }
 
-/// A user's own harness agent: not public and named `harness-<id>`, as the per-user rows are
-/// created.
+/// The first superuser, whose id the user-management routes are asked as.
+async fn init_admin(server: &common::TestServer) -> Uuid {
+    let admin: Value = server
+        .client
+        .post(server.url("/api/auth/initialize-admin"))
+        .json(&json!({"username": "admin", "email": "admin@harness-sharing.local"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    Uuid::parse_str(admin["user_id"].as_str().unwrap()).unwrap()
+}
+
+/// A user's own harness agent for OpenCode, created as opening their first session creates it.
 async fn insert_users_harness_agent(server: &common::TestServer, owner: Uuid) -> Uuid {
-    sqlx::query_scalar(
-        "INSERT INTO agents (name, owner_id, image, status, is_public, workload_kind, harness_id) \
-         VALUES ('harness-opencode', $1, 'nasiko/harness-opencode:test', 'parked', false, \
-                 'harness', 'opencode') RETURNING id",
+    let opencode = HarnessCatalog::new(server.db.clone())
+        .get("opencode")
+        .await
+        .unwrap()
+        .expect("opencode is in the harness catalog");
+    own_agent::ensure(
+        &server.db,
+        owner,
+        &opencode,
+        &server.state.config.harness_image_prefix,
     )
-    .bind(owner)
-    .fetch_one(&server.db)
     .await
     .unwrap()
 }
@@ -49,29 +67,6 @@ async fn insert_framework_agent(server: &common::TestServer, owner: Uuid) -> Uui
     .fetch_one(&server.db)
     .await
     .unwrap()
-}
-
-/// The platform's harness catalog rows, seeded under the first superuser: that superuser's id and
-/// the rows' ids.
-async fn seed_platform_harnesses(server: &common::TestServer) -> (Uuid, Vec<Uuid>) {
-    let admin: Value = server
-        .client
-        .post(server.url("/api/auth/initialize-admin"))
-        .json(&json!({"username": "admin", "email": "admin@harness-sharing.local"}))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
-    let admin = Uuid::parse_str(admin["user_id"].as_str().unwrap()).unwrap();
-    nasiko_server::seed::seed_harness_agents(&server.state).await;
-    let platform =
-        sqlx::query_scalar("SELECT id FROM agents WHERE workload_kind = 'harness' AND is_public")
-            .fetch_all(&server.db)
-            .await
-            .unwrap();
-    (admin, platform)
 }
 
 fn ids_at(body: &Value, pointer: &str, key: &str) -> Vec<String> {
@@ -176,6 +171,9 @@ async fn discovered(server: &common::TestServer, who: Uuid) -> Vec<String> {
         .collect()
 }
 
+/// The share routes refuse to make a user's harness agent public, grant it to another user or
+/// hand it to another owner, and none of the three changes the row; a framework agent is shared
+/// as before.
 #[tokio::test]
 #[serial]
 async fn the_share_routes_refuse_a_harness_agent_and_change_nothing() {
@@ -255,15 +253,14 @@ async fn the_share_routes_refuse_a_harness_agent_and_change_nothing() {
     server.cleanup().await;
 }
 
+/// A grant row on a user's harness agent, written straight to the database, reaches nobody but
+/// its owner: another user is refused it and no listing shows it to them, while its owner still
+/// sees it in every one.
 #[tokio::test]
 #[serial]
 async fn a_grant_on_a_users_harness_agent_reaches_nobody_else() {
     let server = common::TestServer::start().await;
-    let (admin, platform) = seed_platform_harnesses(&server).await;
-    assert!(
-        !platform.is_empty(),
-        "the platform harness rows are seeded public"
-    );
+    let admin = init_admin(&server).await;
     let alice = insert_user(&server, "harness-alice").await;
     let bob = insert_user(&server, "harness-bob").await;
     let harness = insert_users_harness_agent(&server, alice).await;
@@ -296,12 +293,6 @@ async fn a_grant_on_a_users_harness_agent_reaches_nobody_else() {
             !ids.contains(&harness),
             "{view} shows bob alice's harness agent"
         );
-        for id in &platform {
-            assert!(
-                ids.contains(&id.to_string()),
-                "{view} still shows the platform harness rows"
-            );
-        }
     }
 
     // Its owner still sees it.
@@ -312,57 +303,36 @@ async fn a_grant_on_a_users_harness_agent_reaches_nobody_else() {
     server.cleanup().await;
 }
 
+/// Making a harness agent private is always allowed: one left public (written straight to the
+/// database, since no share route makes one public) is made private by its owner.
 #[tokio::test]
 #[serial]
-async fn a_platform_harness_agent_may_not_be_made_private() {
+async fn a_users_harness_agent_left_public_may_be_made_private() {
     let server = common::TestServer::start().await;
-    let (admin, platform) = seed_platform_harnesses(&server).await;
-    let opencode = *platform
-        .first()
-        .expect("the platform harness rows are seeded");
-
-    let private = common::as_superuser(
-        server
-            .client
-            .delete(server.url(&format!("/api/agents/{opencode}/grants/public"))),
-        &admin.to_string(),
-        "admin",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(private.status(), StatusCode::CONFLICT);
-    let body: Value = private.json().await.unwrap();
-    assert_eq!(body["code"], "agent_not_shareable");
-
-    let is_public: bool = sqlx::query_scalar("SELECT is_public FROM agents WHERE id = $1")
-        .bind(opencode)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert!(is_public);
-    server.cleanup().await;
-}
-
-#[tokio::test]
-#[serial]
-async fn the_seed_keeps_the_platform_harness_rows_public() {
-    let server = common::TestServer::start().await;
-    let (_, platform) = seed_platform_harnesses(&server).await;
-    sqlx::query("UPDATE agents SET is_public = false WHERE id = ANY($1)")
-        .bind(&platform)
+    let alice = insert_user(&server, "harness-alice").await;
+    let harness = insert_users_harness_agent(&server, alice).await;
+    sqlx::query("UPDATE agents SET is_public = true WHERE id = $1")
+        .bind(harness)
         .execute(&server.db)
         .await
         .unwrap();
 
-    nasiko_server::seed::seed_harness_agents(&server.state).await;
+    let private = as_member(
+        server
+            .client
+            .delete(server.url(&format!("/api/agents/{harness}/grants/public"))),
+        alice,
+    )
+    .send()
+    .await
+    .unwrap();
 
-    let private: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM agents WHERE id = ANY($1) AND NOT is_public")
-            .bind(&platform)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    assert_eq!(private, 0);
+    assert_eq!(private.status(), StatusCode::NO_CONTENT);
+    let is_public: bool = sqlx::query_scalar("SELECT is_public FROM agents WHERE id = $1")
+        .bind(harness)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert!(!is_public);
     server.cleanup().await;
 }

@@ -28,8 +28,9 @@ pub struct CodingAgentTarget {
     pub hitl_enabled: bool,
 }
 
-/// The facts a harness-session turn needs about its platform agent. The agent row is a routable
-/// identity, not a deployment: the sandbox's image and argv come from the harness catalog.
+/// The facts a harness-session turn needs about its agent, the user's own harness agent
+/// (`sessions::own_agent`). The agent row is a routable identity, not a deployment: the sandbox's
+/// image and argv come from the harness catalog.
 #[derive(Debug, Clone)]
 pub struct HarnessTarget {
     pub agent_id: Uuid,
@@ -39,14 +40,6 @@ pub struct HarnessTarget {
     pub harness_id: String,
     /// Whether tool use is gated behind human approval.
     pub hitl_enabled: bool,
-}
-
-impl HarnessTarget {
-    /// Whether this is the platform's own harness agent, the one boot seeding names after its
-    /// harness (`sessions::PLATFORM_HARNESS_AGENT`), rather than a user's own.
-    pub fn is_platform(&self) -> bool {
-        self.name == self.harness_id
-    }
 }
 
 /// What an A2A request to a code-driving agent resolves to.

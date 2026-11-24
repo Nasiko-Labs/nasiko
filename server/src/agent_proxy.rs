@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::sessions::admission::refuse_session;
+use crate::sessions::admission::refuse_turn;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -195,31 +195,14 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // A message to a harness starts a turn, which the session admission may refuse (it can need
-    // an agent of the caller's own). Asked before anything is written for the turn: a refused
-    // one leaves no session row, transcript or flow.
-    if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target
-        && let Some(refusal) = refuse_harness_turn(&state, &claims, target, &body_bytes).await?
+    // A message to a harness starts a turn, refused while coding sessions are switched off.
+    // Asked before anything is written for the turn: a refused one leaves no session row,
+    // transcript or flow.
+    if let Some(crate::coding::proxy::AgentTarget::Harness(_)) = &coding_target
+        && let Some(refusal) = refuse_harness_turn(&state, &body_bytes)
     {
         return Ok(refusal);
     }
-
-    // A platform harness agent is only the door: the caller's message runs as their own harness
-    // agent (`sessions::own_agent`, created by their first message once the admission above let
-    // it), so the session, transcript, flow, participant and turn below all name that agent.
-    let (agent_id, agent, coding_target) =
-        match own_harness_door(&state, &claims, coding_target.as_ref(), &body_bytes).await? {
-            Door::Keep => (agent_id, agent, coding_target),
-            Door::Own {
-                agent_id,
-                agent,
-                target,
-            } => {
-                proxy_span.record("agent.id", tracing::field::display(agent_id));
-                (agent_id, agent, Some(target))
-            }
-            Door::Answered(response) => return Ok(response),
-        };
 
     // A harness session's ownership is decided before anything is written under its contextId:
     // `ensure_chat_session` persists the transcript and the flow row below, and a foreign
@@ -912,102 +895,14 @@ async fn reject_foreign_harness_session(
     session.map(Some).ok_or(StatusCode::NOT_FOUND)
 }
 
-/// What [`own_harness_door`] decided.
-enum Door {
-    /// Serve the addressed agent.
-    Keep,
-    /// Serve the caller's own harness agent instead, loaded.
-    Own {
-        agent_id: Uuid,
-        agent: crate::agent_resolver::AgentRow,
-        target: crate::coding::proxy::AgentTarget,
-    },
-    /// Refused, with the answer to send.
-    Answered(Response),
-}
-
-/// The caller's own harness agent when their message to a platform harness agent runs as it
-/// (`sessions::own_agent::for_message`). Any other request is served where it was addressed.
-async fn own_harness_door(
-    state: &AppState,
-    claims: &Claims,
-    target: Option<&crate::coding::proxy::AgentTarget>,
-    body: &[u8],
-) -> Result<Door, StatusCode> {
-    use crate::sessions::own_agent::{OwnAgentError, for_message};
-    let Some(crate::coding::proxy::AgentTarget::Harness(target)) = target else {
-        return Ok(Door::Keep);
-    };
-    let Some(id) = message_send_id(body) else {
-        return Ok(Door::Keep);
-    };
-    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let context_id = message_send_context_id(body);
-    let image_prefix = &state.config.harness_image_prefix;
-    let own = match for_message(
-        &state.db,
-        image_prefix,
-        user_id,
-        target,
-        context_id.as_deref(),
-    )
-    .await
-    {
-        Ok(Some(own)) => own,
-        Ok(None) => return Ok(Door::Keep),
-        Err(e @ OwnAgentError::NameTaken(_)) => {
-            let error = serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {
-                    "code": crate::sessions::admission::SESSION_REFUSED,
-                    "message": e.to_string(),
-                },
-            });
-            return Ok(Door::Answered(axum::response::IntoResponse::into_response(
-                axum::Json(error),
-            )));
-        }
-        Err(OwnAgentError::Db(e)) => {
-            tracing::error!(error = %e, %user_id, "agent proxy: the user's harness agent could not be had");
-            return Err(StatusCode::INTERNAL_SERVER_ERROR);
-        }
-    };
-    let agent = load_agent(state, own).await.map_err(|e| e.http_status())?;
-    let target = crate::coding::proxy::load_agent_target(&state.db, own)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, agent_id = %own, "agent proxy: the user's harness agent could not be loaded");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?
-        .ok_or_else(|| {
-            tracing::error!(agent_id = %own, "agent proxy: the user's harness agent is not a harness");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
-    Ok(Door::Own {
-        agent_id: own,
-        agent,
-        target,
-    })
-}
-
-/// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
-/// the other harness errors here, the refusal's body as its `data`. `None` for a request that
-/// sends no message (it starts no turn) and for an admitted one.
-async fn refuse_harness_turn(
-    state: &AppState,
-    claims: &Claims,
-    target: &crate::coding::proxy::HarnessTarget,
-    body: &[u8],
-) -> Result<Option<Response>, StatusCode> {
-    let Some(id) = message_send_id(body) else {
-        return Ok(None);
-    };
-    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let refusal = refuse_session(state, user_id, &target.harness_id).await;
-    Ok(refusal.map(|refusal| {
+/// The refusal of a message to a harness (`sessions::admission::refuse_turn`), as a JSON-RPC
+/// error on a 200 like the other harness errors here, the refusal's body as its `data`. `None`
+/// for a request that sends no message (it starts no turn) and for an admitted one.
+fn refuse_harness_turn(state: &AppState, body: &[u8]) -> Option<Response> {
+    let id = message_send_id(body)?;
+    refuse_turn(state).map(|refusal| {
         axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
-    }))
+    })
 }
 
 /// The request id of a message send, `None` for any other request.
@@ -1102,18 +997,12 @@ async fn answer_harness_task(
             tracing::error!(error = %e, %agent_id, "agent proxy: target lookup failed");
             StatusCode::INTERNAL_SERVER_ERROR
         })?;
-    let Some(crate::coding::proxy::AgentTarget::Harness(harness)) = target else {
+    if !matches!(target, Some(crate::coding::proxy::AgentTarget::Harness(_))) {
         return Ok(EarlyAnswer::Continue(restored()));
-    };
+    }
     let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let agents = crate::sessions::own_agent::task_agents(&state.db, user_id, &harness)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, %agent_id, "agent proxy: harness task agents lookup failed");
-            StatusCode::INTERNAL_SERVER_ERROR
-        })?;
     Ok(EarlyAnswer::Answered(
-        crate::sessions::tasks::handle(state, &agents, user_id, method, &rpc).await,
+        crate::sessions::tasks::handle(state, agent_id, user_id, method, &rpc).await,
     ))
 }
 

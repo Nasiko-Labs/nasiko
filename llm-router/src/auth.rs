@@ -1,13 +1,21 @@
-//! Agent-identity JWT verification.
+//! Agent-identity JWT verification, and reading a caller's credential.
 //!
 //! The agent's `OPENAI_API_KEY` is a Nasiko-issued JWT (NOT a provider key) carrying
 //! `{agent_id, owner_id, iat, exp}`. The orchestrator mints it (1-year `exp`, rotated
 //! on redeploy); this gateway only *verifies* it. See `RUST_PLAN_V1.md` §3 (auth).
 //!
+//! A coding agent's session token arrives the same way and is tried first
+//! ([`verify_session_credential`]). Both are read from whichever of [`CREDENTIAL_HEADERS`] the
+//! caller's SDK sends ([`caller_credential`]). These are public so that a layer in front of the
+//! router identifies a call exactly as the router will, never with a copy of the rule.
+//!
 //! A dev/test minting helper ([`mint_agent_token`]) lives here too — used by the test
 //! suite and the `mint_token` example for manual curl smoke runs.
 
+use axum::http::header::AUTHORIZATION;
+use axum::http::{HeaderMap, HeaderName};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+use nasiko_session_token::{SessionClaims, SessionTokenError, verify_session_token};
 use serde::{Deserialize, Serialize};
 
 use crate::config::GatewayConfig;
@@ -15,6 +23,66 @@ use crate::error::GatewayError;
 
 /// Default agent-token TTL when minting: 1 year (matches the orchestrator).
 pub const DEFAULT_TTL_SECONDS: u64 = 365 * 24 * 60 * 60;
+
+/// The headers a caller's credential is read from, in this order: the OpenAI SDK's
+/// `Authorization`, the Anthropic SDK's `x-api-key` (Claude Code sends its key there), and the
+/// Gemini SDK's `x-goog-api-key`.
+pub const CREDENTIAL_HEADERS: [HeaderName; 3] = [
+    AUTHORIZATION,
+    HeaderName::from_static("x-api-key"),
+    HeaderName::from_static("x-goog-api-key"),
+];
+
+/// The caller's credential: the first of [`CREDENTIAL_HEADERS`] the request carries.
+pub fn caller_credential(headers: &HeaderMap) -> Option<&str> {
+    CREDENTIAL_HEADERS
+        .iter()
+        .find_map(|name| headers.get(name).and_then(|value| value.to_str().ok()))
+}
+
+/// The coding-agent session token in `credential`, verified and not revoked.
+///
+/// `Ok(None)` when it is not one of our session tokens, or this server issues none (no
+/// `AGENT_JWT_SECRET`): the caller then tries it as an agent-identity token. An expired or
+/// revoked session token is an error, never a fall-through (fail closed), and so is a revocation
+/// check the store cannot answer.
+pub async fn verify_session_credential(
+    credential: Option<&str>,
+    cfg: &GatewayConfig,
+    db: &sqlx::PgPool,
+) -> Result<Option<SessionClaims>, GatewayError> {
+    let Some(raw) = credential.filter(|_| !cfg.agent_jwt_secret.is_empty()) else {
+        return Ok(None);
+    };
+    let algorithm = parse_algorithm(&cfg.agent_jwt_algorithm);
+    match verify_session_token(raw, &cfg.agent_jwt_secret, algorithm) {
+        Ok(claims) => {
+            if is_session_token_revoked(db, &claims.jti).await? {
+                return Err(GatewayError::Forbidden("session token revoked".into()));
+            }
+            Ok(Some(claims))
+        }
+        Err(SessionTokenError::Expired) => Err(GatewayError::TokenExpired),
+        // Not one of ours, or (with the secret set and a token present, so this cannot really
+        // happen) unusable: try it as an agent-identity token rather than hard-fail.
+        Err(_) => Ok(None),
+    }
+}
+
+/// True if this session token's `jti` has been revoked. Fails closed (a store
+/// error denies the request) rather than letting a possibly-revoked token through.
+async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> Result<bool, GatewayError> {
+    let found: Option<i32> =
+        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
+            .bind(jti)
+            .fetch_optional(db)
+            .await
+            .map_err(|e| {
+                tracing::error!(error = %e, "llm-router: revocation check failed — failing closed");
+                GatewayError::Forbidden("identity store unavailable".into())
+            })?;
+    Ok(found.is_some())
+}
 
 /// Claims we read off an incoming agent token. `agent_id` is required (checked after
 /// decode so we can return the precise "missing agent_id" message); `owner_id` is

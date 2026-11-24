@@ -1,10 +1,12 @@
 //! Whether a user may open a harness session, or start a turn on one.
 //!
-//! A session can cost a distribution more than its own sandbox: where each user's sessions of a
-//! harness run in an agent of that user's, the first one adds an agent, which the distribution's
-//! agent limits count. The open-source admission, [`AdmitEverySession`], admits everything; a
-//! distribution with such limits installs its own on [`crate::state::AppState`] at its
-//! composition root.
+//! A session can cost a distribution more than its own sandbox: a user's first session of a
+//! harness adds their harness agent (`sessions::own_agent`), which the distribution's agent
+//! limits count. Only opening a session through the session API can add it, so only that asks the
+//! installed admission ([`refuse_session`]); a turn runs on a session already bound to the user's
+//! agent and asks only whether sessions are switched on ([`refuse_turn`]). The open-source
+//! admission, [`AdmitEverySession`], admits everything; a distribution with such limits installs
+//! its own on [`crate::state::AppState`] at its composition root.
 //!
 //! Every caller asks before it writes anything for the session or its turn (no session row, no
 //! transcript, no flow), and answers a refusal in its own protocol: the session API with the
@@ -62,18 +64,24 @@ impl SessionRefusal {
     }
 }
 
-/// Whether `user_id` is refused a session of `harness_id`, or a turn on one: always while coding
-/// sessions are switched off on this server, whatever the installed admission says; otherwise
-/// that admission's answer. Every caller asks this, not the admission directly.
+/// Whether `user_id` is refused opening a session of `harness_id`: always while coding sessions
+/// are switched off on this server, whatever the installed admission says; otherwise that
+/// admission's answer. The session API asks this, not the admission directly.
 pub async fn refuse_session(
     state: &crate::state::AppState,
     user_id: Uuid,
     harness_id: &str,
 ) -> Option<SessionRefusal> {
-    if !state.config.harness_sessions_enabled {
-        return Some(SessionRefusal::sessions_disabled());
+    if let Some(refusal) = refuse_turn(state) {
+        return Some(refusal);
     }
     state.session_admission.refuse(user_id, harness_id).await
+}
+
+/// Whether a turn is refused: only while coding sessions are switched off. A turn adds no agent
+/// (its session is bound to an agent that already exists), so the admission is not asked.
+pub fn refuse_turn(state: &crate::state::AppState) -> Option<SessionRefusal> {
+    (!state.config.harness_sessions_enabled).then(SessionRefusal::sessions_disabled)
 }
 
 /// The answer on the session API: the status and body as they stand.
@@ -86,7 +94,7 @@ impl IntoResponse for SessionRefusal {
 #[async_trait]
 pub trait SessionAdmission: Send + Sync {
     /// `Some(refusal)` refuses `user_id` a session of `harness_id`. Asked when a session is
-    /// opened and before each turn on one, ahead of anything written for either.
+    /// opened through the session API, ahead of anything written for it.
     async fn refuse(&self, user_id: Uuid, harness_id: &str) -> Option<SessionRefusal>;
 }
 
