@@ -179,6 +179,11 @@ impl ParkedAgentWake {
                 info!(%agent_id, "agent wake: scaled a parked agent up; waiting until it answers");
             }
             Ok(ScaleUp::NoWorkload) => self.deploy_workload(agent_id, deadline).await?,
+            // The refusing layer worded this for the caller; the rest is internal detail.
+            Err(RuntimeError::Declined { code, message }) => {
+                warn!(%agent_id, %code, "agent wake: the runtime declined to start the agent");
+                return Err(message);
+            }
             Err(e) => return Err(unavailable(agent_id, "scale", e)),
         }
         announce_waking(&self.deps.flow_events, agent_id, flow_id).await;

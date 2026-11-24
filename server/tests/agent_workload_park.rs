@@ -888,7 +888,7 @@ async fn a_request_that_lost_the_park_race_gets_a_503_to_retry_when_the_wake_fai
     let refused = resolve_loaded(&server.state, &read_as_running, &Caller::default()).await;
 
     let err = refused.expect_err("nothing woke it");
-    assert!(matches!(err, ResolveError::ParkedMidRequest), "{err:?}");
+    assert!(matches!(err, ResolveError::ParkedMidRequest(_)), "{err:?}");
     assert_eq!(err.http_status().as_u16(), 503);
     assert!(err.client_message().contains("try again"));
     assert_eq!(status(&server, agent).await, "parked");

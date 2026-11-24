@@ -68,6 +68,10 @@ pub struct Caller {
 /// The `Retry-After` a request that met a park mid-way is told to wait.
 const PARKED_MID_REQUEST_RETRY_AFTER_SECS: u64 = 2;
 
+/// What a request that met a park mid-way is told when the wake gave no reason of its own.
+const PARKED_MID_REQUEST_MESSAGE: &str =
+    "the agent was parked as this request reached it; try again shortly";
+
 #[derive(Debug, thiserror::Error)]
 pub enum ResolveError {
     #[error("agent not found")]
@@ -78,9 +82,10 @@ pub enum ResolveError {
     #[error("agent workload is not running (runtime reports: {0})")]
     WorkloadDown(String),
     /// The agent is parked, and waking it in this request did not bring it back: the idle reaper
-    /// parked it as the request reached it, or the wake that ran first did not finish.
-    #[error("agent was parked as this request reached it")]
-    ParkedMidRequest,
+    /// parked it as the request reached it, or the wake that ran first did not finish or was
+    /// refused. Carries what the client is told.
+    #[error("agent was parked as this request reached it: {0}")]
+    ParkedMidRequest(String),
     #[error("no endpoint found for agent '{0}'")]
     NoEndpoint(String),
     #[error("database error: {0}")]
@@ -92,7 +97,7 @@ impl ResolveError {
     pub fn http_status(&self) -> StatusCode {
         match self {
             Self::NotFound => StatusCode::NOT_FOUND,
-            Self::NotRunning(_) | Self::WorkloadDown(_) | Self::ParkedMidRequest => {
+            Self::NotRunning(_) | Self::WorkloadDown(_) | Self::ParkedMidRequest(_) => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Self::NoEndpoint(_) => StatusCode::BAD_GATEWAY,
@@ -103,7 +108,7 @@ impl ResolveError {
     /// How many seconds a client should wait before it tries again, for a refusal that a retry
     /// can get past: a park that raced the request is settled, or the agent woken, by then.
     pub fn retry_after_secs(&self) -> Option<u64> {
-        matches!(self, Self::ParkedMidRequest).then_some(PARKED_MID_REQUEST_RETRY_AFTER_SECS)
+        matches!(self, Self::ParkedMidRequest(_)).then_some(PARKED_MID_REQUEST_RETRY_AFTER_SECS)
     }
 
     /// What a client is told. Backend and database text stays in the logs.
@@ -114,9 +119,7 @@ impl ResolveError {
             Self::WorkloadDown(state) => {
                 format!("agent workload is not running (runtime reports: {state})")
             }
-            Self::ParkedMidRequest => {
-                "the agent was parked as this request reached it; try again shortly".into()
-            }
+            Self::ParkedMidRequest(message) => message.clone(),
             Self::NoEndpoint(_) => "agent has no reachable endpoint".into(),
             Self::Db(_) => "internal error".into(),
         }
@@ -263,11 +266,13 @@ async fn resolve_after_park(
         .await
     {
         tracing::warn!(agent_id = %row.id, %msg, "agent resolver: waking a just-parked agent failed");
-        return Err(ResolveError::ParkedMidRequest);
+        return Err(ResolveError::ParkedMidRequest(msg));
     }
     let current = load_agent(state, row.id).await?;
     if current.status != "running" {
-        return Err(ResolveError::ParkedMidRequest);
+        return Err(ResolveError::ParkedMidRequest(
+            PARKED_MID_REQUEST_MESSAGE.to_owned(),
+        ));
     }
     workload_endpoint(state, &current).await
 }
@@ -501,7 +506,7 @@ mod tests {
             (ResolveError::NotFound, 404),
             (ResolveError::NotRunning("stopped".into()), 503),
             (ResolveError::WorkloadDown("Stopped".into()), 503),
-            (ResolveError::ParkedMidRequest, 503),
+            (ResolveError::ParkedMidRequest(String::new()), 503),
             (ResolveError::NoEndpoint("a".into()), 502),
             (ResolveError::Db(sqlx::Error::PoolClosed), 500),
         ];
@@ -512,7 +517,7 @@ mod tests {
 
     #[test]
     fn a_request_that_lost_the_park_race_is_told_to_retry_and_when() {
-        let refused = ResolveError::ParkedMidRequest;
+        let refused = ResolveError::ParkedMidRequest(PARKED_MID_REQUEST_MESSAGE.to_owned());
         assert!(refused.client_message().contains("try again"));
         assert_eq!(
             refused.retry_after_secs(),

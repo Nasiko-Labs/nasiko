@@ -48,6 +48,12 @@ pub enum RuntimeError {
     #[error("unsupported operation: {0}")]
     Unsupported(String),
 
+    /// A layer refused the change before it reached the backend, for a reason the caller can act
+    /// on. `message` is safe to show a user; `code` is chosen by the refusing layer and is for
+    /// callers that know its vocabulary, so this crate never interprets it.
+    #[error("declined [{code}]: {message}")]
+    Declined { code: String, message: String },
+
     /// An unexpected error from the backend that does not fit a more specific variant.
     #[error("internal error: {0}")]
     Internal(String),

@@ -250,7 +250,11 @@ pub async fn agent_proxy(
             .await
         {
             tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            // Still a 503: the credits layer translates one it recorded a refusal for.
+            return Ok(axum::response::IntoResponse::into_response((
+                StatusCode::SERVICE_UNAVAILABLE,
+                msg,
+            )));
         }
         let caller = Caller {
             flow_id: Some(flow_ctx.flow_id.clone()),
@@ -810,7 +814,7 @@ pub async fn agent_proxy(
 /// The answer to a request whose agent could not be resolved: its status, and a `Retry-After`
 /// when a retry can get past it (the agent was parked as the request reached it).
 fn resolve_refusal(e: &crate::agent_resolver::ResolveError) -> Response {
-    let mut response = Response::new(Body::empty());
+    let mut response = Response::new(Body::from(e.client_message()));
     *response.status_mut() = e.http_status();
     if let Some(secs) = e.retry_after_secs() {
         response.headers_mut().insert(
@@ -1894,7 +1898,7 @@ mod tests {
 
     #[test]
     fn a_request_that_met_a_park_is_told_when_to_try_again() {
-        let parked = resolve_refusal(&ResolveError::ParkedMidRequest);
+        let parked = resolve_refusal(&ResolveError::ParkedMidRequest("parked".to_owned()));
         assert_eq!(parked.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(parked.headers()[RETRY_AFTER], "2");
 
