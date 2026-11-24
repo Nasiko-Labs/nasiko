@@ -1,3 +1,4 @@
+pub mod batch;
 pub mod sandbox;
 mod stats;
 pub use stats::DockerStatsProvider;
@@ -2686,7 +2687,7 @@ mod credential_scope_tests {
         assert!(credentials_match(None, "docker.io/library/redis:7"));
         assert!(credentials_match(
             Some("index.docker.io"),
-            "akhilfolium/infra-agent"
+            "example/infra-agent"
         ));
         assert!(!credentials_match(None, "ghcr.io/org/agent:v1"));
     }

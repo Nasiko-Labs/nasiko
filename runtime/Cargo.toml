@@ -23,10 +23,11 @@ futures-util = { version = "0.3" }
 # docker feature
 bollard = { version = "0.17", optional = true }
 serde_json = { workspace = true, optional = true }
+tar = { workspace = true, optional = true }
 
 [features]
 default = ["docker"]
-docker = ["dep:bollard", "dep:serde_json"]
+docker = ["dep:bollard", "dep:serde_json", "dep:tar"]
 simulated = []
 testing = []
 
