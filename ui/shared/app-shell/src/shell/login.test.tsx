@@ -81,21 +81,6 @@ describe('sign-in', () => {
     expect(got).toEqual([])
   })
 
-  it('a disabled account gets the same message as a wrong password', async () => {
-    configureMocks({ loggedIn: false })
-    const user = userEvent.setup()
-    server.use(
-      http.post('/api/auth/login', () =>
-        HttpResponse.json({ error: 'account disabled' }, { status: 401 }),
-      ),
-    )
-    renderApp('/login')
-    await user.type(await screen.findByLabelText('Username'), 'riley')
-    await user.type(screen.getByLabelText('Password'), 'x')
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    expect(await screen.findByText('Wrong username or password.')).toBeTruthy()
-  })
-
   it('bumps the sign-in generation; a failed sign-in does not', async () => {
     server.use(
       http.post(

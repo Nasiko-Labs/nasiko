@@ -33,7 +33,7 @@ import {
   stopDeployWork,
   whenSignedOut,
 } from '@nasiko/app-shell/shell/signOut'
-import { lockedFor, login, type Me, safeRedirect } from '@nasiko/data-access/auth'
+import { login, type Me, safeRedirect } from '@nasiko/data-access/auth'
 import { ApiError, apiFetch, isTimeoutError } from '@nasiko/data-access/client'
 import {
   broadcastSession,
@@ -162,15 +162,11 @@ function LoginPage() {
       await resetQueryClient(queryClient)
       await navigate({ to: safeRedirect(redirect) })
     } catch (err) {
-      // Every 401 gets one message, "account disabled" included: the server checks that before the
-      // password, so naming it would tell anyone which usernames exist (recommendations §4).
+      // Every 401 gets one message. The server already answers an unknown name, a wrong password, a deactivated
+      // account and a locked one with the same 401, so this page must not tell them apart either.
       if (err instanceof ApiError && err.status === 401) setError(copy.login.wrongCredentials)
-      // A lock (429 `account_locked`) lasts much longer than the rate limit. `remaining_attempts` on a 401 is never
-      // shown: the server only sends it for usernames that exist.
-      else if (err instanceof ApiError && err.status === 429) {
-        const locked = lockedFor(err.body)
-        setError(locked === null ? copy.login.rateLimited : copy.login.locked(locked))
-      }
+      // A 429 is only the rate limit: a locked account is a plain 401, so there is no wait to show.
+      else if (err instanceof ApiError && err.status === 429) setError(copy.login.rateLimited)
       // Our 10 s cap, not a stopped server: say the server is slow rather than unreachable.
       else if (loginTimedOut) setError(copy.login.timedOut)
       else if (err instanceof ApiError && err.isServerUnreachable) setError(copy.login.unreachable)

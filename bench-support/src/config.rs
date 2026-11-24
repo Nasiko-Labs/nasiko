@@ -53,6 +53,8 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
 
     Config {
         bind: "127.0.0.1:0".into(),
+        shutdown_drain_delay_secs: 0,
+        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,
@@ -157,7 +159,6 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         otel_capture_content: false,
         coding_agent_otlp_endpoint: None,
         coding_agent_ingest: Default::default(),
-        evals: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         // Off for benches so they never reach out to a provider or to Portkey.

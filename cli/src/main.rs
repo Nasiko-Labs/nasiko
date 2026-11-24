@@ -4,8 +4,7 @@ use clap_complete::Shell;
 use nasiko::commands;
 use nasiko::commands::local_agents::{self, ConnectOptions, DisconnectOptions};
 use nasiko::{
-    AgentDevCommands, AgentOpsCommands, EvalSubCommands, IntegrationSubCommands, McpSubCommands,
-    RegistrySubCommands,
+    AgentDevCommands, AgentOpsCommands, IntegrationSubCommands, McpSubCommands, RegistrySubCommands,
 };
 
 /// Nasiko CLI — Build, deploy, and manage AI agents.
@@ -80,9 +79,6 @@ const HELP_TEXT: &str = "\
 \x1b[33mRegistry:\x1b[0m
   registry   Connect to and browse the artifact registry
 
-\x1b[33mEvals:\x1b[0m
-  eval       Replay finished coding tasks on other models (sessions/datasets/runs/report; `local` on this machine)
-
 \x1b[33mMCP:\x1b[0m
   mcp        MCP Gateway — connectors, connections, sharing, credentials, oauth, agent-tools
 
@@ -127,8 +123,6 @@ enum Commands {
     Mcp(McpCommands),
     #[command(flatten)]
     Integration(IntegrationCommands),
-    #[command(flatten)]
-    Eval(EvalCommands),
 }
 
 #[derive(Subcommand)]
@@ -243,16 +237,6 @@ enum RegistryCommands {
     Registry {
         #[command(subcommand)]
         command: RegistrySubCommands,
-    },
-}
-
-#[derive(Subcommand)]
-#[command(next_help_heading = "Evals")]
-enum EvalCommands {
-    /// Replay finished coding tasks on other models and compare quality and cost
-    Eval {
-        #[command(subcommand)]
-        command: EvalSubCommands,
     },
 }
 
@@ -419,9 +403,6 @@ fn main() -> Result<()> {
         Commands::Mcp(cmd) => match cmd {
             McpCommands::Mcp { command } => nasiko::dispatch_mcp(command),
         },
-        Commands::Eval(cmd) => match cmd {
-            EvalCommands::Eval { command } => nasiko::dispatch_eval(command),
-        },
         Commands::Integration(cmd) => match cmd {
             IntegrationCommands::Integration { command } => nasiko::dispatch_integration(command),
             IntegrationCommands::Integrations => {
@@ -483,111 +464,6 @@ impl<W: std::io::Write> std::io::Write for IgnoreBrokenPipe<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nasiko::EvalLocalCommands;
-
-    #[test]
-    fn parses_local_eval_harvest_and_tasks() {
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "eval",
-            "local",
-            "harvest",
-            "--repo",
-            "/r",
-            "--since",
-            "2026-11-01",
-            "--redo",
-        ])
-        .unwrap();
-        let Commands::Eval(EvalCommands::Eval {
-            command:
-                EvalSubCommands::Local {
-                    command:
-                        EvalLocalCommands::Harvest {
-                            repo, since, redo, ..
-                        },
-                },
-        }) = cli.command
-        else {
-            panic!("expected eval local harvest");
-        };
-        assert_eq!(repo, std::path::PathBuf::from("/r"));
-        assert_eq!(since.map(|d| d.to_string()).as_deref(), Some("2026-11-01"));
-        assert!(redo);
-
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "eval",
-            "local",
-            "tasks",
-            "--status",
-            "candidate",
-            "-j",
-        ])
-        .unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Eval(EvalCommands::Eval {
-                command: EvalSubCommands::Local {
-                    command: EvalLocalCommands::Tasks {
-                        status: Some(nasiko_evals::TaskStatus::Candidate),
-                        json: true
-                    }
-                }
-            })
-        ));
-        assert!(
-            Cli::try_parse_from(["nasiko", "eval", "local", "tasks", "--status", "done"]).is_err(),
-            "unknown status is refused"
-        );
-    }
-
-    #[test]
-    fn parses_cluster_eval_commands() {
-        let cli = Cli::try_parse_from([
-            "nasiko",
-            "eval",
-            "runs",
-            "create",
-            "--dataset",
-            "d1",
-            "--model",
-            "opus",
-            "--model",
-            "haiku",
-            "--attempts",
-            "2",
-            "--wait",
-        ])
-        .unwrap();
-        let Commands::Eval(EvalCommands::Eval {
-            command:
-                EvalSubCommands::Runs {
-                    command:
-                        nasiko::EvalRunCommands::Create {
-                            dataset,
-                            models,
-                            attempts,
-                            wait,
-                            tasks,
-                        },
-                },
-        }) = cli.command
-        else {
-            panic!("expected eval runs create");
-        };
-        assert_eq!(dataset, "d1");
-        assert_eq!(models, vec!["opus", "haiku"]);
-        assert_eq!((attempts, wait, tasks.len()), (2, true, 0));
-        assert!(
-            Cli::try_parse_from(["nasiko", "eval", "runs", "create", "--dataset", "d1"]).is_err(),
-            "a run names at least one model"
-        );
-        assert!(
-            Cli::try_parse_from(["nasiko", "eval", "datasets", "create", "--limit", "5"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["nasiko", "eval", "tasks", "d1"]).is_ok());
-    }
 
     #[test]
     fn parses_opencode_connect_options() {
@@ -653,6 +529,22 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn the_mcp_gateway_connects_and_disconnects_on_its_own() {
+        let cli =
+            Cli::try_parse_from(["nasiko", "connect", "claude", "--no-routing", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Connect { coding_agent, .. }) = cli.command else {
+            panic!("expected connect command");
+        };
+        assert!(coding_agent.no_routing && coding_agent.mcp);
+
+        let cli = Cli::try_parse_from(["nasiko", "disconnect", "claude", "--mcp"]).unwrap();
+        let Commands::Cp(CpCommands::Disconnect { options, .. }) = cli.command else {
+            panic!("expected disconnect command");
+        };
+        assert!(options.mcp && !options.routing && !options.reporting);
     }
 
     #[test]

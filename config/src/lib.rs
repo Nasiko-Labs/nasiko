@@ -3,10 +3,8 @@ use std::collections::BTreeMap;
 use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
-mod evals;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
-pub use evals::EvalsConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// Model for a platform task call (selector, titles, capability generation, MCP
@@ -88,6 +86,14 @@ fn delegation_audience_from_env() -> String {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
+    /// How long a stopping server keeps serving after it starts answering `/ready` with 503, from
+    /// `SERVER_DRAIN_DELAY_SECS`, default `5`, clamped 0..=60: time for the load balancer to stop
+    /// sending it requests before it stops accepting them.
+    pub shutdown_drain_delay_secs: u64,
+    /// Then how long requests already in flight get to finish before the process exits, from
+    /// `SERVER_SHUTDOWN_GRACE_SECS`, default `60`, clamped 0..=3600. Keep the pod's termination
+    /// grace period above this plus the drain delay, or the kubelet kills it first.
+    pub shutdown_grace_secs: u64,
     pub domain: Option<String>,
     /// Audience string this control plane stamps into, and requires on,
     /// delegated tokens (ui/docs/adr/0001a). It is this deployment's public
@@ -220,8 +226,6 @@ pub struct Config {
     pub coding_agent_otlp_endpoint: Option<String>,
     /// Rate, concurrency and Tempo-age limits on coding-agent telemetry ingest.
     pub coding_agent_ingest: CodingAgentIngestConfig,
-    /// Replay evals run by this server (`EVAL_*`).
-    pub evals: EvalsConfig,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -811,6 +815,8 @@ impl Config {
         let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
+            shutdown_drain_delay_secs: env_parse("SERVER_DRAIN_DELAY_SECS", 5).clamp(0, 60),
+            shutdown_grace_secs: env_parse("SERVER_SHUTDOWN_GRACE_SECS", 60).clamp(0, 3600),
             domain: std::env::var("CP_DOMAIN").ok(),
             delegation_audience: delegation_audience_from_env(),
             delegation_enabled: std::env::var("DELEGATION_ENABLED")
@@ -911,7 +917,6 @@ impl Config {
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             coding_agent_ingest: CodingAgentIngestConfig::from_env(),
-            evals: EvalsConfig::from_env(),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a

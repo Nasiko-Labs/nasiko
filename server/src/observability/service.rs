@@ -1713,6 +1713,10 @@ impl ObservabilityService {
                SELECT s.*, COALESCE(h.platform, false) AS platform
                FROM s LEFT JOIN h USING (agent_name)"#,
         )
+        // Unprepared, like every usage read here with an optional filter: a prepared statement
+        // gets Postgres's generic plan from its sixth run, which can't tell `$n IS NULL` from a
+        // value, never uses the user index, and reads every caller's rows in the window.
+        .persistent(false)
         .bind(start)
         .bind(end)
         .bind(agent_name)
@@ -2668,6 +2672,7 @@ impl ObservabilityService {
                WHERE agent_name = $1 AND started_at >= $2 AND started_at < $3
                  AND ($4::uuid[] IS NULL OR user_id = ANY($4))"#,
         )
+        .persistent(false)
         .bind(agent_id)
         .bind(start)
         .bind(end)
@@ -2910,6 +2915,7 @@ impl ObservabilityService {
 
         // 1. Current window
         let current_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
+            .persistent(false)
             .bind(start)
             .bind(now)
             .bind(agent_filter)
@@ -2927,6 +2933,7 @@ impl ObservabilityService {
 
         // 2. Previous window (for KPI %-change)
         let prev_rows: Vec<TraceUsageAgg> = sqlx::query_as(TRACE_USAGE_AGG_QUERY)
+            .persistent(false)
             .bind(prev_start)
             .bind(prev_end)
             .bind(agent_filter)
@@ -2960,6 +2967,7 @@ impl ObservabilityService {
                       OR (user_id = $8 AND (agent_name = ANY($9) OR agent_name LIKE $10)))
                GROUP BY agent_name"#,
         )
+        .persistent(false)
         .bind(last_24h)
         .bind(agent_filter)
         .bind(model_filter)
@@ -2991,6 +2999,7 @@ impl ObservabilityService {
                  AND ($8::TEXT[] IS NULL OR agent_name = ANY($8)
                       OR (user_id = $9 AND (agent_name = ANY($10) OR agent_name LIKE $11)))"#,
         )
+        .persistent(false)
         .bind(start)
         .bind(now)
         .bind(agent_filter)
@@ -3031,6 +3040,7 @@ impl ObservabilityService {
                GROUP BY s.user_id, u.username, u.email
                ORDER BY total_cost DESC, total_tokens DESC, s.user_id"#,
         )
+        .persistent(false)
         .bind(start)
         .bind(now)
         .bind(agent_filter)
@@ -3464,6 +3474,7 @@ impl ObservabilityService {
 
         let fetch = |from: DateTime<Utc>, to: DateTime<Utc>| {
             sqlx::query_as::<_, BucketRow>(&query)
+                .persistent(false)
                 .bind(from)
                 .bind(to)
                 .bind(agent_name)
@@ -3580,6 +3591,7 @@ impl ObservabilityService {
         );
 
         let rows: Vec<SeriesRow> = sqlx::query_as(&query)
+            .persistent(false)
             .bind(start)
             .bind(end)
             .bind(agent_name)
@@ -3691,6 +3703,7 @@ impl ObservabilityService {
                GROUP BY DATE(ts)
                ORDER BY date"#,
         )
+        .persistent(false)
         .bind(month_start)
         .bind(next_month)
         .bind(agent_name)
@@ -3783,6 +3796,7 @@ impl ObservabilityService {
                GROUP BY hour, agent_name
                ORDER BY hour"#,
         )
+        .persistent(false)
         .bind(day_start)
         .bind(day_end)
         .bind(agent_name)
