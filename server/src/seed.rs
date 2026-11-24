@@ -145,6 +145,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
 
         if !needs_deploy {
+            if let Some(agent) = &existing {
+                repair_stale_status(&state.db, agent, &agent_name).await;
+            }
             info!(agent = %agent_name, "seed agent already running, skipping");
             continue;
         }
@@ -429,7 +432,15 @@ pub struct InternalAgentSeed {
 ///
 /// Designed to run as a background task — does not block server startup, and
 /// returns quietly when the agent is already running on the same image.
+///
+/// One replica seeds at a time; one that starts while another is seeding skips it.
 pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
+    const LOCK: nasiko_leader::LockKey =
+        nasiko_leader::LockKey::named("server.seed_internal_agent");
+    nasiko_leader::single_flight(&state.db, LOCK, || seed_internal_agent_now(state, seed)).await;
+}
+
+async fn seed_internal_agent_now(state: &AppState, seed: InternalAgentSeed) {
     let InternalAgentSeed {
         name: agent_name,
         image,
@@ -501,6 +512,9 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
     };
     if !needs_deploy {
+        if let Some(agent) = &existing {
+            repair_stale_status(&state.db, agent, &agent_name).await;
+        }
         info!(agent = %agent_name, "internal agent already running, skipping");
         return;
     }
@@ -643,6 +657,44 @@ async fn deploy_internal_agent(
     Ok(())
 }
 
+/// Statuses a seed leaves behind when its deploy failed or was cut short. The resolver routes only
+/// `running` and `parked` agents, so a row left at one of these refuses every call (503) however
+/// healthy its workload is.
+const STALE_SEED_STATUSES: [&str; 2] = ["failed", "deploying"];
+
+fn is_stale_seed_status(status: &str) -> bool {
+    STALE_SEED_STATUSES.contains(&status)
+}
+
+/// Marks a platform agent whose workload the runtime reports running `running` again when an
+/// earlier seed left its row `failed` or `deploying`. A deploy judged failed mid-rollout (the old
+/// pod still showing a pull error) leaves the row `failed` after the rollout completes; the seed
+/// then skips the unchanged, running agent on every boot, so nothing else would repair it. Guarded
+/// on the status, so a row that moved on meanwhile is not overwritten.
+async fn repair_stale_status(db: &sqlx::PgPool, agent: &Agent, agent_name: &str) {
+    if !is_stale_seed_status(&agent.status) {
+        return;
+    }
+    match sqlx::query(
+        "UPDATE agents SET status = 'running', updated_at = now() \
+         WHERE id = $1 AND status = ANY($2)",
+    )
+    .bind(agent.id)
+    .bind(&STALE_SEED_STATUSES[..])
+    .execute(db)
+    .await
+    {
+        Ok(done) if done.rows_affected() > 0 => {
+            warn!(agent = %agent_name, stale = %agent.status,
+                "seed agent's workload is running but its row was not; marked running")
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(agent = %agent_name, error = %e, "repairing a stale seed agent status failed")
+        }
+    }
+}
+
 /// Keeps a platform agent (a seed or an internal agent) `resident`: it always runs. Written on
 /// every seed, so a row created while new agents defaulted to `auto` is resident too. A failed
 /// write is logged and the seed goes on; the agent's next seed tries again.
@@ -734,17 +786,20 @@ async fn stored_writable(
 
 const INTERNAL_AGENT_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The internal-agent watch runs on one replica, so two never redeploy the same dead agent.
+const INTERNAL_AGENT_WATCH_LOCK: nasiko_leader::LockKey =
+    nasiko_leader::LockKey::named("server.internal_agent_watch");
+
 pub fn spawn_internal_agent_watch(state: AppState) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval_at(
-            tokio::time::Instant::now() + INTERNAL_AGENT_WATCH_INTERVAL,
+        tokio::time::sleep(INTERNAL_AGENT_WATCH_INTERVAL).await;
+        nasiko_leader::every(
+            state.db.clone(),
+            INTERNAL_AGENT_WATCH_LOCK,
             INTERNAL_AGENT_WATCH_INTERVAL,
-        );
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            redeploy_dead_internal_agents(&state).await;
-        }
+            || redeploy_dead_internal_agents(&state),
+        )
+        .await;
     });
 }
 
@@ -1186,6 +1241,23 @@ mod unmatched_settings_tests {
             .collect();
         let images = "registry.nasiko.com/nasiko/summarizer:1.0.0 nasiko/translator:1.0.0";
         assert_eq!(unmatched_settings(&settings, images), ["summariser"]);
+    }
+}
+
+#[cfg(test)]
+mod stale_status_tests {
+    use super::is_stale_seed_status;
+
+    #[test]
+    fn only_a_failed_or_unfinished_deploy_is_repaired_once_the_workload_runs() {
+        for status in ["failed", "deploying"] {
+            assert!(is_stale_seed_status(status), "{status}");
+        }
+        // `parked` is never woken by a seed; `stopped` and `crashed` belong to the operator
+        // and the crash guardian; `running` needs nothing.
+        for status in ["running", "parked", "stopped", "crashed", "registered"] {
+            assert!(!is_stale_seed_status(status), "{status}");
+        }
     }
 }
 

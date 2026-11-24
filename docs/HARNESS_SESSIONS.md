@@ -59,7 +59,7 @@ or none, leaves them off. The server reads it once at startup, so changing it ta
 
 Earlier servers had one platform-owned agent per harness, named after it (`opencode`,
 `claude-code`, `codex`), that sessions were bound to. Migration
-`migrations/0112_retire_platform_harness_agents.sql` gives each user with a live session on one
+`migrations/0114_retire_platform_harness_agents.sql` gives each user with a live session on one
 their own harness agent, moves those sessions to it with their conversation, and deletes the
 platform agents. The moved sessions' sandbox tokens are revoked; the next turn mints one naming the
 user's agent. Where the provider kept a session's files under the platform agent's folder (the pod

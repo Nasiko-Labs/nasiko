@@ -294,11 +294,7 @@ async fn deploy_lock(state: &AppState, agent_id: Uuid) -> sqlx::Result<sqlx::PgC
 
 fn logged(agent_id: Uuid, e: &CatalogDeployError) -> String {
     tracing::warn!(%agent_id, error = %e, "agent wake: could not deploy a parked agent's missing workload");
-    match e {
-        // The refusing layer worded this for the caller.
-        CatalogDeployError::Runtime(RuntimeError::Declined { message, .. }) => message.clone(),
-        _ => COULD_NOT_DEPLOY.to_owned(),
-    }
+    COULD_NOT_DEPLOY.to_owned()
 }
 
 #[cfg(test)]
@@ -313,26 +309,6 @@ mod tests {
             owner_id: Uuid::nil(),
             writable: false,
             writable_path: None,
-        }
-    }
-
-    #[test]
-    fn a_deploy_the_runtime_declined_is_reported_in_its_own_words_and_any_other_failure_generically()
-     {
-        let declined = CatalogDeployError::Runtime(RuntimeError::Declined {
-            code: "plan_refused".into(),
-            message: "This workspace cannot start more agents.".into(),
-        });
-        assert_eq!(
-            logged(Uuid::nil(), &declined),
-            "This workspace cannot start more agents."
-        );
-        for other in [
-            CatalogDeployError::NoImage,
-            CatalogDeployError::Db(sqlx::Error::PoolClosed),
-            CatalogDeployError::Runtime(RuntimeError::Internal("boom".into())),
-        ] {
-            assert_eq!(logged(Uuid::nil(), &other), COULD_NOT_DEPLOY, "{other}");
         }
     }
 
