@@ -33,6 +33,7 @@ nasiko-flow.workspace = true
 nasiko-hitl.workspace = true
 nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
+nasiko-evals = { workspace = true }
 nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
 nasiko-pricing.workspace = true
@@ -119,6 +120,8 @@ async-trait = { workspace = true }
 jsonwebtoken = { workspace = true }
 sha2 = { workspace = true }
 base64 = { workspace = true }
+# assertion_sign_in generates its own Ed25519 key per run, so no private key is ever committed.
+ring = { workspace = true }
 mockito = { workspace = true }
 zstd = { workspace = true }
 criterion = { workspace = true }

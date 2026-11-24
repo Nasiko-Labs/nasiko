@@ -118,6 +118,30 @@ fn is_tag_text(text: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'_' | b'/' | b'-'))
 }
 
+/// Every attempt of the caller's run `run` (all pages).
+pub(super) async fn run_usage(
+    db: &PgPool,
+    user_id: Uuid,
+    run: &str,
+) -> anyhow::Result<Vec<AttemptUsage>> {
+    let mut all = Vec::new();
+    let mut cursor = None;
+    loop {
+        let query = RunQuery::parse(UsageParams {
+            run: Some(run.to_string()),
+            cursor: cursor.clone(),
+            limit: Some(MAX_LIMIT.to_string()),
+        })
+        .map_err(|e| anyhow::anyhow!("invalid run {run:?}: {}", e.2))?;
+        let page = attempts(db, user_id, &query).await?;
+        all.extend(page.attempts);
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => return Ok(all),
+        }
+    }
+}
+
 /// One page of a run's attempts.
 pub(super) struct AttemptPage {
     pub attempts: Vec<AttemptUsage>,

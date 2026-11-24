@@ -157,6 +157,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         otel_capture_content: false,
         coding_agent_otlp_endpoint: None,
         coding_agent_ingest: Default::default(),
+        evals: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         // Off for benches so they never reach out to a provider or to Portkey.
@@ -222,6 +223,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         cors_allowed_origins: vec![],
         // Bench agents are loopback mock servers.
         agent_allow_private_urls: true,
+        agent_current_time: true,
         oidc_issuer_url: None,
         oidc_client_id: None,
         oidc_client_secret: None,

@@ -36,7 +36,7 @@ pub mod context_selection;
 pub mod current_time;
 pub mod embedding_change;
 pub mod error_reporting;
-mod evals;
+pub mod evals;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;

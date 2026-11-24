@@ -58,6 +58,26 @@ pub fn config_json(cfg: &AgentConfig) -> Value {
     })
 }
 
+/// Where [`token_config_json`] reads the router's base URL and the attempt's token from.
+pub const ROUTER_URL_ENV: &str = "NASIKO_ROUTER_URL";
+pub const ROUTER_TOKEN_ENV: &str = "NASIKO_ROUTER_TOKEN";
+
+/// [`config_json`] for an attempt the server runs: opencode calls the router directly (through a
+/// network that reaches nothing else) with the attempt's own token, which names the attempt and
+/// the model, so no gateway adds a key or a tag.
+pub fn token_config_json(cfg: &AgentConfig) -> Value {
+    let mut value = config_json(cfg);
+    let provider = &mut value["provider"]["eval"];
+    provider["name"] = json!("Nasiko router");
+    provider["options"] = json!({
+        "baseURL": format!("{{env:{ROUTER_URL_ENV}}}"),
+        "apiKey": format!("{{env:{ROUTER_TOKEN_ENV}}}"),
+        "timeout": 600000,
+        "chunkTimeout": 120000
+    });
+    value
+}
+
 /// What opencode's own record says about one run.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct AgentRecord {
@@ -134,6 +154,20 @@ pub fn session_id_from_events(events: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_token_config_reads_url_and_key_from_env_and_sends_no_secret_header() {
+        let c = token_config_json(&AgentConfig {
+            context_tokens: 1000,
+            output_tokens: 100,
+            max_steps: 5,
+        });
+        let options = &c["provider"]["eval"]["options"];
+        assert_eq!(options["baseURL"], "{env:NASIKO_ROUTER_URL}");
+        assert_eq!(options["apiKey"], "{env:NASIKO_ROUTER_TOKEN}");
+        assert!(options.get("headers").is_none());
+        assert_eq!(c["agent"]["build"]["steps"], 5);
+    }
 
     #[test]
     fn config_points_at_the_router_model_with_limits() {

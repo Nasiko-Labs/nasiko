@@ -52,7 +52,7 @@ pub(crate) struct RegisterCodingAgentResponse {
     created: bool,
 }
 
-fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
     match integration_id {
         "claude" => Some(("claude-code", "Claude Code")),
         "opencode" => Some(("opencode", "OpenCode")),
@@ -65,7 +65,7 @@ fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str
     }
 }
 
-fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
+pub(crate) fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut pending_separator = false;
     for character in username.chars().flat_map(char::to_lowercase) {

@@ -1,9 +1,13 @@
-//! `/api/evals/*` — what a replay eval's attempts cost, priced by the platform's one price book.
+//! `/api/evals/*` — replay evals: coding sessions a person picked become a private,
+//! SWE-bench-style benchmark, replayed on other models and costed by the router.
 //!
-//! A replay eval runs coding tasks through the LLM router with the caller's `eval` coding-agent
-//! identity, naming each attempt in the `x-nasiko-eval-attempt` header; the router files every
-//! call under that attempt (`trace_usage.eval_attempt`). These routes read it back:
+//! The server does the whole pipeline (`oss/docs/EVALS.md`): it links each session to the
+//! commit it produced on GitHub (the repository comes from the session), builds and tests each
+//! task in a container, screens it with reviewer models, and runs the picked tasks on the picked
+//! models (each one of the caller's LLM configs), grading every attempt. The work is a durable
+//! job queue (`jobs`) on a container backend the composition root installs (`runner`).
 //!
+//! - harnesses, sessions, datasets, tasks, runs: `api`
 //! - `GET /evals/usage?run=<run>` — the caller's own attempts whose tag starts with `<run>:`,
 //!   one entry per attempt, in tag order, cursor-paged.
 //! - `POST /evals/price` — the cost of a token count the router never saw (the original
@@ -11,7 +15,20 @@
 //!
 //! Responses use the `{data}` envelopes; errors are `{error, code}`.
 
+pub(crate) mod api;
+mod attempt;
+mod build;
+mod forge;
+mod harvest;
+mod identity;
+pub mod jobs;
+mod llm;
 mod price;
+mod review;
+pub mod runner;
+mod sessions;
+mod steps;
+mod store;
 mod usage;
 
 use axum::{
@@ -27,13 +44,54 @@ use serde_json::json;
 use crate::auth::Claims;
 use crate::state::AppState;
 
+pub use api::{
+    CreateDataset, CreateRun, DatasetSummary, DatasetView, HarnessList, ModelView, OriginalView,
+    Progress, ResultView, ReviewBody, RunSummary, RunView, SessionList, TaskView,
+};
 pub use price::{PriceRequest, PricedTokens};
+pub use sessions::{Harness, Ineligible, SessionSummary};
+pub use store::RunModel;
 pub use usage::{AttemptUsage, UsageParams};
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/evals/usage", get(get_usage))
         .route("/evals/price", post(post_price))
+        .route("/evals/harnesses", get(api::list_harnesses))
+        .route("/evals/harnesses/{id}/sessions", get(api::list_sessions))
+        .route(
+            "/evals/datasets",
+            get(api::list_datasets).post(api::create_dataset),
+        )
+        .route(
+            "/evals/datasets/{id}",
+            get(api::get_dataset).delete(api::delete_dataset),
+        )
+        .route("/evals/datasets/{id}/runs", post(api::create_run))
+        .route("/evals/tasks/{id}", get(api::get_task))
+        .route("/evals/tasks/{id}/review", post(api::review_task))
+        .route(
+            "/evals/specs/{owner}/{repo}",
+            get(api::get_spec).put(api::put_spec),
+        )
+        .route("/evals/runs", get(api::list_runs))
+        .route(
+            "/evals/runs/{id}",
+            get(api::get_run).delete(api::delete_run),
+        )
+        .route("/evals/runs/{id}/cancel", post(api::cancel_run))
+        .route(
+            "/evals/runs/{id}/attempts/{attempt_id}",
+            get(api::get_attempt),
+        )
+}
+
+/// Starts the eval worker when this server runs evals. The composition root installs the
+/// batch runner first (`runner`).
+pub fn spawn_worker(state: &AppState) {
+    if state.config.evals.enabled {
+        jobs::spawn_worker(state.clone());
+    }
 }
 
 /// A failed request: status, stable machine slug, human message.

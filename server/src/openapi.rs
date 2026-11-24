@@ -139,6 +139,22 @@ use crate::state::AppState;
         crate::observability::routes::agent_logs_stream,
         crate::evals::get_usage,
         crate::evals::post_price,
+        crate::evals::api::list_harnesses,
+        crate::evals::api::list_sessions,
+        crate::evals::api::create_dataset,
+        crate::evals::api::list_datasets,
+        crate::evals::api::get_dataset,
+        crate::evals::api::delete_dataset,
+        crate::evals::api::get_task,
+        crate::evals::api::review_task,
+        crate::evals::api::get_spec,
+        crate::evals::api::put_spec,
+        crate::evals::api::create_run,
+        crate::evals::api::list_runs,
+        crate::evals::api::get_run,
+        crate::evals::api::get_attempt,
+        crate::evals::api::cancel_run,
+        crate::evals::api::delete_run,
     ),
     components(schemas(
         crate::secrets::routes::SecretEntry,
@@ -330,6 +346,24 @@ use crate::state::AppState;
         crate::evals::PriceEnvelope,
         crate::evals::PriceRequest,
         crate::evals::PricedTokens,
+        crate::evals::HarnessList,
+        crate::evals::Harness,
+        crate::evals::SessionList,
+        crate::evals::SessionSummary,
+        crate::evals::Ineligible,
+        crate::evals::CreateDataset,
+        crate::evals::DatasetView,
+        crate::evals::DatasetSummary,
+        crate::evals::TaskView,
+        crate::evals::OriginalView,
+        crate::evals::ModelView,
+        crate::evals::Progress,
+        crate::evals::ReviewBody,
+        crate::evals::CreateRun,
+        crate::evals::RunView,
+        crate::evals::RunSummary,
+        crate::evals::ResultView,
+        crate::evals::RunModel,
         EmptyEnvelope,
     )),
     tags(
@@ -343,7 +377,7 @@ use crate::state::AppState;
         (name = "llm-router", description = "LLM routing presets, provider/model catalog, and tier→model registry"),
         (name = "context-selection", description = "Per-user chat-history selection preferences: strategy, PACMS budget tier, the on/off switch, a dry-run preview, and settings-change history"),
         (name = "coding-agents", description = "The progress local clients report while they bring in the caller's coding agents"),
-        (name = "evals", description = "Replay evals: what each attempt of a run cost through the router, and the same price book for token counts it never saw"),
+        (name = "evals", description = "Replay evals: coding sessions become a private benchmark (datasets of verified tasks), replayed on the caller's LLM configs and graded, each attempt costed by the router"),
         (name = "settings", description = "Workspace-wide settings, including the Optimization tiers a user's PACMS budget level resolves against"),
     ),
 )]
@@ -395,5 +429,7 @@ mod tests {
         assert!(json.contains("/api/observability/coding-agents/usage"));
         assert!(json.contains("/api/evals/usage"));
         assert!(json.contains("/api/evals/price"));
+        assert!(json.contains("/api/evals/datasets/{id}/runs"));
+        assert!(json.contains("/api/evals/harnesses/{id}/sessions"));
     }
 }

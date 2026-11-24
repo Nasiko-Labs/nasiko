@@ -134,6 +134,11 @@ pub struct AppState {
     pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
+    /// Runs replay evals' containers. Refuses every job until the composition root installs a
+    /// backend (`evals::runner`).
+    pub batch_runner: Arc<crate::evals::runner::SwappableBatchRunner>,
+    /// Wakes the eval worker when a job is enqueued (`evals::jobs`).
+    pub eval_jobs: Arc<tokio::sync::Notify>,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
     /// HITL persistence (`hitl_requests`) — detection, human-facing API, and the resume
@@ -155,6 +160,11 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Whether agent messages carry the current date and time (`AGENT_CONTEXT_CURRENT_TIME`).
+    pub fn agent_clock(&self) -> nasiko_types::agent_clock::AgentClock {
+        nasiko_types::agent_clock::AgentClock::new(self.config.agent_current_time)
+    }
+
     /// Handle over hot Postgres rows and the cold Lance tier (docs/LAKEHOUSE_TRD.md),
     /// tiering behind this state's `tiering_hold`. Cheap: a pool clone plus config;
     /// readers merging both tiers build one per call.
@@ -516,6 +526,10 @@ impl AppState {
             history_embedding_cache,
             observability,
             github_svc,
+            batch_runner: Arc::new(crate::evals::runner::SwappableBatchRunner::unavailable(
+                "no container backend runs batch jobs on this server (EVAL_ENABLED is off)",
+            )),
+            eval_jobs: Arc::new(tokio::sync::Notify::new()),
             build_tx,
             hitl_store,
             hitl_resume_tx,

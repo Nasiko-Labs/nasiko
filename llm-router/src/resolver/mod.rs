@@ -912,8 +912,9 @@ const EVAL_INTEGRATION: &str = "eval";
 
 /// Resolve a replay-eval attempt's call on the config its token names. Only the `eval`
 /// coding-agent identity may do this, and only with one of its owner's own configs: anything
-/// else is refused, never served on another config. The identity's own pin is ignored, since
-/// the attempt's config decides the model; the config's pin holds as usual.
+/// else is refused, never served on another config. The identity's own pin is ignored and the
+/// config's model is pinned: an attempt measures that one model, so neither tier routing nor a
+/// fallback may stand in for it.
 pub async fn resolve_eval(
     store: &dyn RegistryStore,
     cache: &ConfigCache,
@@ -945,6 +946,13 @@ pub async fn resolve_eval(
         .ok_or_else(|| {
             GatewayError::Forbidden("the eval attempt's config is not the owner's".into())
         })?;
+    // An attempt measures one model: the config's own model, pinned, so tier routing never
+    // moves it and a fallback never stands in for it.
+    let mut config = config;
+    if let Some(model) = config.model.clone() {
+        config.pinned = true;
+        config.pinned_model = Some(model);
+    }
     agent_result.config = Some(config);
     agent_result.agent_pinned_model = None;
     resolve_loaded(store, cfg, agent_id, subject, hint, agent_result).await
@@ -1990,8 +1998,9 @@ mod tests {
             ("anthropic", "claude-sonnet-5-5")
         );
         assert_eq!(
-            r.pinned_model, None,
-            "the identity's own pin does not apply"
+            r.pinned_model.as_deref(),
+            Some("claude-sonnet-5-5"),
+            "the config's model is pinned, not the identity's gpt-4o"
         );
 
         let not_owned = resolve_eval(

@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
+mod evals;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
+pub use evals::EvalsConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// Model for a platform task call (selector, titles, capability generation, MCP
@@ -218,6 +220,8 @@ pub struct Config {
     pub coding_agent_otlp_endpoint: Option<String>,
     /// Rate, concurrency and Tempo-age limits on coding-agent telemetry ingest.
     pub coding_agent_ingest: CodingAgentIngestConfig,
+    /// Replay evals run by this server (`EVAL_*`).
+    pub evals: EvalsConfig,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -499,6 +503,10 @@ pub struct Config {
     /// Turn it on only where every such user is trusted, e.g. an on-prem
     /// install whose external agents live on internal hosts.
     pub agent_allow_private_urls: bool,
+    /// Whether every new message the platform hands an agent carries the current date and time
+    /// as its own text part (`AGENT_CONTEXT_CURRENT_TIME`, default on;
+    /// `nasiko_types::agent_clock`). Off sends agent messages exactly as before.
+    pub agent_current_time: bool,
     // ─── OIDC SSO ───────────────────────────────────────────────────────────
     pub oidc_issuer_url: Option<String>,
     pub oidc_client_id: Option<String>,
@@ -903,6 +911,7 @@ impl Config {
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             coding_agent_ingest: CodingAgentIngestConfig::from_env(),
+            evals: EvalsConfig::from_env(),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -1034,6 +1043,7 @@ impl Config {
                 .filter(|s| !s.is_empty())
                 .collect(),
             agent_allow_private_urls: env_bool("AGENT_ALLOW_PRIVATE_URLS", false),
+            agent_current_time: env_bool("AGENT_CONTEXT_CURRENT_TIME", true),
             oidc_issuer_url: std::env::var("OIDC_ISSUER_URL")
                 .ok()
                 .filter(|s| !s.is_empty()),
@@ -1271,7 +1281,7 @@ fn wake_budget_secs(startup_budget_secs: u64, call_timeout_secs: u64) -> u64 {
 /// base URL, for callers that append their own `/v1/...` path segment.
 ///
 /// `OPENAI_BASE_URL` is commonly written *with* the `/v1` — that is how
-/// `cp.nasiko.dev` and typical deployment env files have it — so appending `/v1/whatever`
+/// `cp.app.nasiko.com` and typical deployment env files have it — so appending `/v1/whatever`
 /// to the raw value doubles up into `.../v1/v1/whatever`, which 404s.
 ///
 /// Deliberately a free function rather than normalization applied to
@@ -1480,10 +1490,10 @@ mod registry_alias_tests {
     fn aliases_drop_blanks_and_the_registry_itself() {
         assert_eq!(
             registry_aliases(
-                " free.nasiko.dev , ,free.app.nasiko.com",
+                " free.old.example , ,free.app.nasiko.com",
                 "free.app.nasiko.com"
             ),
-            vec!["free.nasiko.dev"]
+            vec!["free.old.example"]
         );
         assert!(registry_aliases("", "free.app.nasiko.com").is_empty());
     }
@@ -1511,10 +1521,10 @@ mod tests {
     #[test]
     fn origin_of_keeps_scheme_and_host_only() {
         assert_eq!(
-            super::origin_of("https://acme.nasiko.dev/app?x=1"),
-            Some("https://acme.nasiko.dev".to_string())
+            super::origin_of("https://acme.app.nasiko.com/app?x=1"),
+            Some("https://acme.app.nasiko.com".to_string())
         );
-        assert_eq!(super::origin_of("acme.nasiko.dev"), None);
+        assert_eq!(super::origin_of("acme.app.nasiko.com"), None);
         assert_eq!(super::origin_of("https:///app"), None);
     }
 
@@ -1668,7 +1678,7 @@ mod tests {
 
     #[test]
     fn base_url_written_with_v1_is_stripped() {
-        // The cp.nasiko.dev form — appending `/v1/audio/transcriptions` to the
+        // The cp.app.nasiko.com form — appending `/v1/audio/transcriptions` to the
         // raw value produced `.../v1/v1/audio/transcriptions` and 404'd.
         assert_eq!(
             openai_base_url_without_v1("https://api.openai.com/v1"),
