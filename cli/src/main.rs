@@ -81,7 +81,7 @@ const HELP_TEXT: &str = "\
   registry   Connect to and browse the artifact registry
 
 \x1b[33mEvals:\x1b[0m
-  eval       Replay finished coding tasks on other models (harvest/build/screen/run/report)
+  eval       Replay finished coding tasks on other models (sessions/datasets/runs/report; `local` on this machine)
 
 \x1b[33mMCP:\x1b[0m
   mcp        MCP Gateway — connectors, connections, sharing, credentials, oauth, agent-tools
@@ -483,12 +483,14 @@ impl<W: std::io::Write> std::io::Write for IgnoreBrokenPipe<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nasiko::EvalLocalCommands;
 
     #[test]
-    fn parses_eval_harvest_and_tasks() {
+    fn parses_local_eval_harvest_and_tasks() {
         let cli = Cli::try_parse_from([
             "nasiko",
             "eval",
+            "local",
             "harvest",
             "--repo",
             "/r",
@@ -498,32 +500,93 @@ mod tests {
         ])
         .unwrap();
         let Commands::Eval(EvalCommands::Eval {
-            command: EvalSubCommands::Harvest {
-                repo, since, redo, ..
-            },
+            command:
+                EvalSubCommands::Local {
+                    command:
+                        EvalLocalCommands::Harvest {
+                            repo, since, redo, ..
+                        },
+                },
         }) = cli.command
         else {
-            panic!("expected eval harvest");
+            panic!("expected eval local harvest");
         };
         assert_eq!(repo, std::path::PathBuf::from("/r"));
         assert_eq!(since.map(|d| d.to_string()).as_deref(), Some("2026-11-01"));
         assert!(redo);
 
-        let cli = Cli::try_parse_from(["nasiko", "eval", "tasks", "--status", "candidate", "-j"])
-            .unwrap();
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "eval",
+            "local",
+            "tasks",
+            "--status",
+            "candidate",
+            "-j",
+        ])
+        .unwrap();
         assert!(matches!(
             cli.command,
             Commands::Eval(EvalCommands::Eval {
-                command: EvalSubCommands::Tasks {
-                    status: Some(nasiko_evals::TaskStatus::Candidate),
-                    json: true
+                command: EvalSubCommands::Local {
+                    command: EvalLocalCommands::Tasks {
+                        status: Some(nasiko_evals::TaskStatus::Candidate),
+                        json: true
+                    }
                 }
             })
         ));
         assert!(
-            Cli::try_parse_from(["nasiko", "eval", "tasks", "--status", "done"]).is_err(),
+            Cli::try_parse_from(["nasiko", "eval", "local", "tasks", "--status", "done"]).is_err(),
             "unknown status is refused"
         );
+    }
+
+    #[test]
+    fn parses_cluster_eval_commands() {
+        let cli = Cli::try_parse_from([
+            "nasiko",
+            "eval",
+            "runs",
+            "create",
+            "--dataset",
+            "d1",
+            "--model",
+            "opus",
+            "--model",
+            "haiku",
+            "--attempts",
+            "2",
+            "--wait",
+        ])
+        .unwrap();
+        let Commands::Eval(EvalCommands::Eval {
+            command:
+                EvalSubCommands::Runs {
+                    command:
+                        nasiko::EvalRunCommands::Create {
+                            dataset,
+                            models,
+                            attempts,
+                            wait,
+                            tasks,
+                        },
+                },
+        }) = cli.command
+        else {
+            panic!("expected eval runs create");
+        };
+        assert_eq!(dataset, "d1");
+        assert_eq!(models, vec!["opus", "haiku"]);
+        assert_eq!((attempts, wait, tasks.len()), (2, true, 0));
+        assert!(
+            Cli::try_parse_from(["nasiko", "eval", "runs", "create", "--dataset", "d1"]).is_err(),
+            "a run names at least one model"
+        );
+        assert!(
+            Cli::try_parse_from(["nasiko", "eval", "datasets", "create", "--limit", "5"]).is_ok()
+        );
+        assert!(Cli::try_parse_from(["nasiko", "eval", "tasks", "d1"]).is_ok());
     }
 
     #[test]

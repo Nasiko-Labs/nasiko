@@ -9,6 +9,7 @@ pub mod gateway;
 pub mod git;
 pub mod harvest;
 pub mod llm;
+pub mod remote;
 pub mod report;
 pub mod router;
 pub mod run;

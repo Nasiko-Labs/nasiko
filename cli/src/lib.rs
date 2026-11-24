@@ -1177,9 +1177,144 @@ pub enum SkillCommands {
     },
 }
 
-/// `nasiko eval` subcommands.
+/// `nasiko eval` subcommands: replay evals the cluster runs (`/api/evals/*`).
 #[derive(Subcommand)]
 pub enum EvalSubCommands {
+    /// Your connected coding harnesses
+    Harnesses {
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// A harness's newest sessions, each marked usable for evals or why not
+    Sessions {
+        #[arg(long, default_value = "claude")]
+        harness: String,
+        #[arg(long, default_value_t = 20)]
+        limit: i64,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Datasets: tasks built from your sessions
+    Datasets {
+        #[command(subcommand)]
+        command: EvalDatasetCommands,
+    },
+    /// A dataset's tasks
+    Tasks {
+        dataset: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Decide a task no reviewer model could judge (scores 0 = good … 3 = bad)
+    Review {
+        task: String,
+        #[arg(long)]
+        clarity: u8,
+        #[arg(long)]
+        validity: u8,
+        /// `<15 min fix`, `15 min - 1 hour`, `1-4 hours` or `>4 hours`
+        #[arg(long)]
+        effort: String,
+        /// Anything else wrong with the task (repeatable)
+        #[arg(long = "problem")]
+        problems: Vec<String>,
+    },
+    /// Runs: tasks replayed on your models
+    Runs {
+        #[command(subcommand)]
+        command: EvalRunCommands,
+    },
+    /// A run's report
+    Report {
+        run: String,
+        /// text, json or md
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// The pipeline on this machine: local Claude Code logs, local git and Docker
+    Local {
+        #[command(subcommand)]
+        command: EvalLocalCommands,
+    },
+}
+
+/// `nasiko eval datasets` subcommands.
+#[derive(Subcommand)]
+pub enum EvalDatasetCommands {
+    /// Build a dataset from sessions (repositories come from the sessions; GitHub must be connected)
+    Create {
+        #[arg(long, default_value = "claude")]
+        harness: String,
+        /// Session ids (repeatable); default: the newest usable sessions
+        #[arg(long = "session")]
+        sessions: Vec<String>,
+        /// How many of the newest usable sessions, when no --session is given
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// LLM config (name or id) that rewrites requests as issues
+        #[arg(long)]
+        rewriter: Option<String>,
+        /// LLM configs (name or id) that screen tasks (repeatable)
+        #[arg(long = "reviewer")]
+        reviewers: Vec<String>,
+        /// Runs of each gate set-up, to catch flaky tests
+        #[arg(long)]
+        gate_runs: Option<i32>,
+        /// Wait until the dataset is ready
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Your datasets
+    Ls,
+    /// One dataset: status, tasks, models to test
+    Show {
+        id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Delete a dataset and its runs
+    Rm { id: String },
+}
+
+/// `nasiko eval runs` subcommands.
+#[derive(Subcommand)]
+pub enum EvalRunCommands {
+    /// Replay tasks on models
+    Create {
+        #[arg(long)]
+        dataset: String,
+        /// Task ids (repeatable); default: every verified task
+        #[arg(long = "task")]
+        tasks: Vec<String>,
+        /// LLM configs to test, by name or id (repeatable)
+        #[arg(long = "model", required = true)]
+        models: Vec<String>,
+        #[arg(long, default_value_t = 1)]
+        attempts: i32,
+        /// Wait until the run is done, then print its report
+        #[arg(long)]
+        wait: bool,
+    },
+    /// Your runs
+    Ls {
+        #[arg(long)]
+        dataset: Option<String>,
+    },
+    /// One run: status and each attempt
+    Show {
+        id: String,
+        #[arg(short = 'j', long)]
+        json: bool,
+    },
+    /// Stop a run: no new attempt starts
+    Cancel { id: String },
+    /// Delete a finished or cancelled run
+    Rm { id: String },
+}
+
+/// `nasiko eval local` subcommands: the pipeline run on this machine (local git, Docker, `~/.nasiko/eval`).
+#[derive(Subcommand)]
+pub enum EvalLocalCommands {
     /// Create ~/.nasiko/eval/ and a default config.json
     Init,
     /// Turn finished Claude Code sessions of a repo into candidate tasks
@@ -1929,10 +2064,67 @@ pub fn dispatch_agent_ops(cmd: AgentOpsCommands) -> Result<()> {
 }
 
 pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
+    use commands::eval::remote;
+    match cmd {
+        EvalSubCommands::Harnesses { json } => remote::harnesses(json),
+        EvalSubCommands::Sessions {
+            harness,
+            limit,
+            json,
+        } => remote::sessions(&harness, limit, json),
+        EvalSubCommands::Datasets { command } => match command {
+            EvalDatasetCommands::Create {
+                harness,
+                sessions,
+                limit,
+                rewriter,
+                reviewers,
+                gate_runs,
+                wait,
+            } => remote::create_dataset(&remote::NewDataset {
+                harness,
+                sessions,
+                limit,
+                rewriter,
+                reviewers,
+                gate_runs,
+                wait,
+            }),
+            EvalDatasetCommands::Ls => remote::list_datasets(),
+            EvalDatasetCommands::Show { id, json } => remote::show_dataset(&id, json),
+            EvalDatasetCommands::Rm { id } => remote::delete_dataset(&id),
+        },
+        EvalSubCommands::Tasks { dataset, json } => remote::show_dataset(&dataset, json),
+        EvalSubCommands::Review {
+            task,
+            clarity,
+            validity,
+            effort,
+            problems,
+        } => remote::review(&task, clarity, validity, &effort, problems),
+        EvalSubCommands::Runs { command } => match command {
+            EvalRunCommands::Create {
+                dataset,
+                tasks,
+                models,
+                attempts,
+                wait,
+            } => remote::create_run(&dataset, &tasks, &models, attempts, wait),
+            EvalRunCommands::Ls { dataset } => remote::list_runs(dataset.as_deref()),
+            EvalRunCommands::Show { id, json } => remote::show_run(&id, json),
+            EvalRunCommands::Cancel { id } => remote::cancel_run(&id),
+            EvalRunCommands::Rm { id } => remote::delete_run(&id),
+        },
+        EvalSubCommands::Report { run, format } => remote::report(&run, &format),
+        EvalSubCommands::Local { command } => dispatch_eval_local(command),
+    }
+}
+
+pub fn dispatch_eval_local(cmd: EvalLocalCommands) -> Result<()> {
     use commands::eval;
     match cmd {
-        EvalSubCommands::Init => eval::init(),
-        EvalSubCommands::Harvest {
+        EvalLocalCommands::Init => eval::init(),
+        EvalLocalCommands::Harvest {
             repo,
             since,
             log_dir,
@@ -1949,18 +2141,18 @@ pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
                 eval::Redo::Skip
             },
         }),
-        EvalSubCommands::Tasks { status, json } => eval::tasks(status, json),
-        EvalSubCommands::Spec {
+        EvalLocalCommands::Tasks { status, json } => eval::tasks(status, json),
+        EvalLocalCommands::Spec {
             command: EvalSpecCommands::Detect { repo },
         } => eval::spec_detect(&repo),
-        EvalSubCommands::Build { only, runs } => eval::build(&eval::BuildArgs { only, runs }),
-        EvalSubCommands::Clean { label } => eval::clean(label.as_deref()),
-        EvalSubCommands::Rewrite { only } => eval::rewrite(&only),
-        EvalSubCommands::Screen => eval::screen_tasks(),
-        EvalSubCommands::Review => eval::review(),
-        EvalSubCommands::Freeze { name } => eval::freeze(&name),
-        EvalSubCommands::Export { dataset } => eval::export(&dataset),
-        EvalSubCommands::Run {
+        EvalLocalCommands::Build { only, runs } => eval::build(&eval::BuildArgs { only, runs }),
+        EvalLocalCommands::Clean { label } => eval::clean(label.as_deref()),
+        EvalLocalCommands::Rewrite { only } => eval::rewrite(&only),
+        EvalLocalCommands::Screen => eval::screen_tasks(),
+        EvalLocalCommands::Review => eval::review(),
+        EvalLocalCommands::Freeze { name } => eval::freeze(&name),
+        EvalLocalCommands::Export { dataset } => eval::export(&dataset),
+        EvalLocalCommands::Run {
             dataset,
             models,
             attempts,
@@ -1977,7 +2169,7 @@ pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
                 eval::run::BuilderPolicy::Refuse
             },
         }),
-        EvalSubCommands::Report { run, format } => {
+        EvalLocalCommands::Report { run, format } => {
             let format = match format.as_str() {
                 "text" => eval::report::Format::Text,
                 "json" => eval::report::Format::Json,
@@ -1986,7 +2178,7 @@ pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
             };
             eval::report_run(&run, format)
         }
-        EvalSubCommands::Costs { run } => eval::costs(&run),
+        EvalLocalCommands::Costs { run } => eval::costs(&run),
     }
 }
 
