@@ -86,6 +86,14 @@ fn delegation_audience_from_env() -> String {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: String,
+    /// How long a stopping server keeps serving after it starts answering `/ready` with 503, from
+    /// `SERVER_DRAIN_DELAY_SECS`, default `5`, clamped 0..=60: time for the load balancer to stop
+    /// sending it requests before it stops accepting them.
+    pub shutdown_drain_delay_secs: u64,
+    /// Then how long requests already in flight get to finish before the process exits, from
+    /// `SERVER_SHUTDOWN_GRACE_SECS`, default `60`, clamped 0..=3600. Keep the pod's termination
+    /// grace period above this plus the drain delay, or the kubelet kills it first.
+    pub shutdown_grace_secs: u64,
     pub domain: Option<String>,
     /// Audience string this control plane stamps into, and requires on,
     /// delegated tokens (ui/docs/adr/0001a). It is this deployment's public
@@ -807,6 +815,8 @@ impl Config {
         let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
+            shutdown_drain_delay_secs: env_parse("SERVER_DRAIN_DELAY_SECS", 5).clamp(0, 60),
+            shutdown_grace_secs: env_parse("SERVER_SHUTDOWN_GRACE_SECS", 60).clamp(0, 3600),
             domain: std::env::var("CP_DOMAIN").ok(),
             delegation_audience: delegation_audience_from_env(),
             delegation_enabled: std::env::var("DELEGATION_ENABLED")

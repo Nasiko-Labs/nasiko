@@ -26,6 +26,27 @@ fn s3_endpoint() -> String {
     std::env::var("TEST_S3_ENDPOINT").unwrap_or_else(|_| "http://localhost:9000".into())
 }
 
+/// Rate limits are counted in Redis, which every test server shares, so without this a test
+/// would start on whatever budget the tests before it spent (30 logins a minute, run-wide).
+async fn clear_rate_limits(redis: &nasiko_redis::SharedRedis) {
+    let mut connection = redis
+        .connection()
+        .await
+        .expect("connect to redis — is it running? (set TEST_REDIS_URL to override)");
+    let keys: Vec<String> = redis::cmd("KEYS")
+        .arg("nasiko:rl:*")
+        .query_async(&mut connection)
+        .await
+        .expect("list rate-limit keys");
+    if !keys.is_empty() {
+        let () = redis::cmd("DEL")
+            .arg(keys)
+            .query_async(&mut connection)
+            .await
+            .expect("clear rate-limit keys");
+    }
+}
+
 // ─── FakeRuntime ─────────────────────────────────────────────────────────────
 
 /// No-op ContainerRuntime for integration tests.
@@ -733,6 +754,7 @@ impl TestServer {
             sandbox.clone(),
         )
         .await;
+        clear_rate_limits(&state.redis).await;
         let flow_events = state.flow_events.clone();
         let genai_metrics = state.genai_metrics.clone();
         let handle_state = state.clone();
@@ -832,6 +854,7 @@ impl TestServer {
             sandbox.clone(),
         )
         .await;
+        clear_rate_limits(&state.redis).await;
         if let Some(spend_gate) = spend_gate {
             state.spend_gate = spend_gate;
         }
@@ -918,6 +941,8 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
 
     Config {
         bind: "127.0.0.1:0".into(),
+        shutdown_drain_delay_secs: 0,
+        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,

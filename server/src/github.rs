@@ -937,7 +937,7 @@ async fn github_clone(
     }
 
     // Notify build worker and seed upload_status with the real agent_id immediately.
-    let _ = state.build_tx.send(()).await;
+    state.wake_build_worker().await;
     set_upload_status(
         &state.db,
         &upload_id,

@@ -199,7 +199,7 @@ pub async fn upload_status(
         .into_response())
 }
 
-/// DELETE …/blobs/uploads/:uuid — abandon a session and free its buffer now.
+/// DELETE …/blobs/uploads/:uuid — abandon a session and remove its staged chunks now.
 pub async fn cancel_upload(
     State(state): State<OciState>,
     writer: Writer,

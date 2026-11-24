@@ -41,10 +41,10 @@ impl EventStore {
     /// Erases one recorded session now, under the tiering lock. `Ok(false)` when
     /// tiering holds the lock or no request is recorded (the worker retries pending ones).
     pub async fn erase_session(&self, session_id: &str) -> Result<bool> {
-        let mut lock_conn = self.db.acquire().await?;
+        let mut lock_conn = self.tiering_lock_connection().await?;
         let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(TIERING_LOCK)
-            .fetch_one(&mut *lock_conn)
+            .fetch_one(&mut lock_conn)
             .await?;
         if !got {
             return Ok(false);
@@ -69,7 +69,7 @@ impl EventStore {
         .await;
         sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(TIERING_LOCK)
-            .execute(&mut *lock_conn)
+            .execute(&mut lock_conn)
             .await?;
         res
     }

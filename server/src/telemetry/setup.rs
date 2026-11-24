@@ -104,10 +104,17 @@ impl TelemetryConfig {
 /// If no OTLP endpoint is configured, only local tracing-subscriber is set up.
 /// Call `error_reporting::init` first: its Sentry layer joins here only if it is on.
 pub fn init_telemetry(config: &TelemetryConfig) {
+    // `service.instance.id` keeps each replica's metric series apart: without it two replicas
+    // export the same series, the collector keeps one, and a sum across replicas (the agent
+    // autoscaler's in-flight count, the server's own) reads one replica's share.
     let resource = Resource::builder()
         .with_attributes([
             KeyValue::new("service.name", config.service_name.clone()),
             KeyValue::new("service.version", env!("CARGO_PKG_VERSION")),
+            KeyValue::new(
+                "service.instance.id",
+                crate::coding::turn::replica_id().to_owned(),
+            ),
         ])
         .build();
 

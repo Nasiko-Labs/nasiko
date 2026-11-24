@@ -24,6 +24,7 @@ members = [
     "oci",
     "flow",
     "redis",
+    "leader",
     "hitl",
     "agent-proxy",
     "llm-router",
@@ -49,6 +50,7 @@ nasiko-event-store = { path = "event-store" }
 nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-redis = { path = "redis" }
+nasiko-leader = { path = "leader" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
@@ -80,7 +82,7 @@ axum = { version = "0.8", features = ["json", "query", "multipart", "ws"] }
 tower = "0.5"
 # Already in the tree through axum; named for the server's own accept loop (`nasiko_server::serve`).
 hyper = { version = "1", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "server-graceful", "service", "http1", "http2"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "decompression-zstd"] }
 
 # ─── OpenAPI docs ───────────────────────────────────────────────────────────
@@ -238,6 +240,7 @@ anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
 http = "1"
+http-body = "1"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }

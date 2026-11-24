@@ -82,7 +82,7 @@ async fn authenticate_agent(
         }
     };
     // Charged as soon as the caller is known, before the flow and user lookups it would cost.
-    if let Err(retry_after) = limiter.check(&format!("agent:{caller}")) {
+    if let Err(retry_after) = limiter.check(&format!("agent:{caller}")).await {
         return Err(crate::rate_limit::too_many_requests_after(retry_after));
     }
     // 403 unless the traceparent names a live flow this agent participates in.
