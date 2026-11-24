@@ -35,6 +35,10 @@ describe('Evals (docs/superpowers/specs/2026-11-23-evals-design.md)', () => {
     await userEvent.click(screen.getByRole('button', { name: copy.generate(1) }))
 
     const dataset = await screen.findByRole('region', { name: copy.dataset.title }, T)
+    // It appears below the session list, out of sight of the button: its heading takes focus (and the view).
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: copy.dataset.title })).toHaveFocus(),
+    )
     // Tasks start ticked, and the models the session used.
     const models = within(dataset)
       .getAllByRole('checkbox')
@@ -46,6 +50,9 @@ describe('Evals (docs/superpowers/specs/2026-11-23-evals-design.md)', () => {
     await userEvent.click(within(dataset).getByRole('button', { name: copy.run }))
 
     const results = await screen.findByRole('region', { name: copy.results.title }, T)
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: copy.results.title })).toHaveFocus(),
+    )
     const table = within(results).getByRole('table')
     // A task column plus one per picked model.
     expect(within(table).getAllByRole('columnheader')).toHaveLength(used.length + 2)
