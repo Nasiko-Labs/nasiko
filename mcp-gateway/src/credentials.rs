@@ -15,7 +15,6 @@ use uuid::Uuid;
 
 use crate::error::{McpError, Result};
 use crate::oauth;
-use crate::provider::GenericMcpProvider;
 use crate::provider::generic::LIST_TIMEOUT;
 use crate::repo::{self, McpConnector, McpUserConnection};
 use crate::state::McpState;
@@ -238,9 +237,14 @@ pub async fn verify_connector_live(
         }
     };
 
-    let provider =
-        GenericMcpProvider::new(state.guarded_http_client.clone(), state.http_client.clone());
-    match provider.list_tools(&cfg, LIST_TIMEOUT, None).await {
+    // The same clients a real call uses: guarded for a member's URL, and for an uploaded
+    // server, one that follows no redirect off its own origin.
+    match state
+        .providers
+        .mcp
+        .list_tools(&cfg, LIST_TIMEOUT, None)
+        .await
+    {
         Ok(_) => VerifyOutcome {
             verified: true,
             error: None,
