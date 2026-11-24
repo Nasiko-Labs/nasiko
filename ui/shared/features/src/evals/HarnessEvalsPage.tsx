@@ -7,7 +7,7 @@
  */
 import { Link } from '@tanstack/react-router'
 import { Star } from 'lucide-react'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { errorCode } from '@nasiko/data-access/detect'
 import { PageHeader } from '@nasiko/ui/composites/page-header'
@@ -55,8 +55,7 @@ function Section({
       className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4"
     >
       <div>
-        {/* Focusable from script only: a finished step moves focus here (`reveal`). */}
-        <h2 id={id} tabIndex={-1} className="text-base font-semibold outline-none">
+        <h2 id={id} className="text-base font-semibold">
           {title}
         </h2>
         {hint ? <p className="text-sm text-muted-foreground">{hint}</p> : null}
@@ -110,29 +109,16 @@ export function HarnessEvalsPage({ harness }: { harness: string }) {
   const stale =
     !!ran && (key(ran.task_ids) !== key(picks.tasks) || key(ran.model_ids) !== key(picks.models))
 
-  // A finished Generate or Run shows its section below a long list, out of sight of the button that made it, so the
-  // section's heading takes the view and focus (as /optimization#settings does). A new object per success, so a
-  // second run moves there again; nothing else moves the page.
-  const [reveal, setReveal] = useState<{ id: string } | null>(null)
-  useEffect(() => {
-    if (!reveal) return
-    const h = document.getElementById(reveal.id)
-    h?.scrollIntoView({ block: 'start' })
-    h?.focus({ preventScroll: true })
-  }, [reveal])
-
   const onGenerate = () => {
     run.reset()
     generate.mutate(
       { harness, session_ids: ticked },
       {
-        onSuccess: (d) => {
+        onSuccess: (d) =>
           setPicks({
             tasks: d.tasks.map((t) => t.id),
             models: d.models.filter((m) => m.used).map((m) => m.id),
-          })
-          setReveal({ id: 'evals-dataset' })
-        },
+          }),
       },
     )
   }
@@ -251,10 +237,7 @@ export function HarnessEvalsPage({ harness }: { harness: string }) {
           running={run.isPending}
           failed={run.isError}
           onRun={() =>
-            run.mutate(
-              { datasetId: dataset.id, task_ids: picks.tasks, model_ids: picks.models },
-              { onSuccess: () => setReveal({ id: 'evals-results' }) },
-            )
+            run.mutate({ datasetId: dataset.id, task_ids: picks.tasks, model_ids: picks.models })
           }
         />
       ) : null}
