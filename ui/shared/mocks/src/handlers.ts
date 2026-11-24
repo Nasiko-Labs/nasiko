@@ -125,7 +125,7 @@ import { buildMcpState, mcpHandlers, type McpState } from './mcp'
 import { optimizationHandlers, resetOptimizationMock } from './optimization'
 import { buildWorkflowsState, workflowHandlers, type WorkflowsState } from './workflows'
 import { buildFlowsState, flowHandlers, type FlowsState } from './flows'
-import { evalsHandlers } from './evals'
+import { evalsHandlers, resetEvalsMock } from './evals'
 import { eventHandlers } from './events'
 import {
   AGENTS_ONBOARDING_VARIANTS,
@@ -321,6 +321,8 @@ export const MOCK_VARIANTS = [
   'flows-absent',
   // Evals (docs/superpowers/specs/2026-11-23-evals-design.md): a server without /api/evals (bare 404).
   'evals-absent',
+  // Evals: a viewer whose GitHub is not connected (sessions say so; building a dataset is refused).
+  'evals-github-off',
   // Agent hub (plans/feat-agent-centric.md DX mocks): the gate's dashboard read for one agent answers 404 "agent not
   // found" (not visible), 500, or 400 (unknown or deleted); every marker read fails; this agent has no savings row;
   // an agent with more builds in the window than the read returns; a server without the proposed event log.
@@ -710,6 +712,7 @@ export function resetAgentsMock() {
   assessmentBookings = []
   codingAgentsState = null
   resetOptimizationMock()
+  resetEvalsMock()
   resetChatMock()
   resetOverviewMock()
   tryRunAt = {}
@@ -2145,6 +2148,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     loggedIn: () => loggedIn,
     unauthorized: () => unauthorized(),
     absent: () => hasVariant('evals-absent'),
+    githubOff: () => hasVariant('evals-github-off'),
     harnessSeed: () => harnessData(),
     viewerId: () => viewer().id,
   }),

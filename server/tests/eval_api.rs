@@ -534,6 +534,7 @@ async fn a_run_is_queued_shown_cancelled_and_deleted_by_its_owner_only() {
     let (status, body) = call(&server, dev, reqwest::Method::GET, "/api/evals/runs", None).await;
     assert_eq!(status, 200);
     assert_eq!(body["data"].as_array().unwrap().len(), 1);
+    assert_eq!(body["data"][0]["harness"], "claude");
     let (status, body) = call(
         &server,
         other,

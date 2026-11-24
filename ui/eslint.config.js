@@ -68,6 +68,8 @@ const PUBLIC = {
     // The agent hub's deploy markers (plans/feat-agent-centric.md eng): the agent's builds read and its record type.
     'api',
     'types',
+    // Evals reads sessions' repositories through GitHub, and connects it the way the GitHub tab does.
+    'github',
   ],
   // Flows (plans/feat-flows.md): the call model and its duration format (the flow narrative), and "Open flow" (F19).
   // The agent hub's Flows list reads the list query (plans/feat-agent-centric.md eng PUBLIC adds).

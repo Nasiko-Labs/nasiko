@@ -1033,6 +1033,8 @@ pub struct RunsQuery {
 pub struct RunSummary {
     pub id: Uuid,
     pub dataset_id: Uuid,
+    /// The dataset's harness, so a saved run links back to its page.
+    pub harness: String,
     pub status: String,
     pub models: Vec<RunModel>,
     pub created_at: DateTime<Utc>,
@@ -1048,6 +1050,14 @@ pub async fn list_runs(
 ) -> Response {
     let result: ApiResult<Response> = async {
         let user_id = user(&claims)?;
+        let harnesses: BTreeMap<Uuid, String> =
+            sqlx::query_as("SELECT id, harness FROM eval_datasets WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_all(&state.db)
+                .await
+                .map_err(internal)?
+                .into_iter()
+                .collect();
         let list: Vec<RunSummary> =
             store::users_runs(&state.db, user_id, query.dataset_id, MAX_LIST)
                 .await
@@ -1056,6 +1066,7 @@ pub async fn list_runs(
                 .map(|r| RunSummary {
                     id: r.id,
                     dataset_id: r.dataset_id,
+                    harness: harnesses.get(&r.dataset_id).cloned().unwrap_or_default(),
                     status: r.status,
                     models: r.models.0,
                     created_at: r.created_at,

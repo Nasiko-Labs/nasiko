@@ -18,7 +18,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@nasiko/ui/primitives/card'
-import { useEvalHarnesses } from './api'
+import { useEvalHarnesses, useEvalRuns } from './api'
 import { copy } from './copy'
 import { harnessName } from './logic'
 
@@ -90,8 +90,49 @@ export function EvalsPage() {
               </li>
             ))}
           </ul>
+          <SavedEvals />
         </>
       )}
     </div>
+  )
+}
+
+/** The viewer's runs, each reopening its comparison on its harness's page. */
+function SavedEvals() {
+  const q = useEvalRuns()
+  if (q.isPending || q.isError) return null
+  return (
+    <section aria-labelledby="evals-saved" className="flex flex-col gap-2">
+      <h2 id="evals-saved" className="text-base font-semibold">
+        {copy.saved.title}
+      </h2>
+      {!q.data.length ? (
+        <p className="text-sm text-muted-foreground">{copy.saved.none}</p>
+      ) : (
+        <ul className="flex flex-col divide-y divide-border rounded-xl border border-border bg-card">
+          {q.data.map((r) => {
+            const models = r.models.map((m) => m.name).join(', ')
+            return (
+              <li key={r.id}>
+                <Link
+                  to="/evals/$harness"
+                  params={{ harness: r.harness }}
+                  search={{ dataset: r.dataset_id, run: r.id }}
+                  aria-label={copy.saved.open(models)}
+                  className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                >
+                  <span className="min-w-0 truncate">
+                    {harnessName(r.harness)} · {models}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {copy.saved.status[r.status] ?? r.status} · {fmtShortDay(r.created_at)}
+                  </span>
+                </Link>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </section>
   )
 }
