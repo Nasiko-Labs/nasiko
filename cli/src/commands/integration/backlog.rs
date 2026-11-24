@@ -243,6 +243,7 @@ mod tests {
                     source_id: "s".into(),
                     title: None,
                     parent: None,
+                    place: None,
                 },
                 turn: CodingAgentTurn {
                     id: turn.into(),

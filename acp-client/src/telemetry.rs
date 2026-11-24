@@ -276,6 +276,7 @@ impl TurnTelemetry {
                 source_id: self.source_session_id.clone(),
                 title: None,
                 parent: None,
+                place: None,
             },
             turn,
             capture_policy: effective_policy,

@@ -853,6 +853,7 @@ mod tests {
                     source_id: session.into(),
                     title: None,
                     parent: None,
+                    place: None,
                 },
                 turn: CodingAgentTurn {
                     id: turn.into(),

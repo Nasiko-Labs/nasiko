@@ -391,6 +391,7 @@ fn read_transcript(payload: &HookPayload) -> Result<SessionSnapshot> {
         session_id: payload.session_id.clone(),
         turns: turns_from_lines(&content),
         parent: None,
+        place: super::super::place::from_claude_transcript(&content),
     })
 }
 
@@ -410,6 +411,7 @@ fn read_subagent(parent_session_id: &str, path: &Path) -> Result<SessionSnapshot
         |agent| subagent_session_id(parent_session_id, &format!("agent-{agent}")),
     );
     Ok(SessionSnapshot {
+        place: None,
         parent: subagent_parent(
             &session_id,
             &parent_id,
@@ -1798,6 +1800,7 @@ mod tests {
         assert_eq!(tool.association, CodingAgentToolAssociation::Turn);
         assert_eq!(tool.model_call_id, None);
         let snapshot = SessionSnapshot {
+            place: None,
             session_id: "s".into(),
             title: None,
             turns: vec![turn.clone()],

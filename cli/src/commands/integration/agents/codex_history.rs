@@ -296,6 +296,7 @@ fn parse_rollout(
             subagent_parent(&session_id, parent_id, None, None)
         });
     Ok(SessionSnapshot {
+        place: None,
         parent,
         title: known.titles.get(&session_id).cloned(),
         turns: turns

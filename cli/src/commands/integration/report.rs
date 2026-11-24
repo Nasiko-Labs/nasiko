@@ -234,6 +234,8 @@ fn canonical_event(
                 bounded_text_to(title, nasiko_types::CODING_AGENT_SESSION_TITLE_MAX_BYTES)
             }),
             parent: snapshot.parent.clone(),
+            // Local folders and branch names travel only with chat history, like the title.
+            place: snapshot.place.clone().filter(|_| capture_content),
         },
         turn: CodingAgentTurn {
             id: turn.uuid.clone(),
@@ -441,6 +443,7 @@ mod tests {
         let mut dirty = turn("a", true);
         dirty.prompt = "read\0this".into();
         let snapshot = SessionSnapshot {
+            place: None,
             session_id: "session".into(),
             title: Some("t\0".into()),
             turns: vec![dirty],
@@ -505,6 +508,7 @@ mod tests {
             principal_id: uuid::Uuid::new_v4(),
         };
         let snapshot = |ids: &[&str]| SessionSnapshot {
+            place: None,
             session_id: "session".into(),
             title: None,
             turns: ids.iter().map(|id| turn(id, true)).collect(),
@@ -573,6 +577,7 @@ mod tests {
         };
         let (server_1, server_2) = (server("https://one.example"), server("https://two.example"));
         let snapshot = SessionSnapshot {
+            place: None,
             session_id: "session".into(),
             title: None,
             turns: vec![turn("a", true), turn("b", true)],
@@ -694,6 +699,7 @@ mod tests {
             timestamp_quality: nasiko_types::CodingAgentTimestampQuality::Exact,
         });
         let session = SessionSnapshot {
+            place: None,
             session_id: "same".into(),
             title: Some("Claude session title".into()),
             turns: vec![turn.clone()],
@@ -732,6 +738,7 @@ mod tests {
     fn a_subagent_session_event_carries_its_parent_and_only_its_own_turn() {
         let child = turn("child-turn", true);
         let session = SessionSnapshot {
+            place: None,
             session_id: "parent:agent-a1".into(),
             title: None,
             turns: vec![child.clone()],

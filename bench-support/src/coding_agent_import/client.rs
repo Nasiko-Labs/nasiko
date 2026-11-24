@@ -452,6 +452,7 @@ fn oversized_event(agent_name: &str) -> CodingAgentEventV1 {
             source_id: source_id.into(),
             title: None,
             parent: None,
+            place: None,
         },
         turn: CodingAgentTurn {
             id: "turn-oversized".into(),

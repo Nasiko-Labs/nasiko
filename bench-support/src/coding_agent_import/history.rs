@@ -254,6 +254,7 @@ impl History {
                 source_id: plan.source_id.clone(),
                 title: None,
                 parent,
+                place: None,
             },
             turn: CodingAgentTurn {
                 id: turn_id(k),

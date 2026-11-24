@@ -5,7 +5,8 @@ use nasiko_types::coding_agent::{
     CODING_AGENT_ID_MAX_BYTES, CODING_AGENT_NAME_MAX_BYTES, CodingAgentSessionParent,
 };
 use nasiko_types::{
-    CodingAgentTimestampQuality, CodingAgentToolAssociation, CodingAgentToolCallStatus,
+    CodingAgentSessionPlace, CodingAgentTimestampQuality, CodingAgentToolAssociation,
+    CodingAgentToolCallStatus,
 };
 use serde_json::Value;
 
@@ -66,6 +67,8 @@ pub struct SessionSnapshot {
     /// The session that spawned this one, when it is a subagent's. Its turns are its own: they are never
     /// added into the parent's.
     pub parent: Option<CodingAgentSessionParent>,
+    /// Where the session ran (folder, branch, repository); sent only with chat history.
+    pub place: Option<CodingAgentSessionPlace>,
 }
 
 /// The link from subagent session `child_id` to the session `parent_id` that spawned it, kept to what

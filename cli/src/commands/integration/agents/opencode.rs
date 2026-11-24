@@ -163,6 +163,7 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
     });
     let messages = normalize_messages(payload.messages)?;
     Ok(SessionSnapshot {
+        place: None,
         session_id: payload.session_id,
         title: None,
         turns: turns_from_messages(&messages),

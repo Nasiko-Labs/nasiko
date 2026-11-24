@@ -80,7 +80,40 @@ pub struct CodingAgentSession {
     /// Set when this session is a subagent another session of the same agent spawned.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<CodingAgentSessionParent>,
+    /// Where the session ran: its folder, branch and repository. Only allowed with content
+    /// capture (it names local paths); replay evals read the repository from it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<CodingAgentSessionPlace>,
 }
+
+/// Where a session ran, as the reporting client saw it on the developer's machine.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingAgentSessionPlace {
+    /// The coding agent's working folder.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_branch: Option<String>,
+    /// The git repository holding `cwd`, named by its `origin` remote.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo: Option<CodingAgentRepo>,
+}
+
+/// A repository as its `origin` remote names it; credentials in the remote URL are never sent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodingAgentRepo {
+    /// e.g. `github.com`.
+    pub host: String,
+    pub owner: String,
+    pub name: String,
+    /// The working tree's top folder (`git rev-parse --show-toplevel`), so edit paths can be made
+    /// repo-relative.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+}
+
+/// Longest path or ref name a session place may carry.
+pub const CODING_AGENT_PLACE_MAX_BYTES: usize = 4096;
 
 /// The session that spawned a subagent session, as the coding agent identifies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,6 +246,30 @@ pub struct CodingAgentEventV1 {
     pub capture_policy: CapturePolicy,
 }
 
+fn validate_place(place: &CodingAgentSessionPlace) -> Result<(), String> {
+    let repo = place.repo.as_ref();
+    let texts = [
+        ("session.place.cwd", place.cwd.as_deref()),
+        ("session.place.git_branch", place.git_branch.as_deref()),
+        ("session.place.repo.host", repo.map(|r| r.host.as_str())),
+        ("session.place.repo.owner", repo.map(|r| r.owner.as_str())),
+        ("session.place.repo.name", repo.map(|r| r.name.as_str())),
+        (
+            "session.place.repo.root",
+            repo.and_then(|r| r.root.as_deref()),
+        ),
+    ];
+    for (name, value) in texts {
+        let Some(value) = value else { continue };
+        if value.trim().is_empty() || value.len() > CODING_AGENT_PLACE_MAX_BYTES {
+            return Err(format!(
+                "{name} must be 1 to {CODING_AGENT_PLACE_MAX_BYTES} bytes"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn validate_parent(parent: &CodingAgentSessionParent, child_source_id: &str) -> Result<(), String> {
     if parent.source_id.trim().is_empty() {
         return Err("session.parent.source_id must not be empty".into());
@@ -272,6 +329,7 @@ impl CodingAgentEventV1 {
         Self {
             session: CodingAgentSession {
                 title: None,
+                place: None,
                 ..self.session
             },
             turn,
@@ -324,6 +382,12 @@ impl CodingAgentEventV1 {
             if self.capture_policy == CapturePolicy::MetadataOnly {
                 return Err("metadata-only events must not contain session.title".into());
             }
+        }
+        if let Some(place) = &self.session.place {
+            if self.capture_policy == CapturePolicy::MetadataOnly {
+                return Err("metadata-only events must not contain session.place".into());
+            }
+            validate_place(place)?;
         }
         for (name, content) in [
             ("turn.prompt", self.turn.prompt.as_deref()),
@@ -573,6 +637,7 @@ mod tests {
                 source_id: "session".into(),
                 title: None,
                 parent: None,
+                place: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -695,6 +760,35 @@ mod tests {
         event.turn.prompt = Some("question".into());
         event.turn.response = Some("answer".into());
         event
+    }
+
+    #[test]
+    fn a_place_travels_only_with_content_and_is_bounded() {
+        let mut event = content_event();
+        event.session.place = Some(CodingAgentSessionPlace {
+            cwd: Some("/src/app".into()),
+            git_branch: Some("main".into()),
+            repo: Some(CodingAgentRepo {
+                host: "github.com".into(),
+                owner: "acme".into(),
+                name: "app".into(),
+                root: Some("/src/app".into()),
+            }),
+        });
+        assert_eq!(event.validate(), Ok(()));
+        assert_eq!(event.clone().without_content().session.place, None);
+
+        let mut metadata = event.clone();
+        metadata.capture_policy = CapturePolicy::MetadataOnly;
+        metadata.turn.prompt = None;
+        metadata.turn.response = None;
+        assert!(metadata.validate().is_err());
+
+        let mut empty = event;
+        if let Some(repo) = empty.session.place.as_mut().and_then(|p| p.repo.as_mut()) {
+            repo.owner = " ".into();
+        }
+        assert!(empty.validate().is_err());
     }
 
     #[test]

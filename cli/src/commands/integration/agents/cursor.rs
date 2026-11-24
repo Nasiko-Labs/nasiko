@@ -165,6 +165,7 @@ pub fn snapshot(raw: &str) -> Result<SessionSnapshot> {
         subagent_link(&session_id)
     };
     Ok(SessionSnapshot {
+        place: None,
         session_id,
         title: None,
         turns,

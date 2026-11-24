@@ -165,6 +165,7 @@ fn composer_session(db: &Connection, composer_id: &str) -> Result<SessionSnapsho
         .as_i64()
         .and_then(DateTime::from_timestamp_millis);
     Ok(SessionSnapshot {
+        place: None,
         session_id: composer_id.to_string(),
         title: nonempty(composer["name"].as_str()),
         turns: bubble_turns(composer_id, &ordered, &model, created),
@@ -424,6 +425,7 @@ fn transcript_session(transcript: &TranscriptFile) -> Result<SessionSnapshot> {
         .with_context(|| format!("failed to read the time of {}", path.display()))?
         .into();
     Ok(SessionSnapshot {
+        place: None,
         session_id: session_id.to_string(),
         title: None,
         turns: transcript_turns(session_id, &content, at),

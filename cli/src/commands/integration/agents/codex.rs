@@ -313,6 +313,7 @@ fn snapshot_in(raw: &str, spool_dir: &Path) -> Result<SessionSnapshot> {
             }
         }
         None => SessionSnapshot {
+            place: None,
             session_id: payload.session_id,
             title: None,
             turns: Vec::new(),
@@ -504,6 +505,7 @@ fn apply_event(
         })
         .collect();
     Some(SessionSnapshot {
+        place: None,
         session_id: payload.session_id.clone(),
         title: None,
         parent: None,
