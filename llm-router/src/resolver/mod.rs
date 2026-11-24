@@ -377,6 +377,17 @@ pub trait RegistryStore: Send + Sync {
         self.fetch_user_default_config(user_id).await
     }
 
+    /// One of `user`'s own live configs, by id, or `None` when it is not theirs or is gone — what
+    /// a replay-eval attempt's token names to run on ([`resolve_eval`]). The default answers
+    /// `None`, so a store that does not implement it refuses eval configs.
+    async fn fetch_owned_config(
+        &self,
+        _user_id: Uuid,
+        _config_id: Uuid,
+    ) -> Result<Option<LLMConfig>, sqlx::Error> {
+        Ok(None)
+    }
+
     /// Encrypted secret value for `(owner_id, name)`, or `None` if absent.
     async fn fetch_user_secret(
         &self,
@@ -624,6 +635,22 @@ impl RegistryStore for PgRegistry {
         user_id: Uuid,
     ) -> Result<Option<LLMConfig>, sqlx::Error> {
         self.load_owner_default(user_id).await
+    }
+
+    async fn fetch_owned_config(
+        &self,
+        user_id: Uuid,
+        config_id: Uuid,
+    ) -> Result<Option<LLMConfig>, sqlx::Error> {
+        let row: Option<ConfigRow> = sqlx::query_as(&format!(
+            "SELECT {CONFIG_COLS} FROM llm_configs \
+             WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL"
+        ))
+        .bind(config_id)
+        .bind(user_id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(row_to_config))
     }
 
     async fn has_user_agent_config(
@@ -877,6 +904,62 @@ pub async fn resolve_for(
         .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
 
     let agent_result = load_subject_config(store, cache, agent_uuid, agent_id, subject).await?;
+    resolve_loaded(store, cfg, agent_id, subject, hint, agent_result).await
+}
+
+/// The integration whose attempt tokens may name a config ([`crate::auth::EvalScope`]).
+const EVAL_INTEGRATION: &str = "eval";
+
+/// Resolve a replay-eval attempt's call on the config its token names. Only the `eval`
+/// coding-agent identity may do this, and only with one of its owner's own configs: anything
+/// else is refused, never served on another config. The identity's own pin is ignored, since
+/// the attempt's config decides the model; the config's pin holds as usual.
+pub async fn resolve_eval(
+    store: &dyn RegistryStore,
+    cache: &ConfigCache,
+    cfg: &GatewayConfig,
+    agent_id: &str,
+    subject: ConfigSubject<'_>,
+    config_id: Uuid,
+    hint: RequestHint<'_>,
+) -> Result<ResolvedConfig, GatewayError> {
+    let agent_uuid = Uuid::parse_str(agent_id)
+        .map_err(|_| GatewayError::NoRegistryEntry(agent_id.to_string()))?;
+    let ConfigSubject::Owner(owner) = subject else {
+        return Err(GatewayError::Forbidden(
+            "an eval attempt runs on its owner's config only".into(),
+        ));
+    };
+    let mut agent_result = load_llm_config(store, cache, agent_uuid, agent_id).await?;
+    if agent_result.coding_integration.as_deref() != Some(EVAL_INTEGRATION) {
+        return Err(GatewayError::Forbidden(
+            "only the eval identity may run on an attempt's config".into(),
+        ));
+    }
+    let owner_uuid = Uuid::parse_str(owner)
+        .map_err(|_| GatewayError::Forbidden("eval token has no owner".into()))?;
+    let config = store
+        .fetch_owned_config(owner_uuid, config_id)
+        .await
+        .map_err(|e| GatewayError::Internal(format!("eval config read failed: {e}")))?
+        .ok_or_else(|| {
+            GatewayError::Forbidden("the eval attempt's config is not the owner's".into())
+        })?;
+    agent_result.config = Some(config);
+    agent_result.agent_pinned_model = None;
+    resolve_loaded(store, cfg, agent_id, subject, hint, agent_result).await
+}
+
+/// Planning and key resolution once the agent's config is loaded: shared by [`resolve_for`] and
+/// [`resolve_eval`].
+async fn resolve_loaded(
+    store: &dyn RegistryStore,
+    cfg: &GatewayConfig,
+    agent_id: &str,
+    subject: ConfigSubject<'_>,
+    hint: RequestHint<'_>,
+    agent_result: AgentConfigResult,
+) -> Result<ResolvedConfig, GatewayError> {
     let hint = match subject {
         ConfigSubject::Platform => RequestHint::default(),
         _ => hint,
@@ -1824,6 +1907,133 @@ mod tests {
             config: Some(None),
             ..Default::default()
         }
+    }
+
+    /// An agent of a given integration, pinned to gpt-4o, whose owner owns one config.
+    struct EvalStore {
+        integration: Option<&'static str>,
+        owned: Uuid,
+    }
+
+    #[async_trait]
+    impl RegistryStore for EvalStore {
+        async fn fetch_llm_config(
+            &self,
+            _: Uuid,
+        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
+            Ok(Some(AgentConfigResult {
+                config: Some(llm_config("openai", "gpt-4o", None)),
+                agent_pinned_model: Some("gpt-4o".into()),
+                is_coding_agent: true,
+                coding_integration: self.integration.map(str::to_string),
+                is_discovered_agent: false,
+                compress_enabled: false,
+            }))
+        }
+        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
+            Ok(Uuid::parse_str(OWNER).ok())
+        }
+        async fn fetch_owned_config(
+            &self,
+            user: Uuid,
+            config: Uuid,
+        ) -> Result<Option<LLMConfig>, sqlx::Error> {
+            Ok((user.to_string() == OWNER && config == self.owned)
+                .then(|| llm_config("anthropic", "claude-sonnet-5-5", None)))
+        }
+        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_live_flow(
+            &self,
+            _: &str,
+            _: Uuid,
+            _: i64,
+        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
+            unreachable!("resolver tests never attribute flows")
+        }
+        async fn fetch_custom_provider(
+            &self,
+            _: &str,
+        ) -> Result<Option<CustomProvider>, sqlx::Error> {
+            Ok(None)
+        }
+        async fn fetch_org_embedding_default(
+            &self,
+        ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
+            Ok(None)
+        }
+    }
+
+    #[tokio::test]
+    async fn an_eval_attempt_runs_on_its_tokens_config_and_nothing_else_may() {
+        let owned = Uuid::new_v4();
+        let eval = EvalStore {
+            integration: Some("eval"),
+            owned,
+        };
+        let config = cfg("openai", "gpt-4o-mini", "k");
+        let subject = ConfigSubject::Owner(OWNER);
+        let r = resolve_eval(
+            &eval,
+            &cache(),
+            &config,
+            AGENT,
+            subject,
+            owned,
+            RequestHint::default(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            (r.provider.as_str(), r.model.as_str()),
+            ("anthropic", "claude-sonnet-5-5")
+        );
+        assert_eq!(
+            r.pinned_model, None,
+            "the identity's own pin does not apply"
+        );
+
+        let not_owned = resolve_eval(
+            &eval,
+            &cache(),
+            &config,
+            AGENT,
+            subject,
+            Uuid::new_v4(),
+            RequestHint::default(),
+        )
+        .await;
+        assert!(matches!(not_owned, Err(GatewayError::Forbidden(_))));
+
+        let claude = EvalStore {
+            integration: Some("claude"),
+            owned,
+        };
+        let other_identity = resolve_eval(
+            &claude,
+            &cache(),
+            &config,
+            AGENT,
+            subject,
+            owned,
+            RequestHint::default(),
+        )
+        .await;
+        assert!(matches!(other_identity, Err(GatewayError::Forbidden(_))));
+
+        let shared = ConfigSubject::SharedUser(Uuid::new_v4());
+        let shared_call = resolve_eval(
+            &eval,
+            &cache(),
+            &config,
+            AGENT,
+            shared,
+            owned,
+            RequestHint::default(),
+        )
+        .await;
+        assert!(matches!(shared_call, Err(GatewayError::Forbidden(_))));
     }
 
     #[tokio::test]

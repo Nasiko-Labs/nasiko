@@ -18,7 +18,7 @@ use serde_json::{Value, json};
 
 use super::auth_layer::rejected_body;
 use super::chat::{
-    AuthedCaller, RequestSignals, RoutedRequest, lookup_agent_owner, resolve_routed_request,
+    AuthedCaller, RequestSignals, RoutedRequest, lookup_agent_owner, resolve_routed_request_scoped,
 };
 use crate::LlmRouterCtx;
 use crate::error::GatewayError;
@@ -121,11 +121,15 @@ async fn responses_core_as(
     headers: &HeaderMap,
     mut body: Value,
 ) -> Result<Response, GatewayError> {
-    let (agent_id, owner_id, session) = match caller {
-        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
+    let (agent_id, owner_id, session, eval) = match caller {
+        AuthedCaller::Agent {
+            agent_id,
+            owner_id,
+            eval,
+        } => (agent_id, owner_id, None, eval),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
-            (claims.agent_id.clone(), owner_id, Some(claims))
+            (claims.agent_id.clone(), owner_id, Some(claims), None)
         }
     };
     let (requested_model, stream, query) = {
@@ -149,7 +153,7 @@ async fn responses_core_as(
         is_tool_continuation: is_tool_continuation(body.get("input")),
         query,
     };
-    let mut routed = resolve_routed_request(
+    let mut routed = resolve_routed_request_scoped(
         ctx,
         store,
         headers,
@@ -161,6 +165,7 @@ async fn responses_core_as(
         },
         signals,
         session,
+        eval.as_ref(),
     )
     .await?;
     routed.compression = compress_input(ctx, &routed, &mut body).await;
