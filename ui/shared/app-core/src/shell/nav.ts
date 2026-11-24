@@ -9,6 +9,7 @@
 import {
   Bot,
   DollarSign,
+  FlaskConical,
   Gauge,
   House,
   ListTree,
@@ -25,13 +26,14 @@ import type { AnyNavItem } from '../edition/edition'
 import { copy } from './copy'
 
 export type NavGroupId =
-  'work' | 'fleet' | 'observe' | 'tokenops' | 'connect' | 'views' | 'org' | 'lab'
+  'work' | 'fleet' | 'observe' | 'evals' | 'tokenops' | 'connect' | 'views' | 'org' | 'lab'
 
 /** In display order, grouped by job; the first group has no header. */
 export const NAV_GROUPS: readonly { id: NavGroupId; label: string | null }[] = [
   { id: 'work', label: null },
   { id: 'fleet', label: copy.nav.fleet },
   { id: 'observe', label: copy.nav.observe },
+  { id: 'evals', label: copy.nav.evals },
   { id: 'tokenops', label: copy.nav.tokenops },
   { id: 'connect', label: copy.nav.connect },
   // EE's Custom views is its only item, so the core never draws it.
@@ -51,6 +53,7 @@ export interface NavItem {
     | '/workflows'
     | '/sessions'
     | '/flows'
+    | '/evals'
     | '/tokenops'
     | '/optimization'
     | '/harnesses'
@@ -89,6 +92,8 @@ export const NAV_ITEMS: readonly NavItem[] = [
   { to: '/sessions', label: copy.nav.sessions, icon: ListTree, group: 'observe', shared: true },
   // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
   { to: '/flows', label: copy.nav.flows, icon: Network, group: 'observe', shared: false },
+  // Harness sessions → eval dataset → model comparison (docs/superpowers/specs/2026-11-23-evals-design.md).
+  { to: '/evals', label: copy.nav.evals, icon: FlaskConical, group: 'evals', shared: false },
   { to: '/tokenops', label: copy.nav.monitor, icon: DollarSign, group: 'tokenops', shared: true },
   // Budgets (Control) are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after Optimise.
   // What context optimization saves and your settings for it (plans/feat-optimization-page.md P7, P2).

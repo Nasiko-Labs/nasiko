@@ -45,6 +45,12 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Sessions and flows: what each request did, step by step, and what it cost.',
     },
     {
+      target: 'nav-evals',
+      side: 'right',
+      title: 'Evals',
+      body: "Turn a coding harness's sessions into evals and compare models on the same tasks.",
+    },
+    {
       target: 'nav-tokenops',
       side: 'right',
       title: 'TokenOps',
@@ -337,7 +343,7 @@ export const TOURS: Record<TourId, readonly TourStep[]> = {
       body: 'Show one status at a time, or search by agent.',
     },
     {
-      // The Build page has no logs yet ("Build logs need a newer OpenRuntime server").
+      // The Build page has no logs yet ("Build logs need a newer Open Runtime server").
       target: 'builds-panel',
       side: 'top',
       title: 'Build history',

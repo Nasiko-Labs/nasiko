@@ -1,0 +1,58 @@
+/** Every user-facing string of Evals. */
+export const copy = {
+  title: 'Evals',
+  description:
+    "Turn your coding harnesses' sessions into evals, then compare models on the same tasks.",
+  loading: 'Loading evals',
+  absent: 'Evals need a newer Open Runtime server',
+  absentBody: "This server doesn't have evals yet.",
+  failed: "Evals couldn't load",
+  retry: 'Try again',
+  empty: {
+    title: 'No evals to show',
+    body: 'No coding harness is connected yet, so there are no sessions to build evals from. Connect one first.',
+    action: 'Connect a coding harness',
+  },
+  pickHarness: 'Pick a harness to build evals from its sessions.',
+  sessionCount: (n: number) => `${n} ${n === 1 ? 'session' : 'sessions'}`,
+  lastActive: (when: string) => `Last active ${when}`,
+  notFound: "This harness isn't connected",
+  notFoundBody: 'It may have been disconnected. Pick another harness.',
+  back: 'Back to Evals',
+  sessions: {
+    title: 'Sessions',
+    hint: 'Tick the sessions to build the dataset from.',
+    all: 'Select all sessions',
+    one: (title: string) => `Select ${title}`,
+    cols: { title: 'Session', started: 'Started', turns: 'Turns', cost: 'Est. cost' },
+    none: 'This harness has no sessions yet.',
+  },
+  generate: (n: number) => (n ? `Generate evals dataset (${n})` : 'Generate evals dataset'),
+  regenerate: (n: number) => `Regenerate (${n})`,
+  generating: 'Generating…',
+  generateFailed: "The dataset couldn't be generated.",
+  dataset: {
+    title: 'Dataset',
+    tasks: 'Tasks',
+    tasksHint: 'From the prompts in the sessions you ticked.',
+    models: 'Models',
+    modelsHint: 'Models those sessions used are ticked. Add others to compare.',
+    used: 'Used',
+    picked: (tasks: number, models: number) =>
+      `${tasks} ${tasks === 1 ? 'task' : 'tasks'} × ${models} ${models === 1 ? 'model' : 'models'}`,
+  },
+  run: 'Run evals',
+  running: 'Running evals…',
+  runFailed: "The evals couldn't run.",
+  results: {
+    title: 'Comparison',
+    task: 'Task',
+    best: 'Best',
+    summary: 'Overall',
+    score: (n: number) => `${Math.round(n)}/100`,
+    noResult: 'No result',
+    caption:
+      'Score out of 100, est. cost and latency per task. The best score in each row is marked.',
+    stale: 'Your picks changed since this run. Run evals again to update the table.',
+  },
+}

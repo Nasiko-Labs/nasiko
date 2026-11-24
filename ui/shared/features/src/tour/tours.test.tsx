@@ -19,6 +19,7 @@ const PAGES: Record<string, readonly string[]> = {
     'nav-work',
     'nav-fleet',
     'nav-observe',
+    'nav-evals',
     'nav-tokenops',
     'nav-connect',
     'nav-org',

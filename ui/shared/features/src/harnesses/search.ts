@@ -51,6 +51,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'optimization-down',
   'flows-empty',
   'flows-absent',
+  'evals-absent',
   'hub-not-visible',
   'hub-gate-error',
   'hub-deleted',

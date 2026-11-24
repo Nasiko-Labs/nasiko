@@ -50,6 +50,8 @@ export const MOCKABLE = [
   'events',
   // The Overview's proposed estate, problem state and pins (docs/requirements/overview.md OV-1..OV-3).
   'overview',
+  // The proposed evals routes (docs/superpowers/specs/2026-11-23-evals-design.md).
+  'evals',
 ] as const
 export type Mockable = (typeof MOCKABLE)[number]
 

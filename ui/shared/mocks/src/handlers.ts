@@ -125,6 +125,7 @@ import { buildMcpState, mcpHandlers, type McpState } from './mcp'
 import { optimizationHandlers, resetOptimizationMock } from './optimization'
 import { buildWorkflowsState, workflowHandlers, type WorkflowsState } from './workflows'
 import { buildFlowsState, flowHandlers, type FlowsState } from './flows'
+import { evalsHandlers } from './evals'
 import { eventHandlers } from './events'
 import {
   AGENTS_ONBOARDING_VARIANTS,
@@ -306,7 +307,7 @@ export const MOCK_VARIANTS = [
   // /api/me/onboarding (bare 404), or a user who already picked a persona.
   'onboarding-absent',
   'onboarding-done',
-  // The free assessment: a server with no ASSESSMENT_S3_BUCKET (503), so the form's answers aren't saved.
+  // The free assessment: a server with no ASSESSMENT_INTAKE_URL (503), so the form's answers aren't saved.
   'assessment-unconfigured',
   // Context optimization (plans/feat-context-optimization.md §3): answers as today's server (no off switch, no tier
   // values, no last-chat preview: the proposed CX-5, CX-T1 and CX-6 are bare 404s or absent).
@@ -318,6 +319,8 @@ export const MOCK_VARIANTS = [
   // Flows (plans/feat-flows.md §2a): no flows yet (first run), or a server without /api/flows (bare 404).
   'flows-empty',
   'flows-absent',
+  // Evals (docs/superpowers/specs/2026-11-23-evals-design.md): a server without /api/evals (bare 404).
+  'evals-absent',
   // Agent hub (plans/feat-agent-centric.md DX mocks): the gate's dashboard read for one agent answers 404 "agent not
   // found" (not visible), 500, or 400 (unknown or deleted); every marker read fails; this agent has no savings row;
   // an agent with more builds in the window than the read returns; a server without the proposed event log.
@@ -680,6 +683,10 @@ let persistOnboarding: ((row: MockOnboarding) => void) | null = null
 /** Bodies `POST /api/assessments` accepted, oldest first. */
 let assessments: unknown[] = []
 export const assessmentsMockState = (): readonly unknown[] => assessments
+/** Bookings `POST /api/assessments/{id}/booking` accepted, oldest first. */
+let assessmentBookings: { id: string; body: unknown }[] = []
+export const assessmentBookingsMockState = (): readonly { id: string; body: unknown }[] =>
+  assessmentBookings
 
 /** An edition's own mock state, dropped with the core's (EE: the SSO settings and SCIM tokens). */
 const editionResets = new Set<() => void>()
@@ -700,6 +707,7 @@ export function resetAgentsMock() {
   mockPassword = null
   onboardingRow = ONBOARDED
   assessments = []
+  assessmentBookings = []
   codingAgentsState = null
   resetOptimizationMock()
   resetChatMock()
@@ -1035,7 +1043,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return HttpResponse.json({ is_first_time_user: false, persona })
     }),
   ],
-  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without a bucket.
+  // `assessment.rs`: `{data: {id}}` on 201; 503 `assessments_not_configured` without an intake; the booking, 200.
   assessment: [
     http.post('/api/assessments', async ({ request }) => {
       if (!loggedIn) return unauthorized()
@@ -1046,6 +1054,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         )
       assessments.push(await request.json())
       return HttpResponse.json({ data: { id: crypto.randomUUID() } }, { status: 201 })
+    }),
+    http.post('/api/assessments/:id/booking', async ({ params, request }) => {
+      if (!loggedIn) return unauthorized()
+      const id = String(params.id)
+      assessmentBookings.push({ id, body: await request.json() })
+      return HttpResponse.json({ data: { id } })
     }),
   ],
   auth: [
@@ -2126,6 +2140,14 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   // and the `?mock=budgets-*` variants keep working in both editions' harnesses.
   budgets: [],
   'budgets-fill': [],
+  // Evals (mocks/evals.ts): the viewer's harnesses and sessions from the harness seed.
+  evals: evalsHandlers({
+    loggedIn: () => loggedIn,
+    unauthorized: () => unauthorized(),
+    absent: () => hasVariant('evals-absent'),
+    harnessSeed: () => harnessData(),
+    viewerId: () => viewer().id,
+  }),
   // Set after chatCtx below, like chat: its estate reads the other groups' state.
   overview: [],
   chat: [],

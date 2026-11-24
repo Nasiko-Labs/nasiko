@@ -46,12 +46,10 @@ export function AppShell({
   const { edition, slots } = use(EditionContext)
   const active = activeItem(pathname, applyNav(NAV_ITEMS, edition.layers))
   const Notice = slots.shellNotice
+  const group = active && NAV_GROUPS.find((g) => g.id === active.group)?.label
+  // A group named after its only item (Evals) would read twice in the breadcrumb: the item alone says it.
   const item = active
-    ? {
-        to: active.to,
-        label: active.label,
-        group: NAV_GROUPS.find((g) => g.id === active.group)?.label ?? null,
-      }
+    ? { to: active.to, label: active.label, group: group && group !== active.label ? group : null }
     : null
   // Overview and New chat have no bar on desktop (user, 2026-10-08): nothing to place, nowhere to step.
   const bare = BARE.test(pathname)
