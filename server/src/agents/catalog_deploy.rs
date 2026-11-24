@@ -281,6 +281,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_deploy_the_runtime_declined_is_reported_in_its_own_words_and_any_other_failure_generically()
+     {
+        let declined = CatalogDeployError::Runtime(RuntimeError::Declined {
+            code: "plan_refused".into(),
+            message: "This workspace cannot start more agents.".into(),
+        });
+        assert_eq!(
+            logged(Uuid::nil(), &declined),
+            "This workspace cannot start more agents."
+        );
+        for other in [
+            CatalogDeployError::NoImage,
+            CatalogDeployError::Db(sqlx::Error::PoolClosed),
+            CatalogDeployError::Runtime(RuntimeError::Internal("boom".into())),
+        ] {
+            assert_eq!(logged(Uuid::nil(), &other), COULD_NOT_DEPLOY, "{other}");
+        }
+    }
+
     use std::time::Duration;
 
     use tokio::sync::Semaphore;

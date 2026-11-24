@@ -1907,6 +1907,19 @@ mod tests {
         assert!(gone.headers().get(RETRY_AFTER).is_none());
     }
 
+    #[tokio::test]
+    async fn a_request_refused_after_a_declined_wake_is_told_why_and_when_to_try_again() {
+        let reason = "This workspace cannot start more agents.";
+        let refused = resolve_refusal(&ResolveError::ParkedMidRequest(reason.to_owned()));
+
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(refused.headers()[RETRY_AFTER], "2");
+        let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(body, reason);
+    }
+
     #[test]
     fn context_id_is_read_only_from_a_message_send() {
         let send = |method: &str, ctx: &str| {

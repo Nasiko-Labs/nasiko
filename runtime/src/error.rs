@@ -61,3 +61,20 @@ pub enum RuntimeError {
 
 /// Convenience alias so callers can write `use agent_runtime::Result`.
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_declined_change_displays_its_code_and_message() {
+        let declined = RuntimeError::Declined {
+            code: "plan_refused".into(),
+            message: "Ask an admin to change the plan.".into(),
+        };
+        assert_eq!(
+            declined.to_string(),
+            "declined [plan_refused]: Ask an admin to change the plan."
+        );
+    }
+}
