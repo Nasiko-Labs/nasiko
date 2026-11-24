@@ -17,6 +17,7 @@ sqlx = { workspace = true }
 rand = { workspace = true }
 base64 = { workspace = true }
 http = { workspace = true }
+tracing = { workspace = true }
 # Needed for spawn_blocking (offloading bcrypt cost-12 off the async executor).
 tokio = { workspace = true, features = ["rt"] }
 

@@ -377,23 +377,6 @@ describe('TokenOps page', () => {
     server.use(http.post('/api/auth/login', () => HttpResponse.json({}, { status: 429 })))
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     expect(await screen.findByText(/Too many attempts/)).toBeInTheDocument()
-    // ea233d20: a locked account (3 failures) is a 429 with code account_locked and the real wait.
-    server.use(
-      http.post('/api/auth/login', () =>
-        HttpResponse.json(
-          {
-            error: 'account temporarily locked due to too many failed login attempts',
-            code: 'account_locked',
-            retry_after_secs: 840,
-          },
-          { status: 429 },
-        ),
-      ),
-    )
-    await user.click(screen.getByRole('button', { name: 'Sign in' }))
-    expect(
-      await screen.findByText('Too many failed sign-ins. Try again in 14 minutes.'),
-    ).toBeInTheDocument()
     server.resetHandlers()
     await user.click(screen.getByRole('button', { name: 'Sign in' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/'))

@@ -167,10 +167,6 @@ export const copy = {
     passwordChanged: 'Password changed. Please sign in again with your new password.',
     wrongCredentials: 'Wrong username or password.',
     rateLimited: 'Too many attempts. Wait a minute and try again.',
-    // auth/service.rs (ea233d20): 3 failed sign-ins lock the account for 15 minutes (429 `account_locked`). Worded
-    // without saying the account exists, like the 401 message.
-    locked: (minutes: number) =>
-      `Too many failed sign-ins. Try again in ${minutes} minute${minutes === 1 ? '' : 's'}.`,
     unreachable: "Can't reach nasiko-server. Is `just run-stack` running?",
     timedOut: 'The server took too long to answer. Try again in a moment.',
     failed: 'Login failed. Check the server logs.',
