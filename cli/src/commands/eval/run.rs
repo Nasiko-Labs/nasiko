@@ -20,14 +20,14 @@ use nasiko_evals::opencode::{self, AgentConfig};
 use nasiko_evals::prompt::{self, ChatPrompt};
 use nasiko_evals::report::AttemptRecord;
 use nasiko_evals::spec::EnvSpec;
-use nasiko_evals::{TaskInstance, TestPathRules, cost, diff, rust_tests, testlog};
+use nasiko_evals::{TaskInstance, TestPathRules, agent, cost, diff, harvest, testlog};
 use serde::{Deserialize, Serialize};
 
 use super::build::{sanitize, test_limits};
 use super::containers::{Containers, JobLimits, JobOutcome, JobSpec, Mount, Network, StopReason};
 use super::dataset;
 use super::gateway::{self, GatewayPlan};
-use super::git::{self, Repo};
+use super::git::Repo;
 use super::images::opencode_version;
 use super::llm::LlmClient;
 use super::router::RouterClient;
@@ -70,21 +70,8 @@ pub struct RunInfo {
     pub finished_at: Option<chrono::DateTime<Utc>>,
 }
 
-/// Saves the agent's changes; run by the agent script at the end, and before a stop. The diff is
-/// taken against the task image's one root commit, not `HEAD`: an agent that commits its work
-/// (the prompt asks it not to, and some do anyway) would otherwise hand in an empty patch.
-const SAVE_DIFF: &str = "cd /testbed && git add -A \
-     && git diff --cached --binary \"$(git rev-list --max-parents=0 HEAD | tail -n 1)\" \
-     > /eval/out/raw.patch";
-
-/// Parallel compile jobs inside eval containers.
-const CARGO_JOBS: &str = "2";
-
 /// Router tokens last 10 minutes; refresh well before.
 const TOKEN_REFRESH: Duration = Duration::from_secs(8 * 60);
-/// Seconds before the host-side kill at which `timeout` stops opencode, so the diff is still
-/// taken from a time-limited attempt.
-const AGENT_TIMEOUT_MARGIN: u64 = 120;
 
 pub fn run(
     store: &Store,
@@ -372,7 +359,7 @@ impl ModelRun<'_> {
         let wall = u64::from(self.config.attempt_minutes) * 60;
         fs::write(
             in_dir.join("agent.sh"),
-            agent_script(wall.saturating_sub(AGENT_TIMEOUT_MARGIN)),
+            agent::script(wall.saturating_sub(agent::TIMEOUT_MARGIN_SECS)),
         )?;
         let outcome = self.containers.run_to_end(&JobSpec {
             name: format!("nasiko-eval-agent-{}", sanitize(&key.tag)),
@@ -397,7 +384,7 @@ impl ModelRun<'_> {
                 ("EVAL_GATEWAY_SECRET".into(), key.secret.clone()),
                 ("HOME".into(), "/tmp/home".into()),
                 // Fewer parallel rustc jobs: lower peak memory, so builds are not OOM-killed.
-                ("CARGO_BUILD_JOBS".into(), CARGO_JOBS.into()),
+                ("CARGO_BUILD_JOBS".into(), agent::CARGO_JOBS.into()),
             ],
             limits: JobLimits {
                 wall: Duration::from_secs(wall),
@@ -408,7 +395,7 @@ impl ModelRun<'_> {
             },
             label: self.run_id.to_string(),
             // A run stopped for time or disk still hands in what it changed.
-            before_stop: Some(SAVE_DIFF.to_string()),
+            before_stop: Some(agent::SAVE_DIFF.to_string()),
         })?;
         fs::write(
             out_dir.join("container.log"),
@@ -481,12 +468,8 @@ impl ModelRun<'_> {
     }
 }
 
-/// The model's changes with every Rust inline test module (`#[cfg(test)] mod …`) put back as it
-/// was at the base commit. Test files are already dropped by path, as SWE-bench does; Rust keeps
-/// unit tests inside the code's own file, so without this a test the model added under a hidden
-/// test's name breaks the build, and a model that rewrote a file's tests makes the hidden test
-/// patch unappliable, both failing a fix whose code may be right. Files the model created,
-/// renamed or deleted, and files whose test modules cannot be told apart, are kept as they are.
+/// The model's changes with every Rust inline test module put back as it was at the base
+/// commit (`nasiko_evals::harvest::graded_files`); local git supplies the base texts.
 fn without_inline_test_edits(
     repo: Option<&Repo>,
     base_commit: &str,
@@ -495,39 +478,13 @@ fn without_inline_test_edits(
     let Some(repo) = repo else {
         return Ok(files);
     };
-    let mut kept = Vec::with_capacity(files.len());
-    for file in files {
-        let path = file.path().to_string();
-        let same_file = file.old_path.is_some() && file.old_path == file.new_path;
-        if !path.ends_with(".rs") || !same_file {
-            kept.push(file);
-            continue;
-        }
-        let Some(base) = repo.file_at(base_commit, &path)? else {
-            kept.push(file);
-            continue;
-        };
-        let Ok(changed) = git::apply_to_text(&path, &base, &file.text) else {
-            kept.push(file);
-            continue;
-        };
-        let Some(graded) = rust_tests::restore_old_tests(&base, &changed) else {
-            kept.push(file);
-            continue;
-        };
-        if graded == changed {
-            kept.push(file);
-        } else if graded == base {
-            // Only test edits in this file: none of it is graded.
-        } else {
-            kept.extend(diff::parse_unified(&repo.diff_texts(
-                &path,
-                Some(&base),
-                &graded,
-            )?)?);
+    let mut base_texts = BTreeMap::new();
+    for path in harvest::graded_paths(&files) {
+        if let Some(text) = repo.file_at(base_commit, &path)? {
+            base_texts.insert(path, text);
         }
     }
-    Ok(kept)
+    Ok(harvest::graded_files(files, &base_texts)?)
 }
 
 /// `attempt.json`: the graded record plus what is needed to attach the router's cost later.
@@ -539,42 +496,22 @@ pub struct AttemptFile {
     pub record: AttemptRecord,
 }
 
-/// Runs the agent, then saves its session and the diff whatever happened.
-fn agent_script(agent_timeout_secs: u64) -> String {
-    format!(
-        "#!/bin/bash\nset -u\nmkdir -p \"$HOME\"\ncd /testbed\n\
-         timeout --signal=TERM {agent_timeout_secs} opencode run --model {model} --agent build --format json --auto --dir /testbed \"$(cat /eval/in/prompt.md)\" > /eval/out/events.jsonl 2> /eval/out/agent.log\n\
-         echo $? > /eval/out/exit_code\n\
-         SID=$(node -e 'const l=require(\"fs\").readFileSync(\"/eval/out/events.jsonl\",\"utf8\").split(\"\\n\");for(const x of l){{try{{const j=JSON.parse(x);if(j.sessionID){{console.log(j.sessionID);break}}}}catch(e){{}}}}')\n\
-         if [ -n \"$SID\" ]; then opencode export \"$SID\" > /eval/out/session-export.json 2>> /eval/out/agent.log; fi\n\
-         {SAVE_DIFF}\n",
-        model = opencode::MODEL_ARG,
-    )
-}
-
 fn agent_exit(
     outcome: &JobOutcome,
     out: &Path,
     record: Option<&opencode::AgentRecord>,
 ) -> AgentExit {
-    match &outcome.stopped {
-        Some(StopReason::DiskLimit) => return AgentExit::DiskLimit,
-        Some(StopReason::TimeLimit) => return AgentExit::TimeLimit,
-        None => {}
-    }
-    let code: Option<i32> = fs::read_to_string(out.join("exit_code"))
-        .ok()
-        .and_then(|c| c.trim().parse().ok());
-    match code {
-        Some(124) => AgentExit::TimeLimit,
-        _ if record.is_some_and(|r| r.hit_step_limit) => AgentExit::StepLimit,
-        Some(0) => AgentExit::Finished,
-        Some(_) => AgentExit::Crashed,
-        // The script never wrote its exit code: the container itself died (e.g. killed for
-        // memory, exit 137) before the agent finished.
-        None if outcome.exit_code.is_some() => AgentExit::Crashed,
-        None => AgentExit::InfraError,
-    }
+    let stopped = outcome.stopped.as_ref().map(|s| match s {
+        StopReason::DiskLimit => agent::Stopped::DiskLimit,
+        StopReason::TimeLimit => agent::Stopped::TimeLimit,
+    });
+    let code = fs::read_to_string(out.join(agent::EXIT_CODE_FILE)).ok();
+    agent::exit(
+        stopped,
+        outcome.exit_code,
+        code.as_deref(),
+        record.is_some_and(|r| r.hit_step_limit),
+    )
 }
 
 /// Applies `<dir>/model.patch` and the task's test patch in a fresh container with no network,
@@ -611,7 +548,7 @@ pub fn grade_patch(
             container: "/eval".into(),
             read_only: true,
         }],
-        env: vec![("CARGO_BUILD_JOBS".into(), CARGO_JOBS.into())],
+        env: vec![("CARGO_BUILD_JOBS".into(), agent::CARGO_JOBS.into())],
         limits,
         label: label.to_string(),
         before_stop: None,
@@ -723,17 +660,6 @@ fn write_predictions(store: &Store, run_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn agent_script_saves_session_and_diff_after_a_timeout() {
-        let s = agent_script(600);
-        assert!(s.contains("timeout --signal=TERM 600 opencode run --model eval/router"));
-        assert!(s.contains("--auto --dir /testbed"));
-        let run = s.find("opencode run").expect("runs");
-        let export = s.find("opencode export").expect("exports");
-        let diff = s.find("git diff --cached --binary").expect("diffs");
-        assert!(run < export && export < diff);
-    }
 
     #[test]
     fn a_model_that_built_the_dataset_is_not_tested_on_it() {
@@ -873,9 +799,7 @@ mod tests {
         let base = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
         let model = "pub fn f() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n\n    #[test]\n    fn hidden_name() {}\n}\n";
         let (repo, head) = one_commit_repo(base);
-        let raw = repo
-            .diff_texts("src/lib.rs", Some(base), model)
-            .expect("diff");
+        let raw = nasiko_evals::patch::diff_texts("src/lib.rs", Some(base), model);
         let files = diff::parse_unified(&raw).expect("parses");
         let graded = diff::join(&without_inline_test_edits(Some(&repo), &head, files).expect("ok"));
         assert!(graded.contains("+    2"), "{graded}");
@@ -883,9 +807,7 @@ mod tests {
 
         // A file with only test edits is not graded at all; without a repo nothing changes.
         let tests_only = base.replace("fn old() {}", "fn old() { assert!(true) }");
-        let raw = repo
-            .diff_texts("src/lib.rs", Some(base), &tests_only)
-            .expect("diff");
+        let raw = nasiko_evals::patch::diff_texts("src/lib.rs", Some(base), &tests_only);
         let files = diff::parse_unified(&raw).expect("parses");
         assert!(
             without_inline_test_edits(Some(&repo), &head, files.clone())
@@ -924,7 +846,7 @@ mod tests {
         fs::write(repo.join("lib.rs"), "fn b() {}\n").expect("write");
         git(&["commit", "-qam", "agent fix"]);
         fs::write(repo.join("new.rs"), "fn c() {}\n").expect("write");
-        let script = SAVE_DIFF
+        let script = agent::SAVE_DIFF
             .replace("/testbed", &repo.display().to_string())
             .replace("/eval/out/raw.patch", &out.display().to_string());
         let ok = std::process::Command::new("sh")

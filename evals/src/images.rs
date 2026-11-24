@@ -9,11 +9,11 @@
 
 use std::fmt::Write as _;
 
-use nasiko_evals::spec::{self, EnvSpec};
+use crate::spec::{self, EnvSpec};
 use sha2::{Digest, Sha256};
 
 /// The OpenCode harness image's Dockerfile; its `ARG OPENCODE_VERSION=` is the pin.
-const HARNESS_DOCKERFILE: &str = include_str!("../../../../agents/harnesses/opencode/Dockerfile");
+const HARNESS_DOCKERFILE: &str = include_str!("../../agents/harnesses/opencode/Dockerfile");
 
 /// The opencode version the platform's OpenCode harness pins.
 pub fn opencode_version() -> &'static str {
@@ -44,7 +44,8 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
     )
 }
 
-/// `source.tar` (a `git archive` of the base commit) sits next to this Dockerfile.
+/// `source.tar` (the repo at the base commit: a `git archive`, or the forge's tarball, either
+/// unpacked into the build root) sits next to this Dockerfile.
 pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> String {
     let mut df = format!(
         "FROM {env_image}\n\
@@ -69,6 +70,15 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
     // `ort-sys`, which downloads ONNX Runtime) run again offline and fail to link.
     df.push_str("ENV HOME=/root\n");
     df
+}
+
+/// The env and task images as one Dockerfile, for builders that cannot base one local build
+/// on another (a cluster's BuildKit pulls `FROM` images from a registry). The env steps come
+/// first, so the builder's layer cache still shares them between a repo's tasks.
+pub fn combined_dockerfile(spec: &EnvSpec, scope: &[String]) -> String {
+    let task = task_dockerfile("env", spec, scope);
+    let steps = task.split_once('\n').map_or("", |(_, rest)| rest);
+    format!("{}{steps}", env_dockerfile(spec))
 }
 
 pub fn env_image_tag(spec: &EnvSpec) -> String {
@@ -134,6 +144,19 @@ mod tests {
         assert!(df.contains("RUN cargo test -p nasiko-compress --no-run || true"));
         // Changing it after the warm build would re-run build scripts that watch it, offline.
         assert!(!df.contains("CARGO_NET_OFFLINE"));
+    }
+
+    #[test]
+    fn the_combined_recipe_is_env_then_task_steps() {
+        let s = rust_spec();
+        let df = combined_dockerfile(&s, &["-p a".into()]);
+        assert!(df.starts_with(&env_dockerfile(&s)));
+        assert_eq!(
+            df.matches("FROM ").count(),
+            env_dockerfile(&s).matches("FROM ").count()
+        );
+        assert!(df.contains("COPY source.tar /tmp/source.tar"));
+        assert!(df.ends_with("ENV HOME=/root\n"));
     }
 
     #[test]

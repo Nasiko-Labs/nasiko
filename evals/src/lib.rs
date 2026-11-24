@@ -2,17 +2,23 @@
 //! cheaper models on them.
 //!
 //! This crate is pure logic. It never touches the disk, the network, git or Docker: callers
-//! pass text in and get values back. The `nasiko eval` CLI (and later the server) does the I/O.
+//! pass text in and get values back. The server's eval worker and the `nasiko eval local` CLI
+//! do the I/O.
 
+pub mod agent;
 pub mod cost;
 pub mod diff;
 pub mod gate;
 pub mod grade;
+pub mod harvest;
+pub mod images;
 pub mod instance;
 pub mod layout;
 pub mod link;
 pub mod opencode;
+pub mod patch;
 pub mod prompt;
+pub mod remote;
 pub mod report;
 pub mod rust_tests;
 pub mod screen;

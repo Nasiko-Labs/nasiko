@@ -1,0 +1,465 @@
+//! Harvest: one finished session plus the commits made during it → one candidate task.
+//!
+//! The steps are pure so the CLI (local git) and the server (the GitHub API) share them; each
+//! caller fetches what a step asks for and passes it in:
+//!
+//! 1. [`precheck`]: does the session have typed messages and edits in the repo at all?
+//! 2. [`link`]: given the commits in the session's window, which one (or which unbroken run)
+//!    is its work, and which slice of the session produced it.
+//! 3. [`split`] the linked commits' diff into fix and tests, then
+//!    [`split_inline_rust_tests`] with the base and gold text of [`inline_test_paths`].
+//! 4. [`draft_task`].
+
+use std::collections::BTreeMap;
+
+use serde::{Deserialize, Serialize};
+
+use crate::diff::{self, DiffError, FileDiff, SplitPatch, TestPathRules};
+use crate::instance::{self, NasikoExtras, OriginalRun, TaskInstance, TaskStatus, TestSource};
+use crate::link::{self, CommitFacts, LinkDecision, LinkScore};
+use crate::session::SessionRecord;
+use crate::{patch, rust_tests};
+
+/// What happened to one session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Outcome {
+    Task,
+    NoTypedMessage,
+    NoEditsInRepo,
+    NoMatch,
+    Ambiguous,
+    Unreadable,
+}
+
+impl Outcome {
+    pub fn label(self) -> &'static str {
+        match self {
+            Outcome::Task => "task",
+            Outcome::NoTypedMessage => "no_typed_message",
+            Outcome::NoEditsInRepo => "no_edits_in_repo",
+            Outcome::NoMatch => "no_match",
+            Outcome::Ambiguous => "ambiguous",
+            Outcome::Unreadable => "unreadable",
+        }
+    }
+}
+
+/// The repo-relative paths the session edited, or why it cannot be a task.
+pub fn precheck(session: &SessionRecord, roots: &[String]) -> Result<Vec<String>, Outcome> {
+    if session.user_messages.is_empty() {
+        return Err(Outcome::NoTypedMessage);
+    }
+    let edited = session.edited_paths_in(roots);
+    if edited.is_empty() {
+        return Err(Outcome::NoEditsInRepo);
+    }
+    Ok(edited)
+}
+
+/// Whether a commit listed in the window is worth fetching in full: it touches a file the
+/// session edited.
+pub fn touches_edits(commit_files: &[String], edited: &[String]) -> bool {
+    commit_files.iter().any(|f| edited.contains(f))
+}
+
+/// A session linked to its work.
+#[derive(Debug, Clone)]
+pub struct Linked {
+    pub decision: LinkDecision,
+    pub candidates: Vec<LinkScore>,
+    /// The linked commits, oldest first (one, or an unbroken run).
+    pub commits: Vec<CommitFacts>,
+    /// The part of the session that produced the work.
+    pub slice: SessionRecord,
+    pub link_score: f64,
+}
+
+impl Linked {
+    pub fn first(&self) -> &CommitFacts {
+        &self.commits[0]
+    }
+
+    pub fn last(&self) -> &CommitFacts {
+        &self.commits[self.commits.len() - 1]
+    }
+}
+
+/// Picks the session's commit(s) among `candidates` (the commits in its window that touch its
+/// edits, fetched in full).
+pub fn link(
+    session: &SessionRecord,
+    roots: &[String],
+    candidates: Vec<CommitFacts>,
+) -> Result<Linked, Outcome> {
+    let commits: Vec<CommitFacts> = candidates
+        .into_iter()
+        .filter(|c| link::in_window(session, c) && link::is_eligible(c))
+        .collect();
+    let scores: Vec<LinkScore> = commits
+        .iter()
+        .map(|c| link::score(session, roots, c))
+        .collect();
+    let decision = link::decide(&scores);
+    let (first, last) = match &decision {
+        LinkDecision::Single { link } => (link.clone(), link.clone()),
+        LinkDecision::Range { first, last } => (first.clone(), last.clone()),
+        LinkDecision::Ambiguous { .. } => return Err(Outcome::Ambiguous),
+        LinkDecision::NoMatch => return Err(Outcome::NoMatch),
+    };
+    let at = |sha: &str| {
+        commits
+            .iter()
+            .find(|c| c.sha == sha)
+            .map(|c| c.committed_at)
+    };
+    let (Some(from), Some(until)) = (at(&first.sha), at(&last.sha)) else {
+        return Err(Outcome::NoMatch);
+    };
+    let mut linked: Vec<CommitFacts> = commits
+        .iter()
+        .filter(|c| c.committed_at >= from && c.committed_at <= until)
+        .cloned()
+        .collect();
+    linked.sort_by_key(|c| c.committed_at);
+    // A long session often holds several tasks: keep only the part from the message that led
+    // to the first edit of the commits' files up to the last commit.
+    let files: Vec<String> = linked.iter().flat_map(|c| c.files.clone()).collect();
+    let start = session.task_start(roots, &files);
+    Ok(Linked {
+        slice: session.slice(start, until),
+        link_score: first.total.min(last.total),
+        decision,
+        candidates: scores,
+        commits: linked,
+    })
+}
+
+/// The linked commits' full diff (`first.parent..last`), split into fix and test files.
+pub fn split(full_diff: &str) -> Result<SplitPatch, DiffError> {
+    Ok(diff::split_tests(
+        diff::parse_unified(full_diff)?,
+        &TestPathRules::rust_default(),
+    ))
+}
+
+/// Gold Rust files whose base and gold text [`split_inline_rust_tests`] needs.
+pub fn inline_test_paths(split: &SplitPatch) -> Vec<String> {
+    split
+        .gold
+        .iter()
+        .filter(|f| f.path().ends_with(".rs") && f.new_path.is_some())
+        .map(|f| f.path().to_string())
+        .collect()
+}
+
+/// One file at the base commit (`None` = the fix creates it) and at the gold commit.
+#[derive(Debug, Clone, Default)]
+pub struct FileVersions {
+    pub base: Option<String>,
+    pub gold: String,
+}
+
+/// Moves each changed Rust file's inline `#[cfg(test)]` module change into the test patch.
+/// `versions` holds every path of [`inline_test_paths`]. Files that cannot be split (several
+/// test modules) stay in `mixed`.
+pub fn split_inline_rust_tests(
+    split: &mut SplitPatch,
+    versions: &BTreeMap<String, FileVersions>,
+) -> Result<(), DiffError> {
+    let mut gold_files = Vec::new();
+    let mut unsplit = Vec::new();
+    for file in std::mem::take(&mut split.gold) {
+        let path = file.path().to_string();
+        if !path.ends_with(".rs") || file.new_path.is_none() {
+            gold_files.push(file);
+            continue;
+        }
+        // A file the fix creates keeps its tests: hidden tests in it could only ever apply to a
+        // fix that creates the very same file, which would punish a correct fix laid out
+        // differently. Hidden tests come from files that already existed, as in SWE-bench.
+        let Some(FileVersions {
+            base: Some(old),
+            gold: new,
+        }) = versions.get(&path)
+        else {
+            gold_files.push(file);
+            continue;
+        };
+        let Some(middle) = rust_tests::code_with_old_tests(old, new) else {
+            if split.mixed.contains(&path) {
+                unsplit.push(path);
+            }
+            gold_files.push(file);
+            continue;
+        };
+        if &middle == new {
+            gold_files.push(file);
+            continue;
+        }
+        gold_files.extend(diff::parse_unified(&patch::diff_texts(
+            &path,
+            Some(old),
+            &middle,
+        ))?);
+        split.test.extend(diff::parse_unified(&patch::diff_texts(
+            &path,
+            Some(&middle),
+            new,
+        ))?);
+    }
+    split.gold = gold_files;
+    split.mixed = unsplit;
+    Ok(())
+}
+
+/// Until prompt P1 rewrites it: the first typed message is the statement, later ones are hints.
+pub fn statement_and_hints(session: &SessionRecord) -> (String, String) {
+    let mut messages = session.user_messages.iter().map(|m| m.text.as_str());
+    let statement = messages.next().unwrap_or_default().to_string();
+    let hints = messages.collect::<Vec<_>>().join("\n\n---\n\n");
+    (statement, hints)
+}
+
+/// The candidate task. `repo_full_name` is `owner/name`; `slice` is [`Linked::slice`].
+pub fn draft_task(repo_full_name: &str, linked: &Linked, split: SplitPatch) -> TaskInstance {
+    let (first, last, session) = (linked.first(), linked.last(), &linked.slice);
+    let base = first.parent.clone();
+    let slug = repo_full_name.rsplit('/').next().unwrap_or(repo_full_name);
+    let (statement, hints) = statement_and_hints(session);
+    TaskInstance {
+        instance_id: instance::instance_id(slug, &session.session_id),
+        repo: repo_full_name.to_string(),
+        base_commit: base.clone(),
+        environment_setup_commit: base,
+        version: last.committed_at.format("%Y.%m").to_string(),
+        created_at: last.committed_at,
+        problem_statement: statement,
+        hints_text: hints,
+        patch: diff::join(&split.gold),
+        test_patch: diff::join(&split.test),
+        fail_to_pass: Vec::new(),
+        pass_to_pass: Vec::new(),
+        image: String::new(),
+        eval_script: String::new(),
+        log_parser: String::new(),
+        eval_type: String::new(),
+        difficulty: None,
+        x_nasiko: NasikoExtras {
+            status: TaskStatus::Candidate,
+            source: session.source,
+            source_session_id: session.session_id.clone(),
+            gold_commit: last.sha.clone(),
+            link_score: linked.link_score,
+            test_source: if split.test.is_empty() {
+                TestSource::None
+            } else {
+                TestSource::Commit
+            },
+            orig: OriginalRun {
+                model: session.main_model().unwrap_or_default(),
+                usage: session.total_usage(),
+                user_turns: session.user_messages.len() as u32,
+            },
+            mixed_files: split.mixed,
+            reject_reason: None,
+            statement_rewritten: false,
+            test_scope: Vec::new(),
+        },
+    }
+}
+
+/// Rust files of a model's patch that [`graded_files`] needs the base text of.
+pub fn graded_paths(files: &[FileDiff]) -> Vec<String> {
+    files
+        .iter()
+        .filter(|f| f.path().ends_with(".rs") && f.old_path.is_some() && f.old_path == f.new_path)
+        .map(|f| f.path().to_string())
+        .collect()
+}
+
+/// A model's patch with its edits to inline Rust test modules undone. Hidden tests often sit
+/// as unit tests inside the code's own file, so without this a test the model added under a
+/// hidden test's name breaks the build, and a model that rewrote a file's tests makes the
+/// hidden test patch unappliable, both failing a fix whose code may be right. Files the model
+/// created, renamed or deleted, files missing from `base_texts`, and files whose test modules
+/// cannot be told apart, are kept as they are.
+pub fn graded_files(
+    files: Vec<FileDiff>,
+    base_texts: &BTreeMap<String, String>,
+) -> Result<Vec<FileDiff>, DiffError> {
+    let mut kept = Vec::with_capacity(files.len());
+    for file in files {
+        let path = file.path().to_string();
+        let same_file = file.old_path.is_some() && file.old_path == file.new_path;
+        let base = base_texts.get(&path);
+        let (true, true, Some(base)) = (path.ends_with(".rs"), same_file, base) else {
+            kept.push(file);
+            continue;
+        };
+        let Ok(changed) = patch::apply_to_text(base, &file.text) else {
+            kept.push(file);
+            continue;
+        };
+        let Some(graded) = rust_tests::restore_old_tests(base, &changed) else {
+            kept.push(file);
+            continue;
+        };
+        if graded == changed {
+            kept.push(file);
+        } else if &graded == base {
+            // Only test edits in this file: none of it is graded.
+        } else {
+            kept.extend(diff::parse_unified(&patch::diff_texts(
+                &path,
+                Some(base),
+                &graded,
+            ))?);
+        }
+    }
+    Ok(kept)
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{DateTime, Utc};
+
+    use super::*;
+    use crate::cost::TokenUsage;
+    use crate::instance::SessionSource;
+    use crate::session::{FileEdit, ModelUsage, UserMessage};
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().expect("timestamp")
+    }
+
+    fn session() -> SessionRecord {
+        SessionRecord {
+            session_id: "abcdef1234".into(),
+            source: SessionSource::ClaudeCode,
+            cwd: "/r".into(),
+            git_branch: Some("main".into()),
+            started_at: at("2026-11-01T10:00:00Z"),
+            ended_at: at("2026-11-01T11:00:00Z"),
+            user_messages: vec![
+                UserMessage {
+                    at: at("2026-11-01T10:00:00Z"),
+                    text: "make b return 2".into(),
+                },
+                UserMessage {
+                    at: at("2026-11-01T10:20:00Z"),
+                    text: "and keep a".into(),
+                },
+            ],
+            edits: vec![FileEdit {
+                at: at("2026-11-01T10:10:00Z"),
+                path: "/r/src/lib.rs".into(),
+                added_lines: vec!["pub fn b() -> u8 { 2 }".into()],
+            }],
+            usage: vec![ModelUsage {
+                at: at("2026-11-01T10:05:00Z"),
+                message_id: "m1".into(),
+                model: "claude-opus".into(),
+                usage: TokenUsage {
+                    input: 10,
+                    output: 20,
+                    ..TokenUsage::default()
+                },
+            }],
+        }
+    }
+
+    fn commit(sha: &str, when: &str) -> CommitFacts {
+        CommitFacts {
+            sha: sha.into(),
+            parent: "base".into(),
+            committed_at: at(when),
+            subject: "b returns 2".into(),
+            files: vec!["src/lib.rs".into()],
+            added_lines: vec!["pub fn b() -> u8 { 2 }".into()],
+            trailers: vec!["Co-Authored-By: Claude".into()],
+            branches: vec!["main".into()],
+            is_merge: false,
+        }
+    }
+
+    #[test]
+    fn a_session_without_edits_in_the_repo_is_not_a_task() {
+        let mut s = session();
+        s.edits[0].path = "/elsewhere/x.rs".into();
+        assert_eq!(precheck(&s, &["/r".into()]), Err(Outcome::NoEditsInRepo));
+        s.user_messages.clear();
+        assert_eq!(precheck(&s, &["/r".into()]), Err(Outcome::NoTypedMessage));
+    }
+
+    #[test]
+    fn links_the_commit_and_drafts_a_task() {
+        let s = session();
+        let roots = vec!["/r".to_string()];
+        assert_eq!(precheck(&s, &roots), Ok(vec!["src/lib.rs".to_string()]));
+        let linked = link(&s, &roots, vec![commit("c1", "2026-11-01T10:30:00Z")]).expect("links");
+        assert_eq!(linked.first().sha, "c1");
+        let diff = patch::diff_texts(
+            "src/lib.rs",
+            Some("pub fn b() -> u8 { 1 }\n"),
+            "pub fn b() -> u8 { 2 }\n",
+        );
+        let task = draft_task("o/r", &linked, split(&diff).expect("splits"));
+        assert_eq!(task.instance_id, "r__abcdef12");
+        assert_eq!(task.base_commit, "base");
+        assert_eq!(task.problem_statement, "make b return 2");
+        assert_eq!(task.hints_text, "and keep a");
+        assert_eq!(task.x_nasiko.orig.model, "claude-opus");
+        assert_eq!(task.x_nasiko.test_source, TestSource::None);
+    }
+
+    #[test]
+    fn commits_outside_the_window_do_not_link() {
+        let s = session();
+        let late = commit("c1", "2026-11-02T10:30:00Z");
+        assert_eq!(
+            link(&s, &["/r".into()], vec![late]).err(),
+            Some(Outcome::NoMatch)
+        );
+    }
+
+    #[test]
+    fn inline_tests_move_to_the_test_patch() {
+        let base = "pub fn b() -> u8 { 1 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
+        let gold = "pub fn b() -> u8 { 2 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n\n    #[test]\n    fn new() { assert_eq!(super::b(), 2) }\n}\n";
+        let mut parts = split(&patch::diff_texts("src/lib.rs", Some(base), gold)).expect("splits");
+        assert_eq!(inline_test_paths(&parts), vec!["src/lib.rs"]);
+        let versions = BTreeMap::from([(
+            "src/lib.rs".to_string(),
+            FileVersions {
+                base: Some(base.into()),
+                gold: gold.into(),
+            },
+        )]);
+        split_inline_rust_tests(&mut parts, &versions).expect("splits inline");
+        assert_eq!(parts.gold.len(), 1);
+        assert_eq!(parts.test.len(), 1);
+        assert!(parts.gold[0].text.contains("+pub fn b() -> u8 { 2 }"));
+        assert!(parts.test[0].text.contains("fn new()"));
+        assert!(parts.mixed.is_empty());
+    }
+
+    #[test]
+    fn a_models_edits_to_inline_tests_are_not_graded() {
+        let base = "pub fn f() -> u8 {\n    1\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n}\n";
+        let model = "pub fn f() -> u8 {\n    2\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn old() {}\n\n    #[test]\n    fn hidden() {}\n}\n";
+        let files = diff::parse_unified(&patch::diff_texts("src/lib.rs", Some(base), model))
+            .expect("parses");
+        assert_eq!(graded_paths(&files), vec!["src/lib.rs"]);
+        let texts = BTreeMap::from([("src/lib.rs".to_string(), base.to_string())]);
+        let graded = graded_files(files, &texts).expect("grades");
+        assert_eq!(graded.len(), 1);
+        assert!(graded[0].text.contains("+    2"));
+        assert!(!graded[0].text.contains("hidden"));
+
+        let tests_only = base.replace("fn old() {}", "fn old() { assert!(true) }");
+        let files = diff::parse_unified(&patch::diff_texts("src/lib.rs", Some(base), &tests_only))
+            .expect("parses");
+        assert!(graded_files(files, &texts).expect("grades").is_empty());
+    }
+}

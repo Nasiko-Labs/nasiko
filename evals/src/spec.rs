@@ -108,6 +108,22 @@ pub fn cargo_scope(packages: &[String]) -> Vec<String> {
     packages.iter().map(|p| format!("-p {p}")).collect()
 }
 
+/// The `Cargo.toml` paths that may own `path`, nearest first: each folder above it up to the
+/// repo root. The first one that exists names the file's package.
+pub fn manifests_above(path: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut dir = std::path::Path::new(path).parent();
+    while let Some(d) = dir {
+        out.push(if d.as_os_str().is_empty() {
+            "Cargo.toml".to_string()
+        } else {
+            format!("{}/Cargo.toml", d.display())
+        });
+        dir = d.parent();
+    }
+    out
+}
+
 /// Exit codes of [`eval_script`] that are not the test command's own.
 pub const EXIT_MODEL_PATCH: i32 = 10;
 pub const EXIT_TEST_PATCH: i32 = 11;
@@ -131,6 +147,20 @@ pub fn eval_script(spec: &EnvSpec, scope: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn manifests_are_listed_nearest_first() {
+        assert_eq!(
+            manifests_above("oss/x/src/lib.rs"),
+            vec![
+                "oss/x/src/Cargo.toml",
+                "oss/x/Cargo.toml",
+                "oss/Cargo.toml",
+                "Cargo.toml"
+            ]
+        );
+        assert_eq!(manifests_above("lib.rs"), vec!["Cargo.toml"]);
+    }
 
     #[test]
     fn reads_pinned_channels_only() {

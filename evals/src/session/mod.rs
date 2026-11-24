@@ -1,6 +1,7 @@
 //! A finished coding-agent session, reduced to what the evals need.
 
 pub mod claude_code;
+pub mod coding_events;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};

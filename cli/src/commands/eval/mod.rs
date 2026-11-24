@@ -8,7 +8,6 @@ pub mod dataset;
 pub mod gateway;
 pub mod git;
 pub mod harvest;
-pub mod images;
 pub mod llm;
 pub mod report;
 pub mod router;
@@ -17,6 +16,7 @@ pub mod screen;
 pub mod store;
 
 use anyhow::Result;
+pub use nasiko_evals::images;
 use nasiko_evals::{EvalLayout, TaskStatus};
 use nasiko_utils::display::trunc;
 use tabled::settings::{Alignment, Style};

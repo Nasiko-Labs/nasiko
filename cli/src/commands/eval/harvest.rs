@@ -1,9 +1,8 @@
-//! `nasiko eval harvest`: finished Claude Code sessions → candidate tasks.
+//! `nasiko eval local harvest`: finished Claude Code sessions → candidate tasks.
 //!
 //! For each session log of the repo: read it, find the commits made during it (or up to two
-//! hours after), score each, and when one commit (or one unbroken run of commits) clearly is
-//! the session's work, write a candidate task with the gold patch and test patch split apart.
-//! The problem statement is the person's first message for now; prompt P1 rewrites it later.
+//! hours after), and let the shared harvest steps (`nasiko_evals::harvest`) link and draft the
+//! task. This module only reads the logs and asks local git for what those steps need.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -11,12 +10,10 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+pub use nasiko_evals::harvest::Outcome;
+use nasiko_evals::harvest::{self, FileVersions};
 use nasiko_evals::link::{self, LinkDecision};
 use nasiko_evals::session::claude_code::parse_claude_code_log;
-use nasiko_evals::{
-    NasikoExtras, OriginalRun, SessionRecord, TaskInstance, TaskStatus, TestPathRules, TestSource,
-    diff, instance, rust_tests,
-};
 use serde::Serialize;
 
 use super::git::{Repo, TimeWindow};
@@ -38,31 +35,6 @@ pub struct HarvestArgs {
 pub enum Redo {
     Skip,
     All,
-}
-
-/// What happened to each session, for the summary.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Outcome {
-    Task,
-    NoTypedMessage,
-    NoEditsInRepo,
-    NoMatch,
-    Ambiguous,
-    Unreadable,
-}
-
-impl Outcome {
-    fn label(self) -> &'static str {
-        match self {
-            Outcome::Task => "task",
-            Outcome::NoTypedMessage => "no_typed_message",
-            Outcome::NoEditsInRepo => "no_edits_in_repo",
-            Outcome::NoMatch => "no_match",
-            Outcome::Ambiguous => "ambiguous",
-            Outcome::Unreadable => "unreadable",
-        }
-    }
 }
 
 /// Result of one harvest.
@@ -167,197 +139,54 @@ fn harvest_one(
     if since.is_some_and(|s| session.started_at < s) {
         return Ok(None);
     }
-    if session.user_messages.is_empty() {
-        return Ok(Some((Outcome::NoTypedMessage, None)));
-    }
-    if session.edited_paths_in(roots).is_empty() {
-        return Ok(Some((Outcome::NoEditsInRepo, None)));
-    }
+    let edited = match harvest::precheck(&session, roots) {
+        Ok(edited) => edited,
+        Err(outcome) => return Ok(Some((outcome, None))),
+    };
     let window = TimeWindow {
         from: session.started_at,
         to: session.ended_at + link::window_after_end(),
     };
-    let edited = session.edited_paths_in(roots);
-    let mut commits = Vec::new();
+    let mut candidates = Vec::new();
     for (sha, files) in repo.commits_in(&window)? {
-        if !files.iter().any(|f| edited.contains(f)) {
-            continue;
-        }
-        let facts = repo.commit_facts(&sha)?;
-        if link::in_window(&session, &facts) && link::is_eligible(&facts) {
-            commits.push(facts);
+        if harvest::touches_edits(&files, &edited) {
+            candidates.push(repo.commit_facts(&sha)?);
         }
     }
-    let scores: Vec<_> = commits
-        .iter()
-        .map(|c| link::score(&session, roots, c))
-        .collect();
-    let decision = link::decide(&scores);
-    let (first, last) = match &decision {
-        LinkDecision::Single { link } => (link.clone(), link.clone()),
-        LinkDecision::Range { first, last } => (first.clone(), last.clone()),
-        LinkDecision::Ambiguous { .. } => return Ok(Some((Outcome::Ambiguous, None))),
-        LinkDecision::NoMatch => return Ok(Some((Outcome::NoMatch, None))),
+    let linked = match harvest::link(&session, roots, candidates) {
+        Ok(linked) => linked,
+        Err(outcome) => return Ok(Some((outcome, None))),
     };
-    let first_commit = commits
-        .iter()
-        .find(|c| c.sha == first.sha)
-        .context("linked commit vanished")?;
-    let last_commit = commits
-        .iter()
-        .find(|c| c.sha == last.sha)
-        .context("linked commit vanished")?;
-    // A long session often holds several tasks: keep only the part from the message that led
-    // to the first edit of the commit's files up to the commit itself.
-    let linked_files: Vec<String> = commits
-        .iter()
-        .filter(|c| {
-            c.committed_at >= first_commit.committed_at
-                && c.committed_at <= last_commit.committed_at
-        })
-        .flat_map(|c| c.files.clone())
-        .collect();
-    let start = session.task_start(roots, &linked_files);
-    let slice = session.slice(start, last_commit.committed_at);
-    let task = draft_task(
-        repo,
-        &slice,
-        first_commit,
-        last_commit,
-        first.total.min(last.total),
-    )?;
+    let (base, gold) = (linked.first().parent.clone(), linked.last().sha.clone());
+    let mut split = harvest::split(&repo.diff(&base, &gold)?)?;
+    let mut versions = BTreeMap::new();
+    for path in harvest::inline_test_paths(&split) {
+        versions.insert(
+            path.clone(),
+            FileVersions {
+                base: repo.file_at(&base, &path)?,
+                gold: repo.file_at(&gold, &path)?.unwrap_or_default(),
+            },
+        );
+    }
+    harvest::split_inline_rust_tests(&mut split, &versions)?;
+    let task = harvest::draft_task(&repo.full_name(), &linked, split);
     let id = task.instance_id.clone();
     let layout = store.layout();
     store.save_task(&task)?;
-    let linked: Vec<&nasiko_evals::CommitFacts> = commits
-        .iter()
-        .filter(|c| {
-            c.committed_at >= first_commit.committed_at
-                && c.committed_at <= last_commit.committed_at
-        })
-        .collect();
+    let commits: Vec<&nasiko_evals::CommitFacts> = linked.commits.iter().collect();
     store.save_json(
         &layout.source_file(&id),
-        &nasiko_evals::TaskSource::new(&session, &slice, &linked),
+        &nasiko_evals::TaskSource::new(&session, &linked.slice, &commits),
     )?;
     store.save_json(
         &layout.link_file(&id),
         &LinkFile {
-            decision,
-            candidates: scores,
+            decision: linked.decision,
+            candidates: linked.candidates,
         },
     )?;
     Ok(Some((Outcome::Task, Some(id))))
-}
-
-fn draft_task(
-    repo: &Repo,
-    session: &SessionRecord,
-    first: &nasiko_evals::CommitFacts,
-    last: &nasiko_evals::CommitFacts,
-    link_score: f64,
-) -> Result<TaskInstance> {
-    let base = &first.parent;
-    let full = repo.diff(base, &last.sha)?;
-    let mut split = diff::split_tests(diff::parse_unified(&full)?, &TestPathRules::rust_default());
-    split_inline_rust_tests(repo, base, &last.sha, &mut split)?;
-    let usage = session.total_usage();
-    let (statement, hints) = statement_and_hints(session);
-    Ok(TaskInstance {
-        instance_id: instance::instance_id(&repo.slug(), &session.session_id),
-        repo: repo.full_name(),
-        base_commit: base.clone(),
-        environment_setup_commit: base.clone(),
-        version: last.committed_at.format("%Y.%m").to_string(),
-        created_at: last.committed_at,
-        problem_statement: statement,
-        hints_text: hints,
-        patch: diff::join(&split.gold),
-        test_patch: diff::join(&split.test),
-        fail_to_pass: Vec::new(),
-        pass_to_pass: Vec::new(),
-        image: String::new(),
-        eval_script: String::new(),
-        log_parser: String::new(),
-        eval_type: String::new(),
-        difficulty: None,
-        x_nasiko: NasikoExtras {
-            status: TaskStatus::Candidate,
-            source: session.source,
-            source_session_id: session.session_id.clone(),
-            gold_commit: last.sha.clone(),
-            link_score,
-            test_source: if split.test.is_empty() {
-                TestSource::None
-            } else {
-                TestSource::Commit
-            },
-            orig: OriginalRun {
-                model: session.main_model().unwrap_or_default(),
-                usage,
-                user_turns: session.user_messages.len() as u32,
-            },
-            mixed_files: split.mixed,
-            reject_reason: None,
-            statement_rewritten: false,
-            test_scope: Vec::new(),
-        },
-    })
-}
-
-/// Moves each changed Rust file's inline `#[cfg(test)]` module change into the test patch.
-/// Files that cannot be split (several test modules) stay in `mixed`.
-fn split_inline_rust_tests(
-    repo: &Repo,
-    base: &str,
-    gold: &str,
-    split: &mut diff::SplitPatch,
-) -> Result<()> {
-    let mut gold_files = Vec::new();
-    let mut unsplit = Vec::new();
-    for file in std::mem::take(&mut split.gold) {
-        let path = file.path().to_string();
-        if !path.ends_with(".rs") || file.new_path.is_none() {
-            gold_files.push(file);
-            continue;
-        }
-        // A file the fix creates keeps its tests: hidden tests in it could only ever apply to a
-        // fix that creates the very same file, which would punish a correct fix laid out
-        // differently. Hidden tests come from files that already existed, as in SWE-bench.
-        let Some(old) = repo.file_at(base, &path)? else {
-            gold_files.push(file);
-            continue;
-        };
-        let old = Some(old);
-        let new = repo.file_at(gold, &path)?.unwrap_or_default();
-        let Some(middle) = rust_tests::code_with_old_tests(old.as_deref().unwrap_or(""), &new)
-        else {
-            if split.mixed.contains(&path) {
-                unsplit.push(path);
-            }
-            gold_files.push(file);
-            continue;
-        };
-        if middle == new {
-            gold_files.push(file);
-            continue;
-        }
-        let code_part = repo.diff_texts(&path, old.as_deref(), &middle)?;
-        let test_part = repo.diff_texts(&path, Some(&middle), &new)?;
-        gold_files.extend(diff::parse_unified(&code_part)?);
-        split.test.extend(diff::parse_unified(&test_part)?);
-    }
-    split.gold = gold_files;
-    split.mixed = unsplit;
-    Ok(())
-}
-
-/// Until prompt P1 rewrites it: the first typed message is the statement, later ones are hints.
-fn statement_and_hints(session: &SessionRecord) -> (String, String) {
-    let mut messages = session.user_messages.iter().map(|m| m.text.as_str());
-    let statement = messages.next().unwrap_or_default().to_string();
-    let hints = messages.collect::<Vec<_>>().join("\n\n---\n\n");
-    (statement, hints)
 }
 
 #[derive(Serialize)]
