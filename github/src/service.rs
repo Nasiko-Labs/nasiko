@@ -38,7 +38,7 @@ pub struct GitHubService {
     /// Client targeting `https://github.com`.
     github_client: HttpClient,
     /// Client targeting `https://api.github.com`.
-    api_client: HttpClient,
+    pub(crate) api_client: HttpClient,
 }
 
 impl GitHubService {
@@ -626,7 +626,7 @@ fn strip_prefix_and_repack(raw: &[u8], size_cap: u64) -> Result<Vec<u8>> {
 /// Allowed characters: `[A-Za-z0-9._-]` in each segment, separated by a
 /// single `/`.  This is defense-in-depth even though `Command` does not use a
 /// shell — it prevents path traversal and arg-injection surprises.
-fn validate_repo_full_name(name: &str) -> Result<()> {
+pub(crate) fn validate_repo_full_name(name: &str) -> Result<()> {
     let parts: Vec<&str> = name.splitn(2, '/').collect();
     if parts.len() != 2 {
         return Err(Error::GitClone(format!(
@@ -647,7 +647,7 @@ fn validate_repo_full_name(name: &str) -> Result<()> {
 }
 
 /// Reject branch names that contain shell-unsafe or git-unsafe characters.
-fn validate_branch_name(branch: &str) -> Result<()> {
+pub(crate) fn validate_branch_name(branch: &str) -> Result<()> {
     if branch.is_empty() {
         return Err(Error::GitClone("branch name must not be empty".into()));
     }

@@ -68,6 +68,29 @@ impl HttpClient {
         Self::parse(resp).await
     }
 
+    /// GET `path` with a Bearer token and an `Accept` media type; the body as text. Used for
+    /// GitHub's raw file and diff media types, which are not JSON.
+    pub async fn get_text_authed(&self, path: &str, token: &str, accept: &str) -> Result<String> {
+        let resp = self
+            .inner
+            .get(self.url(path))
+            .bearer_auth(token)
+            .header("Accept", accept)
+            .send()
+            .await
+            .map_err(Error::Http)?;
+        let status = resp.status();
+        if status.is_success() {
+            return resp.text().await.map_err(Error::Http);
+        }
+        let body = resp.text().await.unwrap_or_default();
+        Err(match status.as_u16() {
+            401 | 403 => Error::Auth(body),
+            404 => Error::NotFound(body),
+            code => Error::HttpStatus { status: code, body },
+        })
+    }
+
     /// POST form-encoded data; deserialize response body into `T`.
     /// Used for the GitHub token exchange (no auth header).
     pub async fn post_form<T: DeserializeOwned>(
