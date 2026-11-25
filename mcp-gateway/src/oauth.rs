@@ -221,6 +221,9 @@ impl RefreshRequest<'_> {
     }
 
     async fn send(&self, http: &reqwest::Client, scope: Option<&str>) -> RefreshOutcome {
+        if let Err(why) = crate::net::check_remote_endpoint(self.token_endpoint) {
+            return RefreshOutcome::Failed(format!("token endpoint {why}"));
+        }
         let mut request = http
             .post(self.token_endpoint)
             .timeout(REFRESH_TIMEOUT)
@@ -580,6 +583,8 @@ pub async fn exchange_code(
         form.push(("client_secret", secret.to_string()));
     }
 
+    crate::net::check_remote_endpoint(token_endpoint)
+        .map_err(|why| McpError::Oauth(format!("token endpoint {why}")))?;
     let mut req = http
         .post(token_endpoint)
         .timeout(DISCOVERY_TIMEOUT)
@@ -1094,6 +1099,7 @@ const OFFLINE_ACCESS_SCOPE: &str = "offline_access";
 /// its `WWW-Authenticate` value (returned here) may name the resource
 /// metadata URL and the scope to request.
 async fn fetch_auth_challenge(http: &reqwest::Client, mcp_url: &str) -> Result<AuthProbe> {
+    crate::net::check_remote_endpoint(mcp_url).map_err(McpError::BadRequest)?;
     let probe = http
         .post(mcp_url)
         .timeout(DISCOVERY_TIMEOUT)
@@ -1256,6 +1262,10 @@ async fn fetch_resource_metadata_document(http: &reqwest::Client, url: &str) -> 
 /// A JSON document from a successful `GET`; `None` for any failure, since
 /// every caller moves on to its next candidate URL.
 async fn fetch_json_document(http: &reqwest::Client, url: &str) -> Option<Value> {
+    if let Err(why) = crate::net::check_remote_endpoint(url) {
+        tracing::warn!(%url, %why, "skipped an OAuth metadata URL");
+        return None;
+    }
     let response = http.get(url).timeout(DISCOVERY_TIMEOUT).send().await.ok()?;
     if !response.status().is_success() {
         return None;
@@ -1363,6 +1373,8 @@ async fn register_dynamic_client(
     registration_endpoint: &str,
     redirect_uri: &str,
 ) -> Result<Option<RegisteredClient>> {
+    crate::net::check_remote_endpoint(registration_endpoint)
+        .map_err(|why| McpError::Oauth(format!("registration endpoint {why}")))?;
     let response = http
         .post(registration_endpoint)
         .timeout(DISCOVERY_TIMEOUT)
