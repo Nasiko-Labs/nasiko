@@ -1,7 +1,7 @@
 -- Replay evals the server runs (`/api/evals/*`).
 --
 -- A dataset is built from coding sessions a person picked: each session is linked to the commit
--- it produced (the repository comes from the session, 0114), split into the real fix and its
+-- it produced (the repository comes from the session, 0116), split into the real fix and its
 -- tests, and becomes a task. A task is rewritten as an issue, built and tested (its
 -- FAIL_TO_PASS / PASS_TO_PASS lists), and screened by reviewer models; a verified task can be
 -- run. A run replays chosen tasks on chosen models (each one of the person's own LLM configs)

@@ -1,6 +1,6 @@
 -- no-transaction
 -- `GET /api/evals/usage?run=<run>` totals one run's attempts: the caller's `trace_usage` rows whose
--- `eval_attempt` starts with `<run>:` (0112). Only eval rows carry the column, so a partial index
+-- `eval_attempt` starts with `<run>:` (0114). Only eval rows carry the column, so a partial index
 -- over them stays as small as the evals themselves. `text_pattern_ops` compares byte by byte, which
 -- is what a prefix range needs whatever the database collation: the read asks for
 -- `eval_attempt ~>=~ '<run>:' AND eval_attempt ~<~ '<run>;'`.
