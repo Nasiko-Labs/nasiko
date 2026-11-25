@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::sessions::admission::refuse_turn;
+use crate::sessions::admission::refuse_session;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -195,11 +195,11 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // A message to a harness starts a turn, refused while coding sessions are switched off.
-    // Asked before anything is written for the turn: a refused one leaves no session row,
-    // transcript or flow.
-    if let Some(crate::coding::proxy::AgentTarget::Harness(_)) = &coding_target
-        && let Some(refusal) = refuse_harness_turn(&state, &body_bytes)
+    // A message to a harness starts a turn, which the session admission may refuse (it can need
+    // an agent of the caller's own). Asked before anything is written for the turn: a refused
+    // one leaves no session row, transcript or flow.
+    if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target
+        && let Some(refusal) = refuse_harness_turn(&state, &claims, target, &body_bytes).await?
     {
         return Ok(refusal);
     }
@@ -250,7 +250,11 @@ pub async fn agent_proxy(
             .await
         {
             tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
-            return Err(StatusCode::SERVICE_UNAVAILABLE);
+            // Still a 503: a wrapping runtime may translate one it recorded a refusal for.
+            return Ok(axum::response::IntoResponse::into_response((
+                StatusCode::SERVICE_UNAVAILABLE,
+                msg,
+            )));
         }
         let caller = Caller {
             flow_id: Some(flow_ctx.flow_id.clone()),
@@ -810,7 +814,7 @@ pub async fn agent_proxy(
 /// The answer to a request whose agent could not be resolved: its status, and a `Retry-After`
 /// when a retry can get past it (the agent was parked as the request reached it).
 fn resolve_refusal(e: &crate::agent_resolver::ResolveError) -> Response {
-    let mut response = Response::new(Body::empty());
+    let mut response = Response::new(Body::from(e.client_message()));
     *response.status_mut() = e.http_status();
     if let Some(secs) = e.retry_after_secs() {
         response.headers_mut().insert(
@@ -895,14 +899,23 @@ async fn reject_foreign_harness_session(
     session.map(Some).ok_or(StatusCode::NOT_FOUND)
 }
 
-/// The refusal of a message to a harness (`sessions::admission::refuse_turn`), as a JSON-RPC
-/// error on a 200 like the other harness errors here, the refusal's body as its `data`. `None`
-/// for a request that sends no message (it starts no turn) and for an admitted one.
-fn refuse_harness_turn(state: &AppState, body: &[u8]) -> Option<Response> {
-    let id = message_send_id(body)?;
-    refuse_turn(state).map(|refusal| {
+/// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
+/// the other harness errors here, the refusal's body as its `data`. `None` for a request that
+/// sends no message (it starts no turn) and for an admitted one.
+async fn refuse_harness_turn(
+    state: &AppState,
+    claims: &Claims,
+    target: &crate::coding::proxy::HarnessTarget,
+    body: &[u8],
+) -> Result<Option<Response>, StatusCode> {
+    let Some(id) = message_send_id(body) else {
+        return Ok(None);
+    };
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let refusal = refuse_session(state, user_id, &target.harness_id).await;
+    Ok(refusal.map(|refusal| {
         axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
-    })
+    }))
 }
 
 /// The request id of a message send, `None` for any other request.
@@ -1885,13 +1898,26 @@ mod tests {
 
     #[test]
     fn a_request_that_met_a_park_is_told_when_to_try_again() {
-        let parked = resolve_refusal(&ResolveError::ParkedMidRequest);
+        let parked = resolve_refusal(&ResolveError::ParkedMidRequest("parked".to_owned()));
         assert_eq!(parked.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(parked.headers()[RETRY_AFTER], "2");
 
         let gone = resolve_refusal(&ResolveError::NotFound);
         assert_eq!(gone.status(), StatusCode::NOT_FOUND);
         assert!(gone.headers().get(RETRY_AFTER).is_none());
+    }
+
+    #[tokio::test]
+    async fn a_request_refused_after_a_declined_wake_is_told_why_and_when_to_try_again() {
+        let reason = "This workspace cannot start more agents.";
+        let refused = resolve_refusal(&ResolveError::ParkedMidRequest(reason.to_owned()));
+
+        assert_eq!(refused.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(refused.headers()[RETRY_AFTER], "2");
+        let body = axum::body::to_bytes(refused.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        assert_eq!(body, reason);
     }
 
     #[test]
