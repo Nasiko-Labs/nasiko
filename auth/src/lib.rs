@@ -158,6 +158,23 @@ pub trait AuthService: Send + Sync + 'static {
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
     async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool;
 
+    /// The agents in `agent_ids` that `identity` may access, by the rule [`Self::can_access_agent`]
+    /// applies to one. A database-backed impl answers in one read, so a view scoped to everything
+    /// the caller can see costs one query, not one per agent in the deployment.
+    async fn accessible_agents(
+        &self,
+        identity: &Identity,
+        agent_ids: &[uuid::Uuid],
+    ) -> Vec<uuid::Uuid> {
+        let mut accessible = Vec::new();
+        for id in agent_ids {
+            if self.can_access_agent(identity, &id.to_string()).await {
+                accessible.push(*id);
+            }
+        }
+        accessible
+    }
+
     // ─── Permission checks (OSS: allow-all; EE: DB-backed RBAC) ──────────────────
 
     /// May the identity deploy/build agents and manage containers? (EE: ≥ team_member)

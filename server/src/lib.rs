@@ -34,6 +34,7 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod current_time;
+pub mod dashboard_limit;
 pub mod embedding_change;
 pub mod error_reporting;
 pub mod flow_sweeper;
@@ -396,7 +397,7 @@ where
         .merge(context_selection::router())
         .merge(onboarding::router())
         .merge(assessment::router(assessment_limiter))
-        .merge(overview::router())
+        .merge(overview::router(state.clone()))
         .merge(coding_agent_onboarding::router())
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))

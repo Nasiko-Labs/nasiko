@@ -393,11 +393,15 @@ pub struct AgentHoursAgg {
 /// Open sessions end at `last_seen_at` (never `now()`), so settled windows are
 /// immutable on re-query and a dead poller can't inflate hours. Negative
 /// overlaps from clock skew clamp to zero.
+///
+/// `agents` narrows the read to those agents (`None`: every agent, deleted ones included). A
+/// caller that will keep only some agents' rows passes them here: the whole fleet is one row per
+/// agent ever run.
 pub async fn windowed_agent_hours(
     db: &PgPool,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-    agent_id: Option<Uuid>,
+    agents: Option<&[Uuid]>,
 ) -> sqlx::Result<Vec<AgentHoursAgg>> {
     sqlx::query_as(
         r#"SELECT
@@ -414,13 +418,15 @@ pub async fn windowed_agent_hours(
            WHERE s.kind = 'container'
              AND s.started_at < $2
              AND COALESCE(s.ended_at, s.last_seen_at) > $1
-             AND ($3::uuid IS NULL OR s.agent_id = $3)
+             AND ($3::uuid[] IS NULL OR s.agent_id = ANY($3))
            GROUP BY s.agent_id, a.id, a.display_name, a.name, a.deleted_at
            ORDER BY hours DESC"#,
     )
+    // Unprepared, so `$3` is planned as the list it is (see `overview/load.rs::bind_usage`).
+    .persistent(false)
     .bind(start)
     .bind(end)
-    .bind(agent_id)
+    .bind(agents)
     .fetch_all(db)
     .await
 }
