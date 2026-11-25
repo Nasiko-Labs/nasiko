@@ -27,9 +27,21 @@ pub fn opencode_version() -> &'static str {
 /// Node image opencode's npm package is installed from (the harness image's base).
 const NODE_IMAGE: &str = "node:22-bookworm-slim";
 
+/// Cargo without debug info or incremental state: most of a `target/` directory is both, and
+/// the warm build is baked into the task image, so this is what keeps the image, the builder's
+/// memory and disk, and every test run's disk small. Set in the image, so the warm build and the
+/// runs that reuse it build with the same profile.
+const CARGO_LEAN_ENV: &str = "ENV CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
+                              CARGO_PROFILE_TEST_DEBUG=0\n";
+
+/// Compile jobs for the warm build: it runs on a shared image builder with little memory, where
+/// a large workspace at full parallelism runs out of it. Test runs keep their own CPUs.
+const WARM_BUILD_JOBS: u32 = 2;
+
 pub fn env_dockerfile(spec: &EnvSpec) -> String {
     let mut packages = vec!["git", "ca-certificates", "curl", "ripgrep"];
     packages.extend(spec.system_packages.iter().map(String::as_str));
+    let cargo = if is_cargo(spec) { CARGO_LEAN_ENV } else { "" };
     format!(
         "FROM {toolchain}\n\
          RUN apt-get update \\\n    && apt-get install -y --no-install-recommends {packages} \\\n    && rm -rf /var/lib/apt/lists/*\n\
@@ -37,7 +49,8 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
          COPY --from={NODE_IMAGE} /usr/local/bin/node /usr/local/bin/node\n\
          COPY --from={NODE_IMAGE} /usr/local/lib/node_modules /usr/local/lib/node_modules\n\
          RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \\\n    && npm install -g opencode-ai@{version} && npm cache clean --force\n\
-         ENV OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \\\n    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \\\n    OPENCODE_DISABLE_PROJECT_CONFIG=1\n",
+         ENV OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \\\n    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \\\n    OPENCODE_DISABLE_PROJECT_CONFIG=1\n\
+         {cargo}",
         toolchain = spec.toolchain_image,
         packages = packages.join(" "),
         version = opencode_version(),
@@ -60,9 +73,14 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
     }
     // Warm the build of the affected crates at the base commit; a failure here is fine (the
     // gate will report it), it only means the cache is colder.
+    let jobs = if is_cargo(spec) {
+        format!("CARGO_BUILD_JOBS={WARM_BUILD_JOBS} ")
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         df,
-        "RUN {} || true",
+        "RUN {jobs}{} || true",
         spec::with_scope(&spec.build_cmd, scope)
     );
     // No `CARGO_NET_OFFLINE` here: the containers that use this image already have no network,
@@ -97,6 +115,10 @@ pub fn task_image_tag(spec: &EnvSpec, base_commit: &str, scope: &[String]) -> St
         // The whole recipe, so a change to it (or to the env image) never reuses a stale image.
         short_hash(&task_dockerfile(&env_image_tag(spec), spec, scope))
     )
+}
+
+fn is_cargo(spec: &EnvSpec) -> bool {
+    matches!(spec.language, spec::Language::Rust)
 }
 
 fn slug(repo: &str) -> String {
@@ -141,9 +163,18 @@ mod tests {
         assert!(df.starts_with("FROM env:1\n"));
         assert!(df.contains("git init -q"));
         assert!(df.contains("RUN cargo fetch"));
-        assert!(df.contains("RUN cargo test -p nasiko-compress --no-run || true"));
+        assert!(
+            df.contains("RUN CARGO_BUILD_JOBS=2 cargo test -p nasiko-compress --no-run || true")
+        );
         // Changing it after the warm build would re-run build scripts that watch it, offline.
         assert!(!df.contains("CARGO_NET_OFFLINE"));
+    }
+
+    #[test]
+    fn rust_images_build_without_debug_info_or_incremental_state() {
+        let env = env_dockerfile(&rust_spec());
+        assert!(env.contains("CARGO_INCREMENTAL=0"));
+        assert!(env.contains("CARGO_PROFILE_TEST_DEBUG=0"));
     }
 
     #[test]
