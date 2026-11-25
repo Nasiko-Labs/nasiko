@@ -444,6 +444,20 @@ impl GitHubService {
         repo_full_name: &str,
         branch: &str,
     ) -> Result<CloneArchive> {
+        self.clone_to_archive_within(token, repo_full_name, branch, AGENT_CLONE_MAX_FILES)
+            .await
+    }
+
+    /// [`clone_to_archive`](Self::clone_to_archive) for a repository of up to `max_files`
+    /// entries, for callers that take whole projects rather than one agent's source.
+    #[instrument(skip(self, token), fields(repo = %repo_full_name, branch = %branch))]
+    pub async fn clone_to_archive_within(
+        &self,
+        token: &str,
+        repo_full_name: &str,
+        branch: &str,
+        max_files: usize,
+    ) -> Result<CloneArchive> {
         validate_repo_full_name(repo_full_name)?;
         validate_branch_name(branch)?;
 
@@ -470,10 +484,11 @@ impl GitHubService {
         let cap = self.cfg.clone_max_size_bytes;
 
         // Repacking involves synchronous CPU + I/O work; offload to the blocking pool.
-        let archive_bytes =
-            tokio::task::spawn_blocking(move || strip_prefix_and_repack(&raw_bytes, cap))
-                .await
-                .map_err(|e| Error::Io(std::io::Error::other(e)))??;
+        let archive_bytes = tokio::task::spawn_blocking(move || {
+            strip_prefix_and_repack(&raw_bytes, cap, max_files)
+        })
+        .await
+        .map_err(|e| Error::Io(std::io::Error::other(e)))??;
 
         let s3_key = format!("github/{repo_full_name}/{branch}.tar.gz");
 
@@ -517,6 +532,9 @@ impl GitHubService {
 
 // ── Module-level helpers ─────────────────────────────────────────────────────
 
+/// Most entries an agent's repository may have: [`GitHubService::clone_to_archive`]'s limit.
+pub const AGENT_CLONE_MAX_FILES: usize = 1_000;
+
 /// Current Unix timestamp in seconds.
 fn unix_now() -> u64 {
     SystemTime::now()
@@ -533,12 +551,10 @@ fn unix_now() -> u64 {
 /// expects.
 ///
 /// Also applies path-traversal guards and the size cap check.
-fn strip_prefix_and_repack(raw: &[u8], size_cap: u64) -> Result<Vec<u8>> {
+fn strip_prefix_and_repack(raw: &[u8], size_cap: u64, max_files: usize) -> Result<Vec<u8>> {
     use flate2::{Compression, read::GzDecoder, write::GzEncoder};
     use std::io::Read;
     use tar::Archive;
-
-    const MAX_FILES: usize = 1_000;
 
     let mut archive = Archive::new(GzDecoder::new(std::io::Cursor::new(raw)));
     let out = Vec::new();
@@ -580,9 +596,9 @@ fn strip_prefix_and_repack(raw: &[u8], size_cap: u64) -> Result<Vec<u8>> {
         }
 
         count += 1;
-        if count > MAX_FILES {
+        if count > max_files {
             return Err(Error::GitClone(format!(
-                "archive exceeds {MAX_FILES} entry limit"
+                "archive exceeds {max_files} entry limit"
             )));
         }
 
@@ -743,7 +759,8 @@ mod tests {
     #[test]
     fn strip_prefix_produces_valid_tar_with_dirs() {
         let raw = make_github_tarball("owner-repo-abc123");
-        let repacked = strip_prefix_and_repack(&raw, 500 * 1024 * 1024).unwrap();
+        let repacked =
+            strip_prefix_and_repack(&raw, 500 * 1024 * 1024, AGENT_CLONE_MAX_FILES).unwrap();
 
         // The repacked archive must be readable without a checksum error.
         use flate2::read::GzDecoder;
@@ -773,6 +790,14 @@ mod tests {
             !entries.iter().any(|p| p.starts_with("owner-repo-abc123")),
             "prefix not stripped: {entries:?}"
         );
+    }
+
+    #[test]
+    fn an_archive_over_the_entry_limit_is_refused() {
+        let raw = make_github_tarball("owner-repo-abc123");
+        let err = strip_prefix_and_repack(&raw, 500 * 1024 * 1024, 1).unwrap_err();
+        assert!(err.to_string().contains("1 entry limit"), "{err}");
+        assert!(strip_prefix_and_repack(&raw, 500 * 1024 * 1024, 2).is_ok());
     }
 
     // ── OAuth state crypto ─────────────────────────────────────────────────

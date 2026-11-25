@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 use crate::state::AppState;
 
+/// Most entries a task's repository may have. A task image holds a whole project, not one agent's
+/// source, so this is far above the agent upload's limit; the size cap still applies.
+const TASK_REPO_MAX_FILES: usize = 100_000;
+
 /// Why a repository cannot be read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForgeRefusal {
@@ -171,7 +175,7 @@ impl Forge {
     pub async fn archive(&self, git_ref: &str) -> Result<Vec<u8>> {
         Ok(self
             .svc
-            .clone_to_archive(&self.token, &self.repo, git_ref)
+            .clone_to_archive_within(&self.token, &self.repo, git_ref, TASK_REPO_MAX_FILES)
             .await?
             .archive_bytes)
     }
