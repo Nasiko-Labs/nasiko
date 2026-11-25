@@ -250,7 +250,7 @@ pub async fn agent_proxy(
             .await
         {
             tracing::warn!(%agent_id, %msg, "agent proxy: before_forward refused");
-            // Still a 503: the credits layer translates one it recorded a refusal for.
+            // Still a 503: a wrapping runtime may translate one it recorded a refusal for.
             return Ok(axum::response::IntoResponse::into_response((
                 StatusCode::SERVICE_UNAVAILABLE,
                 msg,
