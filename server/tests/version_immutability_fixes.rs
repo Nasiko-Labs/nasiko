@@ -260,6 +260,86 @@ async fn clone_genuine_deploy_failure_on_existing_agent_restores_instead_of_dele
     server.cleanup().await;
 }
 
+/// A deploy the runtime declines is no failure of the agent: the existing one is put back as it
+/// was (as for any failed deploy of an existing agent), and the user is told the declining
+/// layer's words, not the generic reason.
+#[tokio::test]
+#[serial]
+async fn clone_declined_deploy_on_existing_agent_restores_it_and_stores_the_message() {
+    const MESSAGE: &str = "This agent cannot be started right now. Try again later.";
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+
+    let agent_id = Uuid::new_v4();
+    seed_agent(
+        &server,
+        agent_id,
+        uid,
+        "existing-cli-agent-deploy-declined",
+        "1.0.0",
+        "nasiko/existing:1.0.0",
+        "stopped",
+    )
+    .await;
+    sqlx::query(
+        "UPDATE agents SET version = 'latest', image = 'nasiko/existing:latest', \
+         status = 'deploying' WHERE id = $1",
+    )
+    .bind(agent_id)
+    .execute(&server.db)
+    .await
+    .unwrap();
+    server
+        .runtime
+        .set_decline_deploy(Some(("start_refused", MESSAGE)));
+
+    let tar_gz = make_tar_gz(&[
+        ("AgentCard.json", br#"{"version": "2.0.0"}"#),
+        ("Dockerfile", b"FROM scratch"),
+    ]);
+    let tar_path = std::env::temp_dir().join(format!("test-clone-{}.tar.gz", Uuid::new_v4()));
+    std::fs::write(&tar_path, &tar_gz).unwrap();
+
+    let build_id = Uuid::new_v4();
+    seed_build(&server, build_id, agent_id, "2.0.0").await;
+    execute_clone_and_deploy(
+        &server.state,
+        build_id,
+        agent_id,
+        uid,
+        "upload-declined".to_string(),
+        "existing-cli-agent-deploy-declined".to_string(),
+        tar_path,
+        vec![8000],
+        HashMap::new(),
+        None,
+        Some("1.0.0".to_string()),
+        Some("nasiko/existing:1.0.0".to_string()),
+        Some("stopped".to_string()),
+    )
+    .await;
+
+    let row: (String, Option<String>, String) =
+        sqlx::query_as("SELECT version, image, status FROM agents WHERE id = $1")
+            .bind(agent_id)
+            .fetch_one(&server.db)
+            .await
+            .expect("the agent must still exist");
+    assert_eq!(row.0, "1.0.0");
+    assert_eq!(row.1.as_deref(), Some("nasiko/existing:1.0.0"));
+    assert_eq!(row.2, "stopped", "a decline is not a failure");
+    let stored: Option<String> =
+        sqlx::query_scalar("SELECT error_message FROM upload_status WHERE upload_id = $1")
+            .bind("upload-declined")
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(stored.as_deref(), Some(MESSAGE));
+
+    server.cleanup().await;
+}
+
 #[derive(Default)]
 struct RecordingDeletionHook(std::sync::Mutex<Vec<Uuid>>);
 
