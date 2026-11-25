@@ -181,8 +181,11 @@ async fn update_settings(
         )
             .into_response();
     }
+    // Every agent's embeddings use the org default, so it may name only a provider everyone
+    // may use (a superuser's), never the setter's private one: the nil id owns nothing.
     if let Some(provider) = &incoming_embedding.provider
-        && let Err(message) = crate::llm_configs::require_known_provider(&state.db, provider).await
+        && let Err(message) =
+            crate::llm_configs::require_known_provider(&state.db, provider, uuid::Uuid::nil()).await
     {
         return (
             StatusCode::BAD_REQUEST,

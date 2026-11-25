@@ -13,7 +13,7 @@
 //! the dispatch path uses — so what the probe reaches at registration is exactly what
 //! a call will reach later.
 //!
-//! - `GET    /api/custom-providers`            — list (key masked). Any authenticated user.
+//! - `GET    /api/custom-providers`            — list (key masked): the ones the caller may use.
 //! - `GET    /api/custom-providers/{id}/models`— discovered models for the provider.
 //! - `POST   /api/custom-providers`            — register. Any authenticated user.
 //! - `POST   /api/custom-providers/test`       — probe an endpoint without storing. Any authenticated user.
@@ -24,6 +24,11 @@
 //! Only a superuser may point a provider at a private address: the server calls the
 //! endpoint itself (probe, sync, every dispatch) and returns what it answers, so a
 //! private one from any user would reach internal services through it.
+//!
+//! A member's provider is theirs alone: a call through it spends the key they
+//! registered, so no one else sees it or can name it in a config ([`usable_by`]). A
+//! superuser's is the workspace's, shared with everyone, as every provider was before
+//! members could add them.
 //!
 //! Encryption uses `SecretsCrypto::for_platform_settings()` — the same scope the LLM
 //! router's resolver decrypts with — so a key stored here is readable on the dispatch
@@ -150,6 +155,14 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 fn internal(context: &str, e: impl std::fmt::Display) -> Response {
     tracing::error!(%e, "custom_providers: {context}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
+/// SQL over `custom_providers`: whether the user bound at `$n` may see the provider and
+/// route through it. Its creator may; everyone may when a superuser registered it.
+// ponytail: reads the creator's superuser flag live, so demoting a superuser makes their
+// providers private again; store a `shared` column if that ever matters.
+pub(crate) fn usable_by(n: u8) -> String {
+    format!("(created_by = ${n} OR created_by IN (SELECT id FROM users WHERE is_superuser))")
 }
 
 /// A non-superuser's endpoint must be public (see the module docs).
@@ -526,12 +539,19 @@ fn body_snippet(body: &str) -> String {
     body.chars().take(200).collect()
 }
 
-/// List all active custom providers (keys masked). Any authenticated user, so the
-/// LLM config screen can populate its provider selector.
-pub(crate) async fn list(State(state): State<AppState>, _claims: Claims) -> Response {
+/// List the active custom providers the caller may use (keys masked), so the LLM
+/// config screen can populate its provider selector.
+pub(crate) async fn list(State(state): State<AppState>, claims: Claims) -> Response {
+    let caller = match claims.user_uuid() {
+        Ok(u) => u,
+        Err((status, msg)) => return err(status, msg),
+    };
     let rows = sqlx::query_as::<_, ProviderView>(&format!(
-        "SELECT {VIEW_COLS} FROM custom_providers WHERE deleted_at IS NULL ORDER BY display_name"
+        "SELECT {VIEW_COLS} FROM custom_providers WHERE deleted_at IS NULL AND {} \
+         ORDER BY display_name",
+        usable_by(1)
     ))
+    .bind(caller)
     .fetch_all(&state.db)
     .await;
     match rows {
@@ -543,12 +563,18 @@ pub(crate) async fn list(State(state): State<AppState>, _claims: Claims) -> Resp
 /// The discovered models for one provider (from `provider_models`, keyed by label).
 pub(crate) async fn list_models(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let label: Option<(String,)> = match sqlx::query_as(
-        "SELECT label FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-    )
+    let caller = match claims.user_uuid() {
+        Ok(u) => u,
+        Err((status, msg)) => return err(status, msg),
+    };
+    let label: Option<(String,)> = match sqlx::query_as(&format!(
+        "SELECT label FROM custom_providers WHERE id = $2 AND deleted_at IS NULL AND {}",
+        usable_by(1)
+    ))
+    .bind(caller)
     .bind(id)
     .fetch_optional(&state.db)
     .await

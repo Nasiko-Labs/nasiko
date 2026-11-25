@@ -33,27 +33,35 @@ const SUPPORTED_PROVIDERS: [&str; 4] = ["openai", "anthropic", "gemini", "openro
 
 /// Resolve a provider identifier to the internal label stored in `llm_configs.provider`.
 /// Built-in names pass through; a UUID is resolved to the custom provider's label;
-/// an existing label passes through (backward compat).
-async fn resolve_provider_label(db: &sqlx::PgPool, provider: &str) -> Result<String, String> {
+/// an existing label passes through (backward compat). A custom provider `user` may not
+/// use (another member's, `custom_providers::usable_by`) reads as unknown, so a config
+/// can never spend someone else's key.
+async fn resolve_provider_label(
+    db: &sqlx::PgPool,
+    provider: &str,
+    user: Uuid,
+) -> Result<String, String> {
     if SUPPORTED_PROVIDERS.contains(&provider) {
         return Ok(provider.to_string());
     }
-    // Try as UUID first.
-    if let Ok(uuid) = uuid::Uuid::parse_str(provider) {
-        return match sqlx::query_scalar::<_, String>(
-            "SELECT label FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-        )
-        .bind(uuid)
-        .fetch_optional(db)
-        .await
-        {
-            Ok(Some(label)) => Ok(label),
-            Ok(None) => Err(unsupported_provider_msg(provider)),
-            Err(_) => Err("failed to resolve provider".to_string()),
-        };
+    // A custom provider by id or label; `usable` is whether `user` may route through it.
+    let row = sqlx::query_as::<_, (String, bool)>(&format!(
+        "SELECT label, {} FROM custom_providers \
+         WHERE (id::text = $2 OR label = $2) AND deleted_at IS NULL",
+        crate::llm_router::custom_providers::usable_by(1)
+    ))
+    .bind(user)
+    .bind(provider)
+    .fetch_optional(db)
+    .await
+    .map_err(|_| "failed to resolve provider".to_string())?;
+    match row {
+        Some((label, true)) => Ok(label),
+        Some((_, false)) => Err(unsupported_provider_msg(provider)),
+        None if Uuid::parse_str(provider).is_ok() => Err(unsupported_provider_msg(provider)),
+        // Legacy: pass through as-is (label-based).
+        None => Ok(provider.to_string()),
     }
-    // Legacy: pass through as-is (label-based).
-    Ok(provider.to_string())
 }
 
 /// Like [`resolve_provider_label`], but a label that matches no registered custom provider
@@ -68,11 +76,14 @@ async fn resolve_provider_label(db: &sqlx::PgPool, provider: &str) -> Result<Str
 pub(crate) async fn require_known_provider(
     db: &sqlx::PgPool,
     provider: &str,
+    user: Uuid,
 ) -> Result<String, String> {
-    let label = resolve_provider_label(db, provider).await?;
+    let label = resolve_provider_label(db, provider, user).await?;
     if SUPPORTED_PROVIDERS.contains(&label.as_str()) {
         return Ok(label);
     }
+    // resolve_provider_label already refused a provider `user` may not use, so any
+    // matching row here is a usable one.
     let registered = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM custom_providers WHERE label = $1 AND deleted_at IS NULL)",
     )
@@ -378,6 +389,7 @@ async fn validate_embedding(
     db: &sqlx::PgPool,
     provider: Option<&str>,
     model: Option<&str>,
+    user: Uuid,
 ) -> Result<Option<String>, String> {
     let provider = provider.map(str::trim).filter(|p| !p.is_empty());
     let model = model.map(str::trim).filter(|m| !m.is_empty());
@@ -388,7 +400,7 @@ async fn validate_embedding(
              with no provider cannot be routed)"
                 .to_string(),
         ),
-        (Some(p), Some(_)) => resolve_provider_label(db, p).await.map(Some),
+        (Some(p), Some(_)) => resolve_provider_label(db, p, user).await.map(Some),
     }
 }
 
@@ -528,7 +540,7 @@ pub(crate) async fn create(
         return (StatusCode::BAD_REQUEST, "name must not be empty").into_response();
     }
     // Resolve provider identifier (built-in name or custom provider UUID → internal label).
-    let provider_label = match resolve_provider_label(&state.db, &req.provider).await {
+    let provider_label = match resolve_provider_label(&state.db, &req.provider, user_id).await {
         Ok(label) => label,
         Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
     };
@@ -547,6 +559,7 @@ pub(crate) async fn create(
         &state.db,
         req.embedding_provider.as_deref(),
         req.embedding_model.as_deref(),
+        user_id,
     )
     .await
     {
@@ -659,7 +672,7 @@ pub(crate) async fn create(
     if let Err(e) = tx.commit().await {
         return db_error("commit", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
 
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::created(cfg, "LLM config created successfully").into_response(),
@@ -753,7 +766,7 @@ pub(crate) async fn update(
     };
     // Validate only the fields that are present; resolve UUID → internal label.
     let resolved_provider = if let Some(ref provider) = req.provider {
-        match resolve_provider_label(&state.db, provider).await {
+        match resolve_provider_label(&state.db, provider, user_id).await {
             Ok(label) => Some(label),
             Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
         }
@@ -788,7 +801,7 @@ pub(crate) async fn update(
     let embedding_model = blank_to_none(&req.embedding_model);
     let embedding_secret_name = blank_to_none(&req.embedding_api_key_secret_name);
     let embedding_provider = match blank_to_none(&req.embedding_provider) {
-        Some(p) => match resolve_provider_label(&state.db, &p).await {
+        Some(p) => match resolve_provider_label(&state.db, &p, user_id).await {
             Ok(label) => Some(label),
             Err(msg) => return (StatusCode::BAD_REQUEST, msg).into_response(),
         },
@@ -952,7 +965,7 @@ pub(crate) async fn update(
     if let Err(e) = result {
         return db_error("update", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::ok(cfg, "LLM config updated successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
@@ -1015,7 +1028,7 @@ pub(crate) async fn delete_config(
     .await;
     match result {
         Ok(_) => {
-            state.llm_configs_changed();
+            state.llm_config_cache.clear();
             ApiResponse::ok(json!(null), "LLM config deleted successfully").into_response()
         }
         Err(e) => db_error("delete", e),
@@ -1083,7 +1096,7 @@ pub(crate) async fn set_default(
     if let Err(e) = tx.commit().await {
         return db_error("commit", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => ApiResponse::ok(cfg, "LLM config set as default successfully").into_response(),
         None => (StatusCode::NOT_FOUND, "llm config not found").into_response(),
@@ -1138,7 +1151,7 @@ pub(crate) async fn clear_default(
     {
         return db_error("clear default", e);
     }
-    state.llm_configs_changed();
+    state.llm_config_cache.clear();
     match fetch_config(&state.db, id, user_id).await {
         Some(cfg) => {
             ApiResponse::ok(cfg, "LLM config default cleared successfully").into_response()

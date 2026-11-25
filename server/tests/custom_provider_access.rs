@@ -1,7 +1,7 @@
 //! Custom providers: any signed-in user may register one, but only its creator or a
-//! superuser may change it (every config that names a provider shares it, stored key
-//! included), and only a superuser may point one at a private address (the server
-//! calls the endpoint and relays what it answers).
+//! superuser may change it, and only a superuser may point one at a private address
+//! (the server calls the endpoint and relays what it answers). A member's provider is
+//! private to them, since a call through it spends their key; a superuser's is shared.
 //!
 //!   cargo test -p nasiko-server --test custom_provider_access -- --test-threads=1
 mod common;
@@ -25,10 +25,11 @@ async fn user(server: &common::TestServer, superuser: bool) -> String {
     id.to_string()
 }
 
-/// A provider row owned by `owner`, inserted directly so no test calls out.
-async fn provider(server: &common::TestServer, owner: &str) -> Uuid {
+/// A provider row owned by `owner` with one served model, inserted directly so no test
+/// calls out. Returns its id and label.
+async fn provider(server: &common::TestServer, owner: &str) -> (Uuid, String) {
     let label = format!("cp-{}", &Uuid::new_v4().simple().to_string()[..8]);
-    sqlx::query_scalar(
+    let id = sqlx::query_scalar(
         "INSERT INTO custom_providers (label, display_name, base_url, encrypted_api_key, created_by) \
          VALUES ($1, $1, 'https://llm.example.com/v1', 'x', $2::uuid) RETURNING id",
     )
@@ -36,7 +37,25 @@ async fn provider(server: &common::TestServer, owner: &str) -> Uuid {
     .bind(owner)
     .fetch_one(&server.db)
     .await
-    .unwrap()
+    .unwrap();
+    sqlx::query("INSERT INTO provider_models (provider, model) VALUES ($1, 'm')")
+        .bind(&label)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    (id, label)
+}
+
+/// The `key` of every row a GET of `path` lists for `user`.
+async fn seen(server: &common::TestServer, user: &str, path: &str, key: &str) -> Vec<String> {
+    let rb = common::as_member(server.client.get(server.url(path)), user, "u");
+    let body: Value = rb.send().await.unwrap().json().await.unwrap();
+    body["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|r| r[key].as_str().map(str::to_owned))
+        .collect()
 }
 
 async fn send(rb: reqwest::RequestBuilder, body: Option<&Value>) -> StatusCode {
@@ -58,7 +77,7 @@ async fn only_its_creator_or_a_superuser_changes_a_provider() {
     );
     let url = server.url(&format!(
         "/api/custom-providers/{}",
-        provider(&server, &owner).await
+        provider(&server, &owner).await.0
     ));
     let rename = json!({ "display_name": "Renamed" });
     let c = &server.client;
@@ -111,9 +130,64 @@ async fn a_member_cannot_point_a_provider_at_a_private_address() {
             .unwrap();
     assert_eq!(stored, 0);
 
-    let own = provider(&server, &member).await;
+    let (own, _) = provider(&server, &member).await;
     let url = server.url(&format!("/api/custom-providers/{own}"));
     let repoint = json!({ "base_url": "http://127.0.0.1:5432" });
     let rb = common::as_member(c.patch(&url), &member, "member");
     assert_eq!(send(rb, Some(&repoint)).await, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+#[serial]
+async fn a_members_provider_is_private_to_them() {
+    let server = common::TestServer::start().await;
+    let (owner, other, admin) = (
+        user(&server, false).await,
+        user(&server, false).await,
+        user(&server, true).await,
+    );
+    let (mine, mine_label) = provider(&server, &owner).await;
+    let (shared, shared_label) = provider(&server, &admin).await;
+
+    for (path, key) in [
+        ("/api/custom-providers", "label"),
+        ("/api/llm-router/providers", "provider"),
+    ] {
+        let owners = seen(&server, &owner, path, key).await;
+        assert!(
+            owners.contains(&mine_label) && owners.contains(&shared_label),
+            "{path}"
+        );
+        let others = seen(&server, &other, path, key).await;
+        assert!(
+            !others.contains(&mine_label) && others.contains(&shared_label),
+            "{path}"
+        );
+    }
+
+    let config = |who: &str, provider: String| {
+        common::as_member(server.client.post(server.url("/api/llm-configs")), who, "u").json(
+            &json!({ "name": format!("c-{}", Uuid::new_v4().simple()), "provider": provider, "model": "m" }),
+        )
+    };
+    for named in [mine.to_string(), mine_label.clone()] {
+        let status = config(&other, named.clone()).send().await.unwrap().status();
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{named}");
+    }
+    assert!(
+        config(&owner, mine.to_string())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    assert!(
+        config(&other, shared.to_string())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
 }

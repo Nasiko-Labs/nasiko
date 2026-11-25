@@ -82,6 +82,7 @@ import {
   deleteCustom,
   listConfigs,
   listCustom,
+  hiddenCustomLabels,
   listSecrets,
   deleteSecret,
   managedCustom,
@@ -645,6 +646,7 @@ function getRouter(): RouterState {
     routerState = buildRouterState(getAgents().agents, nowFn(), {
       empty: hasVariant('router-empty'),
       legacy: hasVariant('router-legacy'),
+      registrar: getHarnessSeed().users.find((u) => u.is_superuser && u.id !== ADMIN_ID)?.id,
     })
     routerKey = key
   }
@@ -1570,9 +1572,12 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         if (m.model === 'gemini-2.0-flash') rows.push(row('boot seed (static list)', 12))
         byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), ...rows])
       }
-      const custom = new Map(listCustom(getRouter()).map((c) => [c.label, c]))
+      const me = sessionUser().id
+      const custom = new Map(listCustom(getRouter(), me).map((c) => [c.label, c]))
+      const hidden = hiddenCustomLabels(getRouter(), me)
       return HttpResponse.json({
-        data: [...byProvider.entries()].map(([provider, models]) => {
+        data: [...byProvider.entries()].flatMap(([provider, models]) => {
+          if (hidden.has(provider)) return []
           const c = custom.get(provider)
           return c
             ? { provider, provider_id: c.id, display_name: c.display_name, models }
@@ -2053,16 +2058,25 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return HttpResponse.json({ data: page, total: page.length })
       }),
     ),
-    // custom_providers.rs: list, register and test for anyone (never the key; a non-superuser's URL must be
-    // public); edit, delete and sync for its creator or a superuser (`managed`: 403).
-    http.get('/api/custom-providers', () => routed(() => envelope(listCustom(getRouter())))),
+    // custom_providers.rs: register and test for anyone (a non-superuser's URL must be public); the list (never
+    // the key) holds the caller's own and superusers' (`usable_by`); edit, delete and sync for its creator or a
+    // superuser (`managed`: 403).
+    http.get('/api/custom-providers', () =>
+      routed(() => envelope(listCustom(getRouter(), sessionUser().id))),
+    ),
     http.post('/api/custom-providers', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as { base_url?: string }
       return routed(() => {
         publicEndpoint(body.base_url)
         return HttpResponse.json(
           {
-            data: createCustom(getRouter(), body as never, nowFn(), sessionUser().id),
+            data: createCustom(
+              getRouter(),
+              body as never,
+              nowFn(),
+              sessionUser().id,
+              sessionUser().is_superuser,
+            ),
             status_code: 201,
             message: 'Custom provider created',
           },

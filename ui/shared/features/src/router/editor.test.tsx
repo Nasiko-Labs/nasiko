@@ -220,6 +220,8 @@ describe('custom providers', () => {
     ).toBeNull()
     await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
     const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
+    // A member's provider is private to them.
+    expect(within(sheet).getByText(copy.cpDescription(false))).toBeInTheDocument()
     await userEvent.type(within(sheet).getByLabelText(copy.cpName), 'Team vLLM')
     await userEvent.type(within(sheet).getByLabelText(copy.cpBaseUrl), 'https://llm.example.com/v1')
     await userEvent.type(within(sheet).getByLabelText(copy.cpKey), KEY)

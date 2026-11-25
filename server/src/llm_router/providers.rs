@@ -111,8 +111,12 @@ pub(crate) struct ProviderCatalogEnvelope {
 )]
 pub(crate) async fn list_providers(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
 ) -> impl IntoResponse {
+    let caller = match claims.user_uuid() {
+        Ok(u) => u,
+        Err((status, msg)) => return (status, msg).into_response(),
+    };
     // The union of served models (`provider_models`) and currently-effective priced
     // models (`model_pricing`). A served model with no price row shows with null
     // prices; a priced model that isn't in the catalog (e.g. Gemini) still shows.
@@ -141,7 +145,7 @@ pub(crate) async fn list_providers(
     .fetch_all(&state.db)
     .await;
 
-    let rows = match rows {
+    let mut rows = match rows {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(%e, "list_providers: db error");
@@ -150,23 +154,33 @@ pub(crate) async fn list_providers(
     };
 
     // Registered custom providers are never hidden, even if their label collides with
-    // a `HIDDEN_PROVIDERS` entry (e.g. an admin registers "deepseek").
-    let custom_meta: std::collections::HashMap<String, (uuid::Uuid, String)> =
-        match sqlx::query_as::<_, (uuid::Uuid, String, String)>(
-            "SELECT id, label, display_name FROM custom_providers WHERE deleted_at IS NULL",
-        )
-        .fetch_all(&state.db)
-        .await
-        {
-            Ok(rows) => rows
-                .into_iter()
-                .map(|(id, label, name)| (label, (id, name)))
-                .collect(),
-            Err(e) => {
-                tracing::error!(%e, "list_providers: custom provider lookup failed");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
-            }
-        };
+    // a `HIDDEN_PROVIDERS` entry (e.g. an admin registers "deepseek"); another member's
+    // private one always is, models and all (`custom_providers::usable_by`).
+    let custom = match sqlx::query_as::<_, (uuid::Uuid, String, String, bool)>(&format!(
+        "SELECT id, label, display_name, {} FROM custom_providers WHERE deleted_at IS NULL",
+        super::custom_providers::usable_by(1)
+    ))
+    .bind(caller)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(%e, "list_providers: custom provider lookup failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+        }
+    };
+    let others: std::collections::HashSet<String> = custom
+        .iter()
+        .filter(|c| !c.3)
+        .map(|c| c.1.clone())
+        .collect();
+    rows.retain(|r| !others.contains(&r.provider));
+    let custom_meta: std::collections::HashMap<String, (uuid::Uuid, String)> = custom
+        .into_iter()
+        .filter(|c| c.3)
+        .map(|(id, label, name, _)| (label, (id, name)))
+        .collect();
     let custom_labels: std::collections::HashSet<String> = custom_meta.keys().cloned().collect();
 
     ApiResponse::ok(

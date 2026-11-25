@@ -8,8 +8,10 @@
  *   `is_default` and answers a plain-text 409 while live agents are attached.
  * - agent routing (`server/src/agents/llm_config.rs`): owner or superuser; an attach or a detach clears the agent
  *   pin; `pinned_model` applies only when `llm_config_id` is absent; `inbound_format` is checked after the writes.
- * - custom providers (`server/src/llm_router/custom_providers.rs`): anyone registers; edit, delete and sync are
- *   its creator's or a superuser's (403 otherwise); delete answers a JSON 409 `{message, referencing_configs}`.
+ * - custom providers (`server/src/llm_router/custom_providers.rs`): anyone registers; a member's is private to them
+ *   (listed, in the catalog and nameable in a config only for its creator), a superuser's is shared; edit, delete
+ *   and sync are its creator's or a superuser's (403 otherwise); delete answers a JSON 409
+ *   `{message, referencing_configs}`.
  * Ids are `5eed0007-*` (configs) and `5eed0008-*` (custom providers), so the live seed can use the same ones.
  */
 import type {
@@ -45,7 +47,13 @@ interface MockRouting {
 interface MockCustomProvider extends CustomProvider {
   deleted: boolean
   models: string[]
+  /** A superuser registered it, so everyone may use it (the server reads the creator's flag live). */
+  shared: boolean
 }
+
+/** `custom_providers::usable_by`: its creator may see and route through it; everyone may when it is shared. */
+const usable = (p: MockCustomProvider, user: string) =>
+  !p.deleted && (p.shared || p.created_by === user)
 
 export interface RouterState {
   configs: MockConfig[]
@@ -67,7 +75,8 @@ const customId = (n: number) => `5eed0008-0000-4000-8000-${pad(n)}`
 export function buildRouterState(
   agents: readonly MockAgent[],
   now: number,
-  opts: { empty?: boolean; legacy?: boolean } = {},
+  /** `registrar`: the superuser who registered the seed's custom provider (the seed admin when unset). */
+  opts: { empty?: boolean; legacy?: boolean; registrar?: string } = {},
 ): RouterState {
   const iso = new Date(now - 7 * 86_400_000).toISOString()
   const mk = (
@@ -212,8 +221,9 @@ export function buildRouterState(
         last_sync_status: 'ok',
         last_sync_error: null,
         created_at: iso,
-        // Another user's, so a non-superuser admin sees it without its actions.
-        created_by: others[0] ?? ADMIN_ID,
+        // Another superuser's (shared), so a non-superuser admin sees it without its actions.
+        created_by: opts.registrar ?? ADMIN_ID,
+        shared: true,
         deleted: false,
         models: ['custom-local'],
       },
@@ -258,9 +268,12 @@ function findConfig(s: RouterState, id: string, user: string): MockConfig {
   return c
 }
 
-/** `resolve_provider_label`: a built-in name, a custom label, or a custom provider UUID → its label. */
-function providerLabel(s: RouterState, provider: string): string {
-  const custom = s.custom.find((p) => !p.deleted && (p.id === provider || p.label === provider))
+/** `resolve_provider_label`: a built-in name, a custom label, or a custom provider UUID → its label. Another
+ *  member's private provider reads as unknown. */
+function providerLabel(s: RouterState, provider: string, user: string): string {
+  const custom = s.custom.find(
+    (p) => usable(p, user) && (p.id === provider || p.label === provider),
+  )
   if (custom) return custom.label
   if (SUPPORTED_PROVIDERS.includes(provider)) return provider
   throw new MockHttpError(
@@ -325,7 +338,7 @@ export function createConfig(
   now: number,
 ): LlmConfig {
   if (!body.name?.trim()) throw new MockHttpError(400, 'name must not be empty')
-  const provider = providerLabel(s, body.provider)
+  const provider = providerLabel(s, body.provider, user)
   validateModel(
     body.model,
     !!(body.tier1_model || body.tier2_model || body.tier3_model),
@@ -369,7 +382,7 @@ export function updateConfig(
   now: number,
 ): LlmConfig {
   const c = findConfig(s, id, user)
-  const provider = body.provider ? providerLabel(s, body.provider) : null
+  const provider = body.provider ? providerLabel(s, body.provider, user) : null
   if (body.model !== undefined && body.model !== null && !body.model.trim())
     throw new MockHttpError(400, 'model must not be empty when provided')
   if (body.pinned_model !== undefined && body.pinned_model !== null && !body.pinned_model.trim())
@@ -554,8 +567,15 @@ export function deleteSecret(s: RouterState, user: string, name: string): boolea
 export const listSecrets = (s: RouterState, user: string): SecretEntry[] =>
   [...(s.secrets.get(user) ?? [])].sort((a, b) => a.name.localeCompare(b.name))
 
-export const listCustom = (s: RouterState): CustomProvider[] =>
-  s.custom.filter((p) => !p.deleted).map(({ deleted: _d, models: _m, ...wire }) => wire)
+/** The custom providers `user` may use (`custom_providers.rs` `list`). */
+export const listCustom = (s: RouterState, user: string): CustomProvider[] =>
+  s.custom
+    .filter((p) => usable(p, user))
+    .map(({ deleted: _d, models: _m, shared: _s, ...wire }) => wire)
+
+/** Labels of the providers `user` may not use: the catalog drops their models (`list_providers`). */
+export const hiddenCustomLabels = (s: RouterState, user: string): Set<string> =>
+  new Set(s.custom.filter((p) => !p.deleted && !usable(p, user)).map((p) => p.label))
 
 function slugify(name: string): string {
   return name
@@ -605,6 +625,7 @@ export function createCustom(
   body: CreateCustomProviderBody,
   now: number,
   user: string,
+  superuser: boolean,
 ) {
   const dialect = validateDialect(body.kind, body.api_version)
   const display = body.display_name?.trim()
@@ -632,6 +653,7 @@ export function createCustom(
     last_sync_error: null,
     created_at: new Date(now).toISOString(),
     created_by: user,
+    shared: superuser,
     deleted: false,
     models: [],
   }

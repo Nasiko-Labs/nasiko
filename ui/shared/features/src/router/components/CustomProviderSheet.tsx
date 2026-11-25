@@ -5,6 +5,8 @@
  * chosen on a create only: the server can't change it later. Azure also needs its `api-version`.
  */
 import { zodResolver } from '@hookform/resolvers/zod'
+import { useQuery } from '@tanstack/react-query'
+import { meQuery } from '@nasiko/data-access/auth'
 import { useEffect, useId, useState } from 'react'
 import { Controller, useForm, useWatch } from 'react-hook-form'
 import { z } from 'zod'
@@ -115,6 +117,8 @@ export function CustomProviderSheet({
 }
 
 function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
+  // A superuser's provider is shared with everyone; a member's is theirs alone (custom_providers.rs).
+  const shared = !!useQuery(meQuery).data?.is_superuser
   const ids = useId()
   const announce = useAnnounce()
   const save = useSaveCustomProvider()
@@ -213,7 +217,7 @@ function Body({ mode, onClose }: { mode: CustomMode; onClose: () => void }) {
         <SheetTitle>
           {mode.kind === 'create' ? copy.cpNew : copy.cpEdit(mode.provider.display_name)}
         </SheetTitle>
-        <SheetDescription>{copy.cpDescription}</SheetDescription>
+        <SheetDescription>{copy.cpDescription(shared)}</SheetDescription>
       </SheetHeader>
       <form
         className="flex min-h-0 flex-1 flex-col"
