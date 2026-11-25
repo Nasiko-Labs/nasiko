@@ -394,6 +394,10 @@ cli/src/commands/chat.rs
 cli/src/commands/claude.rs
 cli/src/commands/cluster.rs
 cli/src/commands/codex.rs
+cli/src/commands/coding_agent_mcp/claude_mcp.rs
+cli/src/commands/coding_agent_mcp/codex_mcp.rs
+cli/src/commands/coding_agent_mcp/mod.rs
+cli/src/commands/coding_agent_mcp/opencode_mcp.rs
 cli/src/commands/coding_agent_router.rs
 cli/src/commands/context_selection.rs
 cli/src/commands/deploy.rs
@@ -403,6 +407,16 @@ cli/src/commands/doctor.rs
 cli/src/commands/github.rs
 cli/src/commands/harnesses.rs
 cli/src/commands/import.rs
+cli/src/commands/integration/a2a/card.rs
+cli/src/commands/integration/a2a/connections.rs
+cli/src/commands/integration/a2a/endpoints.rs
+cli/src/commands/integration/a2a/env_file.rs
+cli/src/commands/integration/a2a/frameworks/langgraph.rs
+cli/src/commands/integration/a2a/frameworks/mod.rs
+cli/src/commands/integration/a2a/frameworks/standard.rs
+cli/src/commands/integration/a2a/http.rs
+cli/src/commands/integration/a2a/mod.rs
+cli/src/commands/integration/a2a/process.rs
 cli/src/commands/integration/agents/claude.rs
 cli/src/commands/integration/agents/codex.rs
 cli/src/commands/integration/agents/codex_history.rs
@@ -554,6 +568,7 @@ flow/src/events.rs
 flow/src/guard.rs
 flow/src/lib.rs
 flow/tests/flow_context.rs
+flow/tests/flow_events.rs
 flow/tests/flow_guard.rs
 flow/tests/traceparent.rs
 github/Cargo.toml
@@ -604,6 +619,8 @@ hitl/tests/repo.rs
 hitl/tests/store.rs
 init-databases.sql
 justfile
+leader/Cargo.toml
+leader/src/lib.rs
 llm-router/CLASSIFIER.md
 llm-router/Cargo.toml
 llm-router/Dockerfile
@@ -689,6 +706,7 @@ llm-router/src/routing/registry.rs
 llm-router/src/routing/salience.rs
 llm-router/src/routing/salience_classifier.rs
 llm-router/src/savings.rs
+llm-router/src/turns.rs
 llm-router/src/usage.rs
 llm-router/tests/provider_translation.rs
 llm-router/tests/router_e2e.rs
@@ -705,6 +723,7 @@ mcp-gateway/src/connectors.rs
 mcp-gateway/src/credentials.rs
 mcp-gateway/src/description_backfill.rs
 mcp-gateway/src/endpoint_refresh.rs
+mcp-gateway/src/entitlements.rs
 mcp-gateway/src/error.rs
 mcp-gateway/src/identity.rs
 mcp-gateway/src/injector.rs
@@ -841,6 +860,10 @@ migrations/0106_agent_llm_tokens_revoked_at.sql
 migrations/0107_maf_public_seed.sql
 migrations/0108_cost_usd_over_100.sql
 migrations/0109_tool_calls_agent_index.sql
+migrations/0110_discovered_agents.sql
+migrations/0111_discovered_agent_instances.sql
+migrations/0112_oci_upload_parts.sql
+migrations/0113_oci_upload_staged_parts.sql
 migrations/storage-classes.txt
 observability/Cargo.toml
 observability/config/otel-collector.yaml
@@ -967,6 +990,17 @@ runtime/tests/sandbox_conformance.rs
 runtime/tests/types.rs
 savings/Cargo.toml
 savings/src/lib.rs
+scripts/a2a-discovery-e2e/.gitignore
+scripts/a2a-discovery-e2e/MANUAL.md
+scripts/a2a-discovery-e2e/crewai_agent.py
+scripts/a2a-discovery-e2e/env_file.py
+scripts/a2a-discovery-e2e/langgraph/graph.py
+scripts/a2a-discovery-e2e/langgraph/langgraph.json
+scripts/a2a-discovery-e2e/mcp_crewai.py
+scripts/a2a-discovery-e2e/mcp_langgraph.py
+scripts/a2a-discovery-e2e/mock_mcp.py
+scripts/a2a-discovery-e2e/mock_openai.py
+scripts/a2a-discovery-e2e/run.sh
 scripts/install.ps1
 scripts/install.sh
 secrets/Cargo.toml
@@ -1045,6 +1079,7 @@ server/src/capabilities/generator.rs
 server/src/capabilities/mod.rs
 server/src/capabilities/routes.rs
 server/src/catalog/agent_secrets.rs
+server/src/catalog/discovered.rs
 server/src/catalog/import.rs
 server/src/catalog/mod.rs
 server/src/catalog/models.rs
@@ -1053,6 +1088,7 @@ server/src/catalog/skills.rs
 server/src/chat/attachment_policy.rs
 server/src/chat/attachment_store.rs
 server/src/chat/cold.rs
+server/src/chat/discovered_turns.rs
 server/src/chat/external_turn.rs
 server/src/chat/mod.rs
 server/src/chat/models.rs
@@ -1078,6 +1114,7 @@ server/src/coding_agent_usage.rs
 server/src/composio_settings.rs
 server/src/context_selection.rs
 server/src/current_time.rs
+server/src/dashboard_limit.rs
 server/src/embedding_change.rs
 server/src/error_reporting/config.rs
 server/src/error_reporting/mod.rs
@@ -1090,6 +1127,7 @@ server/src/github.rs
 server/src/hitl/continuation.rs
 server/src/hitl/lost_task.rs
 server/src/hitl/mod.rs
+server/src/invalidation.rs
 server/src/lib.rs
 server/src/llm_configs.rs
 server/src/llm_router/custom_providers.rs
@@ -1116,6 +1154,7 @@ server/src/mcp/handlers/webhooks.rs
 server/src/mcp/identity.rs
 server/src/mcp/mod.rs
 server/src/mcp/openapi.rs
+server/src/mcp/search_sync.rs
 server/src/mcp/service.rs
 server/src/mcp/wiring.rs
 server/src/multipart_util.rs
@@ -1184,6 +1223,7 @@ server/src/sessions/teardown.rs
 server/src/sessions/token.rs
 server/src/sessions/turn.rs
 server/src/settings.rs
+server/src/shutdown.rs
 server/src/spend_gate.rs
 server/src/state.rs
 server/src/telemetry/agent_replicas.rs
@@ -1192,6 +1232,7 @@ server/src/telemetry/context_report.rs
 server/src/telemetry/flow_span.rs
 server/src/telemetry/genai.rs
 server/src/telemetry/mod.rs
+server/src/telemetry/server_load.rs
 server/src/telemetry/setup.rs
 server/src/telemetry/tool_result_savings.rs
 server/src/titling.rs
@@ -1232,6 +1273,7 @@ server/tests/agent_url_ssrf.rs
 server/tests/agent_version_activation.rs
 server/tests/agent_wake_seam.rs
 server/tests/agent_workload_park.rs
+server/tests/assertion_sign_in.rs
 server/tests/attachments_dispatch.rs
 server/tests/auth_flow.rs
 server/tests/build_rbac.rs
@@ -1257,6 +1299,7 @@ server/tests/cost_path_differential.rs
 server/tests/cross_origin_writes.rs
 server/tests/deploy_env.rs
 server/tests/direct_turn_budget_refusal.rs
+server/tests/discovered_agents.rs
 server/tests/failed_llm_calls.rs
 server/tests/finops_savings.rs
 server/tests/fixtures/mcp-echo-server/Dockerfile
@@ -1277,6 +1320,7 @@ server/tests/harness_turn_e2e.rs
 server/tests/hitl.rs
 server/tests/hitl_agent_lost_task.rs
 server/tests/hitl_agent_proxy_session_id.rs
+server/tests/hitl_continuation_replicas.rs
 server/tests/hitl_cross_user_mirror_hijack.rs
 server/tests/hitl_flow_step_resumed.rs
 server/tests/hitl_orchestrator_pause.rs
@@ -1296,6 +1340,7 @@ server/tests/live_trace_spend.rs
 server/tests/llm_config_cache.rs
 server/tests/llm_owner_transfer.rs
 server/tests/llm_router_body_limits.rs
+server/tests/login_log_line.rs
 server/tests/maf_flow.rs
 server/tests/maf_hitl_discovery.rs
 server/tests/maf_step_flow_retry.rs
@@ -1319,6 +1364,7 @@ server/tests/mcp_sharing.rs
 server/tests/mcp_system_connector.rs
 server/tests/mcp_system_connector_off_switch.rs
 server/tests/mcp_tool_call_error_billing.rs
+server/tests/mcp_tool_entitlement_views.rs
 server/tests/mcp_upload_build.rs
 server/tests/mcp_upload_http.rs
 server/tests/mcp_upload_rbac.rs
@@ -1334,6 +1380,7 @@ server/tests/oci_owner_namespace.rs
 server/tests/oci_pull_credentials.rs
 server/tests/oci_repo_ownership.rs
 server/tests/oci_upload_limits.rs
+server/tests/oci_upload_replicas.rs
 server/tests/orchestrator_session_isolation.rs
 server/tests/orchestrator_usage.rs
 server/tests/overview.rs
@@ -1599,7 +1646,6 @@ ui/shared/app-shell/src/shell/signOut.chunk.test.ts
 ui/shared/app-shell/src/shell/signOut.test.ts
 ui/shared/app-shell/src/shell/signOut.ts
 ui/shared/data-access/package.json
-ui/shared/data-access/src/auth.lockout.test.ts
 ui/shared/data-access/src/auth.ts
 ui/shared/data-access/src/client.test.ts
 ui/shared/data-access/src/client.ts
@@ -2626,6 +2672,7 @@ ui/shared/ui/src/composites/NasikoMark.tsx
 ui/shared/ui/src/composites/announce.ts
 ui/shared/ui/src/composites/announcer.tsx
 ui/shared/ui/src/composites/beta-badge.tsx
+ui/shared/ui/src/composites/calendly-embed.tsx
 ui/shared/ui/src/composites/chart-marks.tsx
 ui/shared/ui/src/composites/composites.stories.tsx
 ui/shared/ui/src/composites/copy-button.tsx
