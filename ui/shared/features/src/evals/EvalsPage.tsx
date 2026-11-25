@@ -1,23 +1,33 @@
 /**
  * `/evals` (docs/superpowers/specs/2026-11-23-evals-design.md): Claude Code's evals, as a stepper. The first step is
- * the dataset's source: tick sessions, or, when Claude Code has none, pick pre-defined SWE benchmarks. Then pick tasks
- * and models from the dataset, run, and compare. A step opens once what it shows exists. Not connected: the way to
- * connect it.
+ * the dataset's source: tick sessions (the server links each to its commit, then builds, tests and screens a task from
+ * it), or, when Claude Code has none, pick pre-defined SWE benchmarks. Then pick verified tasks and models, run, and
+ * compare the tasks across the models and the session that did the work. A step opens once what it shows exists. Not
+ * connected: the way to connect it.
  *
- * ponytail: the step, the picks, the dataset and the results live in page state, not the URL: no server stores
- * datasets yet, and mock state doesn't survive a reload. Put the step and the dataset id in the URL once one does.
+ * The dataset and the run are the URL's (`?dataset=`, `?run=`): both take minutes to hours and are polled until they
+ * end, so a person can leave and come back, or reopen a saved run from the list under the sessions.
  */
+import { useQueryClient } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { ChevronLeft, ChevronRight, FlaskConical, Star } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { errorCode, isEndpointAbsent } from '@nasiko/data-access/detect'
+import { useGithubConnect } from '@nasiko/features/deploy/github'
 import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { PageLoader } from '@nasiko/ui/composites/page-loader'
 import { EmptyState, StateCard } from '@nasiko/ui/composites/state-card'
 import { Stepper } from '@nasiko/ui/composites/stepper'
-import { fmtInt, fmtLatency, fmtLocalDateTime, fmtMoneyFine } from '@nasiko/ui/lib/format'
+import {
+  fmtInt,
+  fmtLatency,
+  fmtLocalDateTime,
+  fmtMoneyFine,
+  fmtShortDay,
+} from '@nasiko/ui/lib/format'
 import { cn } from '@nasiko/ui/lib/utils'
+import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
 import { asButton, Button } from '@nasiko/ui/primitives/button'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
@@ -33,11 +43,22 @@ import {
   TableHeader,
   TableRow,
 } from '@nasiko/ui/primitives/table'
-import { useEvalBenchmarks, useEvalSessions, useGenerateDataset, useRunEvals } from './api'
+import {
+  evalsKeys,
+  useEvalBenchmarks,
+  useEvalDataset,
+  useEvalRun,
+  useEvalRuns,
+  useEvalSessions,
+  useEvalSetup,
+  useGenerateDataset,
+  useRunEvals,
+} from './api'
 import { copy } from './copy'
-import { comparison, type ModelTotals } from './logic'
+import { building, comparison, defaultPicks, type Cell, type ModelTotals } from './logic'
+import type { EvalsSearch } from './search'
 import { evalSteps, STEP, type Source, type Step } from './steps'
-import type { EvalBenchmark, EvalDataset, EvalResult, EvalSession } from './types'
+import type { EvalBenchmark, EvalDataset, EvalRun, EvalSession } from './types'
 
 /** ponytail: Claude Code is the one harness evals support; a harness step comes back with a second one. */
 const HARNESS = 'claude'
@@ -50,6 +71,10 @@ interface Picks {
 const key = (ids: readonly string[]) => [...ids].sort().join('\n')
 const toggle = (ids: readonly string[], id: string, on: boolean) =>
   on ? [...ids, id] : ids.filter((x) => x !== id)
+
+/** The step the URL points at: the run's comparison, the dataset's picks, or the source. */
+const stepOf = (s: EvalsSearch): Step =>
+  s.run ? STEP.compare : s.dataset ? STEP.dataset : STEP.source
 
 // The table sits on the page (the stepper has no card), so its sticky head and the fade below match the page.
 const STICKY_HEAD = 'sticky top-0 z-10 bg-background shadow-[inset_0_-1px_0_var(--border)]'
@@ -132,6 +157,21 @@ function EvalsError({ error, retry }: { error: unknown; retry: () => void }) {
   )
 }
 
+/** A failed read of a step's own object (the dataset, the run), with a retry. */
+function LoadFailed({ title, retry }: { title: string; retry: () => void }) {
+  return (
+    <StateCard
+      tone="error"
+      title={title}
+      action={
+        <Button size="sm" variant="outline" onClick={retry}>
+          {copy.retry}
+        </Button>
+      }
+    />
+  )
+}
+
 /** A step's own heading and one line on what to do there. */
 function StepHeading({ title, hint }: { title: string; hint?: string | undefined }) {
   return (
@@ -148,36 +188,109 @@ const Failed = ({ children }: { children: ReactNode }) => (
   </p>
 )
 
+const Status = ({ children }: { children: ReactNode }) => (
+  <p role="status" className="mb-3 text-sm text-muted-foreground">
+    {children}
+  </p>
+)
+
 function CheckRow({
   id,
   checked,
+  disabled,
   onChange,
   children,
 }: {
   id: string
   checked: boolean
+  disabled?: boolean
   onChange: (on: boolean) => void
   children: ReactNode
 }) {
   return (
     <li className="flex min-h-9 items-center gap-2.5 rounded-md px-2 py-1 hover:bg-muted/50">
-      <Checkbox id={id} checked={checked} onCheckedChange={onChange} />
-      <Label htmlFor={id} className="flex min-w-0 flex-1 items-center gap-2 font-normal">
+      <Checkbox id={id} checked={checked} disabled={disabled} onCheckedChange={onChange} />
+      <Label
+        htmlFor={id}
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-2 font-normal',
+          disabled && 'text-muted-foreground',
+        )}
+      >
         {children}
       </Label>
     </li>
   )
 }
 
-export function EvalsPage() {
+/** Connect GitHub when it isn't: evals read the sessions' repositories through it. */
+function GithubBanner() {
+  const qc = useQueryClient()
+  const { state, connect } = useGithubConnect()
+  // The connection is made in a popup: once the wait for it ends, the sessions' eligibility may have changed.
+  const waited = useRef(false)
+  useEffect(() => {
+    if (state.kind === 'waiting') waited.current = true
+    else if (waited.current) {
+      waited.current = false
+      void qc.invalidateQueries({ queryKey: evalsKeys.all })
+    }
+  }, [state.kind, qc])
+  return (
+    <Alert className="mb-4">
+      <AlertTitle>{copy.github.title}</AlertTitle>
+      <AlertDescription className="flex flex-col items-start gap-2">
+        <span>{copy.github.body}</span>
+        {state.kind === 'blocked' ? (
+          <span>
+            {copy.github.blocked}{' '}
+            <a href={state.url} target="_blank" rel="noreferrer" className="underline">
+              {copy.github.openIt}
+            </a>
+          </span>
+        ) : null}
+        {state.kind === 'failed' ? <span role="alert">{copy.github.failed}</span> : null}
+        <Button size="sm" disabled={state.kind === 'waiting'} onClick={() => void connect()}>
+          {state.kind === 'waiting' ? copy.github.waiting : copy.github.action}
+        </Button>
+      </AlertDescription>
+    </Alert>
+  )
+}
+
+export function EvalsPage({
+  search,
+  setSearch,
+}: {
+  search: EvalsSearch
+  setSearch: (patch: Partial<EvalsSearch>) => void
+}) {
   const sessions = useEvalSessions(HARNESS)
+  const setup = useEvalSetup()
   const benchmarks = useEvalBenchmarks(sessions.isSuccess && !sessions.data.length)
   const generate = useGenerateDataset()
-  const run = useRunEvals()
-  const [step, setStep] = useState<Step>(STEP.source)
+  const startRun = useRunEvals()
+  const datasetQuery = useEvalDataset(search.dataset)
+  const runQuery = useEvalRun(search.run)
   // The ticked sessions, or the picked benchmarks: whichever the first step offers.
   const [ticked, setTicked] = useState<string[]>([])
-  const [picks, setPicks] = useState<Picks>({ tasks: [], models: [] })
+  // Picks belong to one dataset: another dataset starts from its own defaults.
+  const [picked, setPicked] = useState<(Picks & { for: string }) | null>(null)
+
+  // The step asked for: the URL's, until the stepper opens another. A new dataset or run in the URL (Generate, Run, a
+  // saved run, Back) moves to its step.
+  const [step, setStep] = useState<Step>(() => stepOf(search))
+  const [seen, setSeen] = useState({ dataset: search.dataset, run: search.run })
+  if (seen.dataset !== search.dataset || seen.run !== search.run) {
+    setSeen({ dataset: search.dataset, run: search.run })
+    setStep(stepOf(search))
+  }
+
+  const ds = datasetQuery.data
+  const picks: Picks | null = ds ? (picked?.for === ds.id ? picked : defaultPicks(ds)) : null
+  const setPicks = (f: (p: Picks) => Picks) => {
+    if (ds && picks) setPicked({ for: ds.id, ...f(picks) })
+  }
 
   // Narrower than `max-w-page`: a step's tables and cards read better a little tighter (the user, 2026-11-24).
   const frame = (children: ReactNode) => (
@@ -208,71 +321,66 @@ export function EvalsPage() {
     )
 
   const source: Source = sessions.data.length ? 'sessions' : 'benchmarks'
-  // A dataset belongs to what it was built from: tick something else and it's gone until it is built again.
-  const builtFrom = generate.variables?.session_ids ?? generate.variables?.benchmark_ids
-  const dataset =
-    generate.data && builtFrom && key(builtFrom) === key(ticked) ? generate.data : null
-  const ran =
-    dataset && run.data && run.variables?.datasetId === dataset.id
-      ? { ...run.variables, results: run.data.results }
-      : null
-  const stale =
-    !!ran && (key(ran.task_ids) !== key(picks.tasks) || key(ran.model_ids) !== key(picks.models))
-  // The step asked for, unless what it shows is gone: then the last step that still has something.
+  const fromBenchmarks = !!ds?.tasks.some((t) => t.benchmark_id)
+  // The step asked for, unless what it shows isn't in the URL: then the last step that is.
   const shown: Step =
-    step === STEP.compare && ran
+    step === STEP.compare && search.run
       ? STEP.compare
-      : step !== STEP.source && dataset
+      : step !== STEP.source && search.dataset
         ? STEP.dataset
         : STEP.source
-
   const canOpen = (i: number) =>
-    i === STEP.source || (i === STEP.dataset && !!dataset) || (i === STEP.compare && !!ran)
+    i === STEP.source ||
+    (i === STEP.dataset && !!search.dataset) ||
+    (i === STEP.compare && !!search.run)
+  // Sessions need a server that runs evals and keeps chat history; unknown yet, the server decides.
+  const canBuild = !setup.data || (setup.data.runner_available && setup.data.chat_history)
 
   const onGenerate = () => {
-    run.reset()
+    startRun.reset()
     generate.mutate(
       source === 'sessions'
         ? { harness: HARNESS, session_ids: ticked }
         : { harness: HARNESS, benchmark_ids: ticked },
-      {
-        onSuccess: (d) => {
-          setPicks({
-            tasks: d.tasks.map((t) => t.id),
-            models: d.models.filter((m) => m.used).map((m) => m.id),
-          })
-          setStep(STEP.dataset)
-        },
-      },
+      { onSuccess: (d) => setSearch({ dataset: d.id, run: undefined }) },
     )
   }
   const onRun = () => {
-    if (!dataset) return
-    run.mutate(
-      { datasetId: dataset.id, task_ids: picks.tasks, model_ids: picks.models },
-      { onSuccess: () => setStep(STEP.compare) },
+    if (!ds || !picks) return
+    startRun.mutate(
+      { datasetId: ds.id, task_ids: picks.tasks, model_ids: picks.models },
+      { onSuccess: (r) => setSearch({ run: r.id }) },
     )
   }
 
   const action =
     shown === STEP.source ? (
-      <Button disabled={!ticked.length || generate.isPending} onClick={onGenerate}>
+      <Button
+        disabled={!ticked.length || generate.isPending || (source === 'sessions' && !canBuild)}
+        onClick={onGenerate}
+      >
         {source === 'benchmarks'
           ? generate.isPending
             ? copy.opening
             : copy.goToDataset
           : generate.isPending
             ? copy.generating
-            : generate.data && !dataset
+            : search.dataset
               ? copy.regenerate(ticked.length)
               : copy.generate(ticked.length)}
       </Button>
     ) : shown === STEP.dataset ? (
       <Button
-        disabled={!picks.tasks.length || !picks.models.length || run.isPending}
+        disabled={
+          !ds ||
+          ds.status !== 'ready' ||
+          !picks?.tasks.length ||
+          !picks.models.length ||
+          startRun.isPending
+        }
         onClick={onRun}
       >
-        {run.isPending ? copy.running : copy.run}
+        {startRun.isPending ? copy.running : copy.run}
       </Button>
     ) : undefined
 
@@ -287,7 +395,7 @@ export function EvalsPage() {
             ? copy.sessions.ticked(ticked.length)
             : copy.benchmarks.picked(ticked.length)
           : undefined,
-        dataset: dataset ? copy.dataset.picked(picks.tasks.length, picks.models.length) : undefined,
+        dataset: picks ? copy.dataset.picked(picks.tasks.length, picks.models.length) : undefined,
       })}
       active={shown}
       canOpen={canOpen}
@@ -298,8 +406,15 @@ export function EvalsPage() {
         source === 'sessions' ? (
           <>
             <StepHeading title={copy.sessions.title} hint={copy.sessions.hint} />
+            {setup.data && !setup.data.github_connected ? <GithubBanner /> : null}
+            {setup.data && !setup.data.runner_available ? (
+              <Status>{copy.notRunning}</Status>
+            ) : setup.data && !setup.data.chat_history ? (
+              <Status>{copy.noChatHistory}</Status>
+            ) : null}
             <SessionsTable rows={sessions.data} ticked={ticked} setTicked={setTicked} />
             {generate.isError ? <Failed>{copy.generateFailed}</Failed> : null}
+            <SavedEvals />
           </>
         ) : (
           <>
@@ -314,28 +429,44 @@ export function EvalsPage() {
               <BenchmarkPicks list={benchmarks.data} ticked={ticked} setTicked={setTicked} />
             )}
             {generate.isError ? <Failed>{copy.generateFailed}</Failed> : null}
+            <SavedEvals />
           </>
         )
-      ) : shown === STEP.dataset && dataset ? (
+      ) : shown === STEP.dataset ? (
         <>
           <StepHeading title={copy.dataset.title} hint={copy.dataset.hint} />
-          <DatasetPicks dataset={dataset} source={source} picks={picks} setPicks={setPicks} />
-          {run.isError ? <Failed>{copy.runFailed}</Failed> : null}
+          {datasetQuery.isPending ? (
+            <PageLoader label={copy.loading} />
+          ) : datasetQuery.isError ? (
+            <LoadFailed title={copy.dataset.loadFailed} retry={() => void datasetQuery.refetch()} />
+          ) : (
+            <DatasetStep
+              dataset={datasetQuery.data}
+              fromBenchmarks={fromBenchmarks}
+              picks={picks ?? { tasks: [], models: [] }}
+              setPicks={setPicks}
+            />
+          )}
+          {startRun.isError ? <Failed>{copy.runFailed}</Failed> : null}
         </>
-      ) : dataset && ran ? (
+      ) : (
         <>
-          <StepHeading
-            title={copy.results.title}
-            hint={stale ? copy.results.stale : copy.results.caption}
-          />
-          <Results
-            dataset={dataset}
-            taskIds={ran.task_ids}
-            modelIds={ran.model_ids}
-            results={ran.results}
-          />
+          <StepHeading title={copy.results.title} />
+          {runQuery.isPending || datasetQuery.isPending ? (
+            <PageLoader label={copy.loading} />
+          ) : runQuery.isError || datasetQuery.isError ? (
+            <LoadFailed
+              title={copy.results.loadFailed}
+              retry={() => {
+                void runQuery.refetch()
+                void datasetQuery.refetch()
+              }}
+            />
+          ) : (
+            <Results dataset={datasetQuery.data} run={runQuery.data} picks={picks} />
+          )}
         </>
-      ) : null}
+      )}
     </Stepper>,
   )
 }
@@ -349,7 +480,8 @@ function SessionsTable({
   ticked: string[]
   setTicked: (f: (t: string[]) => string[]) => void
 }) {
-  const all = ticked.length === rows.length
+  const usable = rows.filter((s) => s.eligible).map((s) => s.session_id)
+  const all = usable.length > 0 && usable.every((id) => ticked.includes(id))
   return (
     <ScrollTable>
       <Table>
@@ -359,10 +491,12 @@ function SessionsTable({
               <Checkbox
                 aria-label={copy.sessions.all}
                 checked={all}
-                onCheckedChange={(on) => setTicked(() => (on ? rows.map((s) => s.session_id) : []))}
+                disabled={!usable.length}
+                onCheckedChange={(on) => setTicked(() => (on ? usable : []))}
               />
             </TableHead>
             <TableHead>{copy.sessions.cols.title}</TableHead>
+            <TableHead>{copy.sessions.cols.repo}</TableHead>
             <TableHead>{copy.sessions.cols.started}</TableHead>
             <TableHead className="text-right">{copy.sessions.cols.turns}</TableHead>
             <TableHead className="text-right">{copy.sessions.cols.cost}</TableHead>
@@ -377,10 +511,21 @@ function SessionsTable({
                   <Checkbox
                     aria-label={copy.sessions.one(s.title)}
                     checked={on}
+                    disabled={!s.eligible}
                     onCheckedChange={(v) => setTicked((t) => toggle(t, s.session_id, v))}
                   />
                 </TableCell>
-                <TableCell className="max-w-0 min-w-56 truncate font-medium">{s.title}</TableCell>
+                <TableCell className="max-w-0 min-w-56">
+                  <span className="block truncate font-medium">{s.title}</span>
+                  {!s.eligible && s.ineligible_reason ? (
+                    <span className="block text-xs text-muted-foreground">
+                      {copy.sessions.ineligible[s.ineligible_reason] ?? s.ineligible_reason}
+                    </span>
+                  ) : null}
+                </TableCell>
+                <TableCell className="whitespace-nowrap text-muted-foreground">
+                  {s.repo ?? '–'}
+                </TableCell>
                 <TableCell className="whitespace-nowrap text-muted-foreground">
                   {fmtLocalDateTime(s.started_at)}
                 </TableCell>
@@ -443,6 +588,39 @@ function BenchmarkPicks({
   )
 }
 
+/** The viewer's runs, each reopening its comparison. */
+function SavedEvals() {
+  const q = useEvalRuns()
+  if (q.isPending || q.isError || !q.data.length) return null
+  return (
+    <section aria-labelledby="evals-saved" className="mt-6 flex flex-col gap-2">
+      <h3 id="evals-saved" className="text-sm font-medium">
+        {copy.saved.title}
+      </h3>
+      <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
+        {q.data.map((r) => {
+          const models = r.models.map((m) => m.name).join(', ')
+          return (
+            <li key={r.id}>
+              <Link
+                to="/evals"
+                search={{ dataset: r.dataset_id, run: r.id }}
+                aria-label={copy.saved.open(models)}
+                className="flex items-center justify-between gap-3 px-4 py-3 text-sm hover:bg-muted/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              >
+                <span className="min-w-0 truncate">{models}</span>
+                <span className="shrink-0 text-muted-foreground">
+                  {copy.saved.status[r.status] ?? r.status} · {fmtShortDay(r.created_at)}
+                </span>
+              </Link>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 function PickBox({ title, hint, children }: { title: string; hint: string; children: ReactNode }) {
   return (
     <div className="flex min-w-0 flex-col gap-2 rounded-lg border border-border p-3">
@@ -455,69 +633,93 @@ function PickBox({ title, hint, children }: { title: string; hint: string; child
   )
 }
 
-function DatasetPicks({
+/** The dataset while it is built, why it failed, or its tasks and models to pick from. */
+function DatasetStep({
   dataset,
-  source,
+  fromBenchmarks,
   picks,
   setPicks,
 }: {
   dataset: EvalDataset
-  source: Source
+  fromBenchmarks: boolean
   picks: Picks
   setPicks: (f: (p: Picks) => Picks) => void
 }) {
-  const fromSessions = source === 'sessions'
+  if (building(dataset))
+    return <Status>{copy.dataset.building(dataset.progress.done, dataset.progress.total)}</Status>
+  if (dataset.status === 'failed') return <Failed>{copy.dataset.failed(dataset.error)}</Failed>
+  const sessions = Object.keys(dataset.outcomes).length
+  const tasks = Object.values(dataset.outcomes).filter((o) => o === 'task').length
+  if (!dataset.tasks.length)
+    return <p className="text-sm text-muted-foreground">{copy.dataset.noTasks}</p>
   return (
-    <div className="grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
-      <PickBox
-        title={copy.dataset.tasks}
-        hint={fromSessions ? copy.dataset.tasksHint : copy.dataset.benchmarkTasksHint}
-      >
-        <ul className="flex max-h-80 flex-col overflow-y-auto">
-          {dataset.tasks.map((t) => (
-            <CheckRow
-              key={t.id}
-              id={`task-${t.id}`}
-              checked={picks.tasks.includes(t.id)}
-              onChange={(on) => setPicks((p) => ({ ...p, tasks: toggle(p.tasks, t.id, on) }))}
-            >
-              <span className="truncate">{t.title}</span>
-            </CheckRow>
-          ))}
-        </ul>
-      </PickBox>
-      <PickBox
-        title={copy.dataset.models}
-        hint={fromSessions ? copy.dataset.modelsHint : copy.dataset.benchmarkModelsHint}
-      >
-        <ul className="flex flex-col">
-          {dataset.models.map((m) => (
-            <CheckRow
-              key={m.id}
-              id={`model-${m.id}`}
-              checked={picks.models.includes(m.id)}
-              onChange={(on) => setPicks((p) => ({ ...p, models: toggle(p.models, m.id, on) }))}
-            >
-              <span className="truncate">{m.name}</span>
-              {m.used ? <Badge variant="secondary">{copy.dataset.used}</Badge> : null}
-            </CheckRow>
-          ))}
-        </ul>
-      </PickBox>
-    </div>
+    <>
+      {sessions ? <Status>{copy.dataset.outcomes(tasks, sessions)}</Status> : null}
+      <div className="grid gap-4 md:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+        <PickBox
+          title={copy.dataset.tasks}
+          hint={fromBenchmarks ? copy.dataset.benchmarkTasksHint : copy.dataset.tasksHint}
+        >
+          <ul className="flex max-h-80 flex-col overflow-y-auto">
+            {dataset.tasks.map((t) => {
+              const runnable = t.status === 'verified'
+              return (
+                <CheckRow
+                  key={t.id}
+                  id={`task-${t.id}`}
+                  checked={runnable && picks.tasks.includes(t.id)}
+                  disabled={!runnable}
+                  onChange={(on) => setPicks((p) => ({ ...p, tasks: toggle(p.tasks, t.id, on) }))}
+                >
+                  <span className="min-w-0 truncate">{t.title}</span>
+                  <span className="ml-auto shrink-0 text-xs text-muted-foreground">
+                    {t.repo ? `${t.repo} · ` : ''}
+                    {copy.dataset.status[t.status] ?? t.status}
+                    {t.reject_reason ? ` · ${t.reject_reason}` : ''}
+                  </span>
+                </CheckRow>
+              )
+            })}
+          </ul>
+        </PickBox>
+        <PickBox
+          title={copy.dataset.models}
+          hint={fromBenchmarks ? copy.dataset.benchmarkModelsHint : copy.dataset.modelsHint}
+        >
+          <ul className="flex flex-col">
+            {dataset.models.map((m) => (
+              <CheckRow
+                key={m.id}
+                id={`model-${m.id}`}
+                checked={picks.models.includes(m.id)}
+                onChange={(on) => setPicks((p) => ({ ...p, models: toggle(p.models, m.id, on) }))}
+              >
+                <span className="truncate">{m.name}</span>
+                {m.used ? <Badge variant="secondary">{copy.dataset.used}</Badge> : null}
+              </CheckRow>
+            ))}
+          </ul>
+        </PickBox>
+      </div>
+    </>
   )
 }
+
+const money = (n: number | null | undefined) => (n == null ? '–' : fmtMoneyFine(n))
+const time = (n: number | null | undefined) => (n == null ? '–' : fmtLatency(n))
 
 function Figures({
   score,
   cost,
   latency,
   best,
+  builder,
 }: {
   score: number
-  cost: number
-  latency: number
+  cost: number | null
+  latency: number | null
   best?: boolean
+  builder?: boolean
 }) {
   return (
     <div className="flex flex-col items-end gap-0.5">
@@ -536,9 +738,21 @@ function Figures({
         {copy.results.score(score)}
       </span>
       <span className="text-xs text-muted-foreground tabular-nums">
-        {fmtMoneyFine(cost)} · {fmtLatency(latency)}
+        {money(cost)} · {time(latency)}
       </span>
+      {builder ? (
+        <span className="text-xs text-muted-foreground">{copy.results.optimistic}</span>
+      ) : null}
     </div>
+  )
+}
+
+function CellView({ cell }: { cell: Cell | null }) {
+  if (cell?.kind === 'graded') return <Figures {...cell} />
+  return (
+    <span className="text-muted-foreground">
+      {cell?.kind === 'waiting' ? copy.results.waiting : copy.results.noResult}
+    </span>
   )
 }
 
@@ -624,7 +838,7 @@ function Scoreboard({ models }: { models: { name: string; totals: ModelTotals | 
                   </span>
                   <Progress value={totals.score} aria-label={copy.results.scoreOf(name)} />
                   <span className="text-xs text-muted-foreground tabular-nums">
-                    {fmtMoneyFine(totals.cost)} · {fmtLatency(totals.latency)}
+                    {money(totals.cost)} · {time(totals.latency)}
                   </span>
                 </>
               ) : (
@@ -640,23 +854,36 @@ function Scoreboard({ models }: { models: { name: string; totals: ModelTotals | 
 
 function Results({
   dataset,
-  taskIds,
-  modelIds,
-  results,
+  run,
+  picks,
 }: {
   dataset: EvalDataset
-  taskIds: string[]
-  modelIds: string[]
-  results: EvalResult[]
+  run: EvalRun
+  picks: Picks | null
 }) {
-  const { rows, footer } = comparison(taskIds, modelIds, results)
-  const taskTitle = new Map(dataset.tasks.map((t) => [t.id, t.title]))
-  const modelName = new Map(dataset.models.map((m) => [m.id, m.name]))
-  const nameOf = (m: string) => modelName.get(m) ?? m
+  const ran = new Set(run.results.map((r) => r.task_id))
+  const tasks = dataset.tasks.filter((t) => ran.has(t.id))
+  const taskIds = tasks.map((t) => t.id)
+  const modelIds = run.models.map((m) => m.id)
+  const { rows, footer } = comparison(taskIds, modelIds, run.results)
+  const task = new Map(tasks.map((t) => [t.id, t]))
+  // A benchmark's tasks have no original session to compare with.
+  const withOriginal = tasks.some((t) => t.original)
+  const stale =
+    !!picks && (key(taskIds) !== key(picks.tasks) || key(modelIds) !== key(picks.models))
+  const going = run.status === 'queued' || run.status === 'running' || run.status === 'finalizing'
   return (
     <>
+      {going ? (
+        <Status>{copy.results.progress(run.progress.done, run.progress.total)}</Status>
+      ) : run.status === 'failed' || run.status === 'cancelled' ? (
+        <p role="alert" className="mb-3 text-sm text-destructive">
+          {copy.results.ended(run.status)}
+        </p>
+      ) : null}
+      {stale ? <Status>{copy.results.stale}</Status> : null}
       <Scoreboard
-        models={modelIds.map((m, i) => ({ name: nameOf(m), totals: footer[i] ?? null }))}
+        models={run.models.map((m, i) => ({ name: m.name, totals: footer[i] ?? null }))}
       />
       <ScrollTable>
         <Table>
@@ -664,34 +891,49 @@ function Results({
           <TableHeader className={STICKY_HEAD}>
             <TableRow>
               <TableHead>{copy.results.task}</TableHead>
-              {modelIds.map((m) => (
-                <TableHead key={m} className="text-right">
-                  {nameOf(m)}
+              {withOriginal ? (
+                <TableHead className="text-right">{copy.results.original}</TableHead>
+              ) : null}
+              {run.models.map((m) => (
+                <TableHead key={m.id} className="text-right">
+                  {m.name}
                 </TableHead>
               ))}
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.map((row) => (
-              <TableRow key={row.taskId}>
-                <TableCell className="max-w-0 min-w-56 truncate">
-                  {taskTitle.get(row.taskId) ?? row.taskId}
-                </TableCell>
-                {row.cells.map((c, i) => (
-                  <TableCell key={modelIds[i]} className="text-right">
-                    {c ? (
-                      <Figures {...c} />
-                    ) : (
-                      <span className="text-muted-foreground">{copy.results.noResult}</span>
-                    )}
+            {rows.map((row) => {
+              const t = task.get(row.taskId)
+              return (
+                <TableRow key={row.taskId}>
+                  <TableCell className="max-w-0 min-w-56 truncate">
+                    {t?.title ?? row.taskId}
                   </TableCell>
-                ))}
-              </TableRow>
-            ))}
+                  {withOriginal ? (
+                    <TableCell className="text-right">
+                      {t?.original ? (
+                        <div className="flex flex-col items-end gap-0.5">
+                          <span className="text-sm">{t.original.model}</span>
+                          <span className="text-xs text-muted-foreground tabular-nums">
+                            {money(t.original.cost_usd)} · {time(t.original.latency_ms)}
+                          </span>
+                        </div>
+                      ) : null}
+                    </TableCell>
+                  ) : null}
+                  {row.cells.map((c, i) => (
+                    <TableCell key={modelIds[i]} className="text-right">
+                      <CellView cell={c} />
+                    </TableCell>
+                  ))}
+                </TableRow>
+              )
+            })}
           </TableBody>
           <TableFooter>
             <TableRow>
               <TableCell className="font-medium">{copy.results.summary}</TableCell>
+              {withOriginal ? <TableCell /> : null}
               {footer.map((f, i) => (
                 <TableCell key={modelIds[i]} className="text-right">
                   {f ? (
@@ -705,6 +947,7 @@ function Results({
           </TableFooter>
         </Table>
       </ScrollTable>
+      <p className="mt-2 text-xs text-muted-foreground">{copy.results.caption}</p>
     </>
   )
 }

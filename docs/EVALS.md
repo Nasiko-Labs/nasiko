@@ -63,10 +63,11 @@ heartbeat, and a job whose server stopped is taken over.
 
 ## In the UI
 
-Evals → pick a harness → tick sessions (the ones that can't become a task say why) →
-Generate evals dataset → wait while it is built → tick tasks and models (the sessions' own
-model is ticked: the fair comparison) → Run evals → the task × model table, with the original
-session as a column. The dataset and run are in the URL, and Evals lists saved runs.
+Evals is a three-step stepper over Claude Code's sessions: tick sessions (the ones that can't
+become a task say why) → Generate evals dataset → wait while it is built → tick tasks and
+models (the sessions' own model is ticked: the fair comparison) → Run evals → the task × model
+table, with the original session as a column. The dataset and run are in the URL, and saved
+runs are listed under the sessions.
 
 ## With the CLI
 
