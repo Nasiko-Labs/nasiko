@@ -52,6 +52,9 @@ struct WakeableRuntime {
     runtime_calls: AtomicUsize,
     /// Every spec `deploy` was given.
     deployed: Mutex<Vec<DeploymentSpec>>,
+    /// The `(code, message)` every start is refused with, as a layer that declines to run
+    /// workloads answers: a scale-up of a workload that exists, and a deploy.
+    declined: Mutex<Option<(String, String)>>,
 }
 
 impl WakeableRuntime {
@@ -69,6 +72,18 @@ impl WakeableRuntime {
             .unwrap()
             .insert(ContainerId::from_uuid(agent_id), 0);
         self
+    }
+
+    fn declining_starts(self, code: &str, message: &str) -> Self {
+        *self.declined.lock().unwrap() = Some((code.to_owned(), message.to_owned()));
+        self
+    }
+
+    fn decline(&self) -> RuntimeResult<()> {
+        match self.declined.lock().unwrap().clone() {
+            Some((code, message)) => Err(RuntimeError::Declined { code, message }),
+            None => Ok(()),
+        }
     }
 
     fn scaling_slowly(mut self) -> Self {
@@ -142,6 +157,7 @@ impl WakeableRuntime {
 #[async_trait]
 impl ContainerRuntime for WakeableRuntime {
     async fn deploy(&self, spec: &DeploymentSpec) -> RuntimeResult<DeploymentStatus> {
+        self.decline()?;
         self.deployed.lock().unwrap().push(spec.clone());
         self.replicas
             .lock()
@@ -168,6 +184,9 @@ impl ContainerRuntime for WakeableRuntime {
         }
         match self.replicas.lock().unwrap().get_mut(id) {
             Some(current) => {
+                if replicas > 0 {
+                    self.decline()?;
+                }
                 *current = replicas;
                 Ok(())
             }
@@ -211,6 +230,11 @@ impl ContainerRuntime for WakeableRuntime {
 }
 
 const BUDGET: Duration = Duration::from_secs(5);
+
+/// What a layer that refuses to start workloads says: its own code, and words fit for the caller.
+const DECLINED_CODE: &str = "plan_refused";
+const DECLINED_MESSAGE: &str =
+    "This workspace cannot start more agents. Ask an admin to change the plan.";
 
 /// A deployer that cannot deploy: the tests that use it have a workload to scale, or show what a
 /// failed deploy leaves.
@@ -576,6 +600,54 @@ async fn an_agent_that_does_not_come_up_in_time_is_refused_and_stays_parked() {
     server.cleanup().await;
 }
 
+/// A layer that refuses to start the workload says why: the caller is told those words, not the
+/// wake's own "try again", and the agent stays parked for the next call.
+#[tokio::test]
+#[serial]
+async fn a_wake_the_runtime_declines_is_refused_in_the_declines_own_words_and_stays_parked() {
+    let server = common::TestServer::start().await;
+    let agent = seed_agent(&server, "parked", None).await;
+    let runtime = Arc::new(
+        WakeableRuntime::default()
+            .with_parked_workload(agent)
+            .declining_starts(DECLINED_CODE, DECLINED_MESSAGE),
+    );
+    let wake = wake_over(&server, runtime.clone()).await;
+
+    let refused = wake.before_forward(agent, None).await;
+
+    assert_eq!(refused, Err(DECLINED_MESSAGE.to_owned()));
+    assert_eq!(runtime.replicas_of(agent), Some(0), "nothing was started");
+    assert_eq!(
+        status_and_fresh_stamp(&server, agent).await,
+        ("parked".to_owned(), false)
+    );
+    server.cleanup().await;
+}
+
+/// The same refusal when the wake has no workload to scale and deploys one from the catalog: the
+/// deploy's refusal is relayed through the deploy worker, not replaced by its generic message.
+#[tokio::test]
+#[serial]
+async fn a_missing_workloads_deploy_the_runtime_declines_is_refused_in_the_declines_own_words() {
+    let runtime =
+        Arc::new(WakeableRuntime::default().declining_starts(DECLINED_CODE, DECLINED_MESSAGE));
+    let server = common::TestServer::start_with_runtime(|_| {}, runtime.clone()).await;
+    let agent = seed_agent(&server, "parked", None).await;
+    seed_parked_deployments(&server, agent).await;
+    let wake = wake_with(&server, runtime.clone(), catalog_deployer(&server)).await;
+
+    let refused = wake.before_forward(agent, None).await;
+
+    assert_eq!(refused, Err(DECLINED_MESSAGE.to_owned()));
+    assert!(runtime.deployed().is_empty(), "nothing was deployed");
+    assert_eq!(
+        status_and_fresh_stamp(&server, agent).await,
+        ("parked".to_owned(), false)
+    );
+    server.cleanup().await;
+}
+
 /// A caller that goes away mid-wake (a client disconnect drops the handler's future) must not
 /// leave the agent's lock held or its row changed: the next call wakes it.
 #[tokio::test]
@@ -646,15 +718,13 @@ async fn start_counting_agent() -> (String, Arc<AtomicUsize>) {
     (format!("http://127.0.0.1:{port}"), hits)
 }
 
-/// The whole path: the proxy wakes the parked agent before it resolves, re-reads the row the wake
-/// changed, and forwards to the agent's own workload.
-#[tokio::test]
-#[serial]
-async fn the_proxy_serves_a_woken_agent_from_its_own_workload() {
-    let (address, hits) = start_counting_agent().await;
-    let runtime = Arc::new(WakeableRuntime::answering_at(address));
-    let server = common::TestServer::start_with_runtime(|_| {}, runtime.clone()).await;
-    let agent = seed_agent(&server, "parked", None).await;
+/// A parked agent of `server`, its workload scaled to zero in `runtime`, called through the
+/// proxy with the platform's wake installed over `runtime`.
+async fn call_a_parked_agent_through_the_proxy(
+    server: &common::TestServer,
+    runtime: &Arc<WakeableRuntime>,
+) -> (Uuid, reqwest::Response) {
+    let agent = seed_agent(server, "parked", None).await;
     runtime
         .replicas
         .lock()
@@ -696,6 +766,19 @@ async fn the_proxy_serves_a_woken_agent_from_its_own_workload() {
     .send()
     .await
     .expect("request");
+    (agent, res)
+}
+
+/// The whole path: the proxy wakes the parked agent before it resolves, re-reads the row the wake
+/// changed, and forwards to the agent's own workload.
+#[tokio::test]
+#[serial]
+async fn the_proxy_serves_a_woken_agent_from_its_own_workload() {
+    let (address, hits) = start_counting_agent().await;
+    let runtime = Arc::new(WakeableRuntime::answering_at(address));
+    let server = common::TestServer::start_with_runtime(|_| {}, runtime.clone()).await;
+
+    let (agent, res) = call_a_parked_agent_through_the_proxy(&server, &runtime).await;
 
     assert!(res.status().is_success(), "{}", res.status());
     assert_eq!(hits.load(Ordering::SeqCst), 1);
@@ -707,6 +790,29 @@ async fn the_proxy_serves_a_woken_agent_from_its_own_workload() {
     assert_eq!(
         status_and_fresh_stamp(&server, agent).await,
         ("running".to_owned(), true)
+    );
+    server.cleanup().await;
+}
+
+/// The refusal reaches the proxy's client: a 503 whose body is the declining layer's words, with
+/// nothing sent to the agent.
+#[tokio::test]
+#[serial]
+async fn the_proxy_answers_503_with_the_declines_words_when_waking_a_parked_agent_is_declined() {
+    let (address, hits) = start_counting_agent().await;
+    let runtime = Arc::new(
+        WakeableRuntime::answering_at(address).declining_starts(DECLINED_CODE, DECLINED_MESSAGE),
+    );
+    let server = common::TestServer::start_with_runtime(|_| {}, runtime.clone()).await;
+
+    let (agent, res) = call_a_parked_agent_through_the_proxy(&server, &runtime).await;
+
+    assert_eq!(res.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(res.text().await.expect("body"), DECLINED_MESSAGE);
+    assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing reaches the agent");
+    assert_eq!(
+        status_and_fresh_stamp(&server, agent).await,
+        ("parked".to_owned(), false)
     );
     server.cleanup().await;
 }

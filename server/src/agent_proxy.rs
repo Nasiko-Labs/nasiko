@@ -13,7 +13,7 @@ use uuid::Uuid;
 use crate::agent_resolver::{Caller, ResolvedTarget, ensure_routable, load_agent, resolve_loaded};
 use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
-use crate::sessions::admission::refuse_session;
+use crate::sessions::admission::refuse_turn;
 use crate::state::AppState;
 use crate::telemetry::agent_request::{AgentRequestGuard, RequestOutcome};
 
@@ -195,11 +195,11 @@ pub async fn agent_proxy(
         .await
         .map_err(|_| StatusCode::BAD_REQUEST)?;
 
-    // A message to a harness starts a turn, which the session admission may refuse (it can need
-    // an agent of the caller's own). Asked before anything is written for the turn: a refused
-    // one leaves no session row, transcript or flow.
-    if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target
-        && let Some(refusal) = refuse_harness_turn(&state, &claims, target, &body_bytes).await?
+    // A message to a harness starts a turn, refused while coding sessions are switched off.
+    // Asked before anything is written for the turn: a refused one leaves no session row,
+    // transcript or flow.
+    if let Some(crate::coding::proxy::AgentTarget::Harness(_)) = &coding_target
+        && let Some(refusal) = refuse_harness_turn(&state, &body_bytes)
     {
         return Ok(refusal);
     }
@@ -899,23 +899,14 @@ async fn reject_foreign_harness_session(
     session.map(Some).ok_or(StatusCode::NOT_FOUND)
 }
 
-/// The session admission's refusal of a message to a harness, as a JSON-RPC error on a 200 like
-/// the other harness errors here, the refusal's body as its `data`. `None` for a request that
-/// sends no message (it starts no turn) and for an admitted one.
-async fn refuse_harness_turn(
-    state: &AppState,
-    claims: &Claims,
-    target: &crate::coding::proxy::HarnessTarget,
-    body: &[u8],
-) -> Result<Option<Response>, StatusCode> {
-    let Some(id) = message_send_id(body) else {
-        return Ok(None);
-    };
-    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
-    let refusal = refuse_session(state, user_id, &target.harness_id).await;
-    Ok(refusal.map(|refusal| {
+/// The refusal of a message to a harness (`sessions::admission::refuse_turn`), as a JSON-RPC
+/// error on a 200 like the other harness errors here, the refusal's body as its `data`. `None`
+/// for a request that sends no message (it starts no turn) and for an admitted one.
+fn refuse_harness_turn(state: &AppState, body: &[u8]) -> Option<Response> {
+    let id = message_send_id(body)?;
+    refuse_turn(state).map(|refusal| {
         axum::response::IntoResponse::into_response(axum::Json(refusal.json_rpc_error(&id)))
-    }))
+    })
 }
 
 /// The request id of a message send, `None` for any other request.
