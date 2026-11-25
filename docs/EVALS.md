@@ -137,5 +137,4 @@ and model, rewriter, reviewers, control, limits); then `harvest --repo`, `rewrit
 * Tests run per affected Cargo package; integration tests that need a database or network fail
   in the sandbox and drop out of the lists.
 * Few sessions end in a single clean commit, so a meaningful score needs many sessions.
-* On Kubernetes, the batch runner is not built yet: evals need the Docker runtime for now.
 * Attempt tags live with the router's hot usage rows (90 days).
