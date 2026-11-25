@@ -78,9 +78,48 @@ impl PriceBook for StaticPriceBook {
 /// and cache-read rates in USD per million tokens.
 type ListPrice = (&'static str, f64, f64, Option<f64>, Option<f64>);
 
+/// Offline list price for `model`.
+///
+/// Exact Anthropic, OpenAI and Gemini ids (dated snapshots, `provider/`
+/// prefixes, Bedrock and Vertex ids included) are priced from the `llm-prices`
+/// table, whose rows are re-read
+/// from each provider's pricing page and carry the page and date they came
+/// from. Ids it does not know fall back to the substring table below, so the
+/// generic family entries still give every Claude, GPT or Llama variant a
+/// conservative estimate.
+fn static_row(model: &str) -> Option<PriceRow> {
+    listed_row(model).or_else(|| substring_row(model))
+}
+
+/// The `llm-prices` row for an exact model id, if it has one.
+fn listed_row(model: &str) -> Option<PriceRow> {
+    // Bedrock-hosted OpenAI (`openai.gpt-...`) is billed at Bedrock's rates,
+    // which differ from OpenAI's own; the substring table prices those.
+    if model.to_lowercase().starts_with("openai.") {
+        return None;
+    }
+    let p = llm_prices::lookup(model)?;
+    // Anthropic, OpenAI and Google only; the other vendors keep the rows below.
+    if !matches!(p.provider, "anthropic" | "openai" | "google") {
+        return None;
+    }
+    let (input, output) = (p.input?, p.output?);
+    // OpenAI does not charge for writing the prompt cache, so a listed read
+    // rate is a free write there. Gemini bills cache storage by the hour, so its
+    // write stays unknown.
+    let free_write = p.provider == "openai" && p.cache_read.is_some();
+    Some(PriceRow {
+        input_per_1m: input,
+        output_per_1m: output,
+        cache_read_per_1m: p.cache_read,
+        cache_creation_per_1m: p.cache_write("5m").or(free_write.then_some(0.0)),
+        cache_creation_1h_per_1m: p.cache_write("1h"),
+    })
+}
+
 /// Substring-matched list prices. Order matters: more specific names first, so
 /// `claude-opus-4` is not priced as the generic `claude`.
-fn static_row(model: &str) -> Option<PriceRow> {
+fn substring_row(model: &str) -> Option<PriceRow> {
     const TABLE: &[ListPrice] = &[
         // Bedrock-hosted OpenAI. Must precede the bare OpenAI entries: the id
         // carries a vendor prefix but the rates are Bedrock's, not OpenAI's.
@@ -244,6 +283,46 @@ mod tests {
             cache_creation_1h_per_1m: None,
         };
         assert_eq!(row.cache_pair(), None);
+    }
+
+    #[test]
+    fn current_models_are_priced_at_their_list_rate_not_a_family_fallback() {
+        // Each of these used to match a broader substring entry (or none at all
+        // and get the $2.50/$10 default). List prices from the providers'
+        // pricing pages, USD per 1M tokens.
+        let cases = [
+            ("claude-opus-5-5", 4.00, 20.00, Some(0.20)),
+            ("claude-sonnet-5-5", 2.00, 10.00, Some(0.10)),
+            ("claude-haiku-5-5", 0.10, 0.50, Some(0.01)),
+            ("claude-fable-5-2", 8.00, 40.00, Some(0.20)),
+            ("gpt-5.5", 5.00, 30.00, Some(0.50)),
+            ("gpt-5.4-mini", 0.75, 4.50, Some(0.075)),
+            ("gpt-6-sol", 2.00, 10.00, Some(0.20)),
+            ("gemini-3.1-pro-preview", 2.00, 12.00, Some(0.20)),
+        ];
+        for (model, input, output, read) in cases {
+            let row = static_row(model).expect("priced");
+            assert_eq!(
+                (row.input_per_1m, row.output_per_1m, row.cache_read_per_1m),
+                (input, output, read),
+                "{model}"
+            );
+        }
+        // Anthropic bills 5-minute and 1-hour cache writes at different rates.
+        let opus = static_row("anthropic/claude-opus-5-5-20990101").expect("priced");
+        assert_eq!(opus.cache_creation_per_1m, Some(5.00));
+        assert_eq!(opus.cache_creation_1h_per_1m, Some(8.00));
+        // OpenAI cache writes are free, as the substring table records them.
+        assert_eq!(
+            static_row("gpt-5.5").unwrap().cache_creation_per_1m,
+            Some(0.0)
+        );
+    }
+
+    #[test]
+    fn bedrock_openai_ids_keep_bedrock_rates() {
+        let row = static_row("openai.gpt-5.6-sol").expect("priced");
+        assert_eq!((row.input_per_1m, row.output_per_1m), (4.40, 22.00));
     }
 
     #[test]
