@@ -49,8 +49,9 @@ const NOT_STARTED_IN_TIME: &str = "the agent did not start in time, try again sh
 #[async_trait]
 pub trait WorkloadDeployer: Send + Sync {
     /// Returns once the runtime has accepted the deploy, not once the agent answers. An `Err`
-    /// carries the message the caller is refused with; the cause is logged where it happened.
-    async fn deploy(&self, agent_id: Uuid) -> Result<(), String>;
+    /// carries the message the caller is refused with, and whether the runtime declined the
+    /// deploy; the cause is logged where it happened.
+    async fn deploy(&self, agent_id: Uuid) -> Result<(), WakeRefusal>;
 }
 
 /// What a wake works with, all received from the composition root.
@@ -221,12 +222,12 @@ impl ParkedAgentWake {
 
     /// Deploys the workload a parked agent does not have, within the wake's budget. A deploy that
     /// outlasts the budget still finishes, and the next call scales up what it left.
-    async fn deploy_workload(&self, agent_id: Uuid, deadline: Instant) -> Result<(), String> {
+    async fn deploy_workload(&self, agent_id: Uuid, deadline: Instant) -> Result<(), WakeRefusal> {
         info!(%agent_id, "agent wake: a parked agent has no workload; deploying it");
         let deployed = self.deps.deployer.deploy(agent_id);
         match tokio::time::timeout_at(deadline.into(), deployed).await {
             Ok(outcome) => outcome,
-            Err(_) => Err(not_in_time(agent_id)),
+            Err(_) => Err(not_in_time(agent_id).into()),
         }
     }
 
@@ -549,7 +550,7 @@ mod tests {
 
     #[async_trait]
     impl WorkloadDeployer for RecordingDeployer {
-        async fn deploy(&self, agent_id: Uuid) -> Result<(), String> {
+        async fn deploy(&self, agent_id: Uuid) -> Result<(), WakeRefusal> {
             tokio::time::sleep(self.delay).await;
             self.deployed.lock().unwrap().push(agent_id);
             Ok(())
@@ -692,7 +693,7 @@ mod tests {
             .deploy_workload(Uuid::new_v4(), started + Duration::from_millis(50))
             .await;
 
-        assert_eq!(outcome, Err(NOT_STARTED_IN_TIME.to_owned()));
+        assert_eq!(outcome, Err(NOT_STARTED_IN_TIME.to_owned().into()));
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",

@@ -23,7 +23,7 @@ use nasiko_runtime::{
 };
 use nasiko_server::agent_resolver::{Caller, ResolveError, resolve_target};
 use nasiko_server::agent_wake::parked::{ParkedAgentWake, WakeDeps, WorkloadDeployer};
-use nasiko_server::agent_wake::{AGENT_LOCK_KEY_SQL, AgentWake};
+use nasiko_server::agent_wake::{AGENT_LOCK_KEY_SQL, AgentWake, WakeRefusal};
 use nasiko_server::agents::catalog_deploy;
 use serde_json::json;
 use serial_test::serial;
@@ -242,8 +242,10 @@ struct NoDeploy;
 
 #[async_trait]
 impl WorkloadDeployer for NoDeploy {
-    async fn deploy(&self, _agent_id: Uuid) -> Result<(), String> {
-        Err("the agent's workload could not be deployed".to_owned())
+    async fn deploy(&self, _agent_id: Uuid) -> Result<(), WakeRefusal> {
+        Err("the agent's workload could not be deployed"
+            .to_owned()
+            .into())
     }
 }
 

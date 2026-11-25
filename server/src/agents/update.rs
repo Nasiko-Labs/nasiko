@@ -121,13 +121,14 @@ pub(crate) async fn update_agent(
         name: String,
         version: String,
         image: Option<String>,
+        status: String,
         owner_id: Uuid,
         writable: bool,
         writable_path: Option<String>,
     }
 
     let agent: Option<UpdateAgentRow> = match sqlx::query_as(
-        "SELECT name, version, image, owner_id, writable, writable_path FROM agents WHERE id = $1",
+        "SELECT name, version, image, status, owner_id, writable, writable_path FROM agents WHERE id = $1",
     )
     .bind(agent_id)
     .fetch_optional(&state.db)
@@ -144,6 +145,7 @@ pub(crate) async fn update_agent(
         name: agent_name,
         version: current_version,
         image: prev_image,
+        status: prev_status,
         owner_id: agent_owner_id,
         writable,
         writable_path,
@@ -385,6 +387,7 @@ pub(crate) async fn update_agent(
         new_version: new_version.clone(),
         prev_version: current_version.clone(),
         prev_image,
+        prev_status: Some(prev_status),
         changelog,
         writable,
         writable_path,
@@ -514,6 +517,7 @@ pub async fn execute_agent_update(
     new_version: String,
     prev_version: String,
     prev_image: Option<String>,
+    prev_status: Option<String>,
     changelog: Option<String>,
     writable: bool,
     writable_path: Option<String>,
@@ -743,13 +747,21 @@ pub async fn execute_agent_update(
             // Roll back both version and image so the row stays consistent with
             // what is actually running. prev_image is None only for the very first
             // deploy, in which case NULL is the correct fallback anyway.
+            // A deploy the runtime declined is no failure of the agent, which keeps the status it
+            // had (a stopped or parked agent stays so); a job queued before the status was carried
+            // has none to restore and ends `failed`.
+            let status = match (&declined, &prev_status) {
+                (Some(_), Some(prev)) => prev.as_str(),
+                _ => "failed",
+            };
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'failed', version = $2, image = $3, updated_at = now() \
+                "UPDATE agents SET status = $4, version = $2, image = $3, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(agent_id)
             .bind(&prev_version)
             .bind(&prev_image)
+            .bind(status)
             .execute(db)
             .await;
 

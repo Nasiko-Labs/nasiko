@@ -165,6 +165,16 @@ pub enum BuildJobPayload {
         /// `agent` (an HTTP agent), preserving their behavior.
         #[serde(default)]
         workload_kind: String,
+        /// The agent's `version`/`image`/`status` before this upload overwrote them with the
+        /// placeholder, `None` for a new agent: put back if the runtime declines the deploy.
+        /// `#[serde(default)]` so job rows queued before these fields existed still
+        /// deserialize (a declined deploy then ends as it always did).
+        #[serde(default)]
+        prior_version: Option<String>,
+        #[serde(default)]
+        prior_image: Option<String>,
+        #[serde(default)]
+        prior_status: Option<String>,
     },
     /// In-place agent update (PUT /api/agents/{id}/update).
     Update {
@@ -186,6 +196,10 @@ pub enum BuildJobPayload {
         new_version: String,
         prev_version: String,
         prev_image: Option<String>,
+        /// The agent's `status` before the update marked it deploying: put back if the runtime
+        /// declines the deploy. `#[serde(default)]` for job rows queued before this field existed.
+        #[serde(default)]
+        prev_status: Option<String>,
         changelog: Option<String>,
         /// Carried forward from `agents.writable` — this endpoint has no flag of
         /// its own to set it (see `update_agent`'s fetch of the agent row).
@@ -644,6 +658,27 @@ pub(crate) async fn upload_and_deploy(
         return refusal.into_response();
     }
 
+    // What an existing agent is before the upsert below overwrites it, so a deploy the runtime
+    // declines can put it back.
+    let (prior_version, prior_image, prior_status) =
+        match sqlx::query_as::<_, (String, Option<String>, String)>(
+            "SELECT version, image, status FROM agents \
+         WHERE name = $1 AND owner_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&name)
+        .bind(owner_id)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(Some((version, image, status))) => (Some(version), image, Some(status)),
+            Ok(None) => (None, None, None),
+            Err(e) => {
+                tracing::error!(%e, agent_name = %name, "upload: read prior agent state db error");
+                let _ = tokio::fs::remove_dir_all(zip_path.parent().unwrap_or(&zip_path)).await;
+                return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
+            }
+        };
+
     // Atomic INSERT ... ON CONFLICT against the (owner_id, name) partial unique
     // index (migration 015) — closes the SELECT-then-INSERT TOCTOU that let two
     // concurrent same-name uploads create duplicate rows (SRV-2).
@@ -788,6 +823,9 @@ pub(crate) async fn upload_and_deploy(
         writable,
         writable_path: writable_path.clone(),
         workload_kind: workload_kind.clone(),
+        prior_version,
+        prior_image,
+        prior_status,
     };
 
     let payload_value = match serde_json::to_value(&payload) {
@@ -1079,6 +1117,10 @@ pub async fn execute_upload_and_deploy(
     writable: bool,
     writable_path: Option<String>,
     workload_kind: nasiko_runtime::WorkloadKind,
+    // What an existing agent was before this upload overwrote it, `None` for a new one.
+    prior_version: Option<String>,
+    prior_image: Option<String>,
+    prior_status: Option<String>,
 ) {
     let db = &state.db;
     let runtime = &state.runtime;
@@ -1299,8 +1341,22 @@ pub async fn execute_upload_and_deploy(
                 Some(declined.as_deref().unwrap_or("upload and deploy failed")),
             )
             .await;
-            super::utils::delete_agent_or_mark_failed(db, agent_id, &state.agent_deletion_hook)
+            if declined.is_some() {
+                // The agent is fine, the runtime only declined to start it for now: an existing
+                // one is put back as it was, not marked failed or deleted.
+                restore_prior_state_or_clean_up(
+                    db,
+                    agent_id,
+                    &prior_version,
+                    &prior_image,
+                    &prior_status,
+                    &state.agent_deletion_hook,
+                )
                 .await;
+            } else {
+                super::utils::delete_agent_or_mark_failed(db, agent_id, &state.agent_deletion_hook)
+                    .await;
+            }
             tracing::error!(build_id = %build_id, %e, "upload-and-deploy failed");
         }
     }
