@@ -5,6 +5,10 @@
 //! [`HEARTBEAT`]; a job whose heartbeat is older than [`STALE_AFTER`] (its server died) is put
 //! back and claimed again, up to its `max_tries`, after which it is given up. A step that fails
 //! is retried after [`RETRY_AFTER`] until it is out of tries.
+//!
+//! The heartbeat runs as its own task, so a step busy on the CPU cannot starve it. Every write a
+//! worker makes to its job names the claim it holds (`tries`, raised by each claim): once the job
+//! is taken over, the old copy's writes match nothing, and its heartbeat stops the step.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -148,31 +152,62 @@ async fn claim(db: &sqlx::PgPool) -> sqlx::Result<Option<Job>> {
     .await
 }
 
-async fn heartbeat(db: &sqlx::PgPool, id: i64) {
-    let _ = sqlx::query(
-        "UPDATE eval_jobs SET heartbeat_at = now() WHERE id = $1 AND status = 'running'",
-    )
-    .bind(id)
-    .execute(db)
-    .await;
-}
-
-async fn mark(db: &sqlx::PgPool, id: i64, status: &str, error: Option<&str>) -> sqlx::Result<()> {
-    sqlx::query("UPDATE eval_jobs SET status = $2, error = $3, finished_at = now() WHERE id = $1")
-        .bind(id)
-        .bind(status)
-        .bind(error)
-        .execute(db)
-        .await?;
-    Ok(())
-}
-
-async fn retry_later(db: &sqlx::PgPool, id: i64, error: &str) -> sqlx::Result<()> {
+/// Refreshes `job`'s heartbeat; false once its claim is no longer this worker's. A database
+/// error reads as still held: the next beat tries again.
+async fn heartbeat(db: &sqlx::PgPool, job: &Job) -> bool {
     sqlx::query(
-        "UPDATE eval_jobs SET status = 'pending', error = $2, \
-         run_after = now() + make_interval(secs => $3) WHERE id = $1",
+        "UPDATE eval_jobs SET heartbeat_at = now() \
+         WHERE id = $1 AND tries = $2 AND status = 'running'",
     )
-    .bind(id)
+    .bind(job.id)
+    .bind(job.tries)
+    .execute(db)
+    .await
+    .map_or(true, |r| r.rows_affected() == 1)
+}
+
+/// Beats every [`HEARTBEAT`] until `job` is taken over, then says so through `lost`.
+async fn keep_alive(db: sqlx::PgPool, job: Job, lost: tokio::sync::oneshot::Sender<()>) {
+    let mut beat = tokio::time::interval(HEARTBEAT);
+    beat.tick().await;
+    loop {
+        beat.tick().await;
+        if !heartbeat(&db, &job).await {
+            let _ = lost.send(());
+            return;
+        }
+    }
+}
+
+/// Ends `job` as `status`; false when its claim is no longer this worker's (nothing changed).
+async fn mark(
+    db: &sqlx::PgPool,
+    job: &Job,
+    status: &str,
+    error: Option<&str>,
+) -> sqlx::Result<bool> {
+    Ok(sqlx::query(
+        "UPDATE eval_jobs SET status = $3, error = $4, finished_at = now() \
+         WHERE id = $1 AND tries = $2 AND status = 'running'",
+    )
+    .bind(job.id)
+    .bind(job.tries)
+    .bind(status)
+    .bind(error)
+    .execute(db)
+    .await?
+    .rows_affected()
+        == 1)
+}
+
+async fn retry_later(db: &sqlx::PgPool, job: &Job, error: &str) -> sqlx::Result<()> {
+    sqlx::query(
+        "UPDATE eval_jobs SET status = 'pending', error = $3, \
+         run_after = now() + make_interval(secs => $4) \
+         WHERE id = $1 AND tries = $2 AND status = 'running'",
+    )
+    .bind(job.id)
+    .bind(job.tries)
     .bind(error)
     .bind(RETRY_AFTER_SECS as f64)
     .execute(db)
@@ -238,28 +273,31 @@ async fn process(state: &AppState, job: Job) {
         give_up(state, &job, "the server running it stopped too many times").await;
         return;
     }
-    let step = super::steps::run(state, &job);
-    tokio::pin!(step);
-    let mut beat = tokio::time::interval(HEARTBEAT);
-    beat.tick().await;
-    let result = loop {
-        tokio::select! {
-            result = &mut step => break result,
-            _ = beat.tick() => heartbeat(&state.db, job.id).await,
-        }
+    let (lost_tx, lost) = tokio::sync::oneshot::channel();
+    let beat = tokio::spawn(keep_alive(state.db.clone(), job.clone(), lost_tx));
+    let result = tokio::select! {
+        result = super::steps::run(state, &job) => Some(result),
+        _ = lost => None,
+    };
+    beat.abort();
+    let Some(result) = result else {
+        tracing::warn!(job = job.id, kind = %job.kind_text, "evals: a job was taken over; this copy stopped");
+        return;
     };
     match result {
-        Ok(()) => {
-            if let Err(e) = mark(&state.db, job.id, "done", None).await {
+        Ok(()) => match mark(&state.db, &job, "done", None).await {
+            Ok(true) => super::steps::after(state, &job).await,
+            Ok(false) => {}
+            Err(e) => {
                 tracing::error!(job = job.id, error = %e, "evals: could not mark a job done");
+                super::steps::after(state, &job).await;
             }
-            super::steps::after(state, &job).await;
-        }
+        },
         Err(e) => {
             let error = format!("{e:#}");
             tracing::warn!(job = job.id, kind = %job.kind_text, %error, "evals: a job failed");
             if job.tries < job.max_tries {
-                if let Err(e) = retry_later(&state.db, job.id, &error).await {
+                if let Err(e) = retry_later(&state.db, &job, &error).await {
                     tracing::error!(job = job.id, error = %e, "evals: could not requeue a job");
                 }
             } else {
@@ -270,8 +308,10 @@ async fn process(state: &AppState, job: Job) {
 }
 
 async fn give_up(state: &AppState, job: &Job, error: &str) {
-    if let Err(e) = mark(&state.db, job.id, "failed", Some(error)).await {
-        tracing::error!(job = job.id, error = %e, "evals: could not mark a job failed");
+    match mark(&state.db, job, "failed", Some(error)).await {
+        Ok(false) => return,
+        Ok(true) => {}
+        Err(e) => tracing::error!(job = job.id, error = %e, "evals: could not mark a job failed"),
     }
     super::steps::gave_up(state, job, error).await;
     super::steps::after(state, job).await;
