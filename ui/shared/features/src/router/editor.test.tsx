@@ -209,16 +209,25 @@ describe('custom providers', () => {
   const providers = () =>
     screen.getByRole('heading', { name: copy.providersTitle }).closest('section')!
 
-  it('a normal user sees them but has no actions', async () => {
+  it("a normal user adds one and gets its actions, but none on another user's", async () => {
     configureMocks({ superuser: false })
     renderApp('/router')
     await ready()
     await showTab(copy.anchors.providers)
     expect(within(providers()).getAllByText('Custom').length).toBeGreaterThan(0)
-    expect(within(providers()).queryByRole('button', { name: copy.addCustom })).toBeNull()
     expect(
       within(providers()).queryByRole('button', { name: copy.configActions('Custom') }),
     ).toBeNull()
+    await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
+    const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
+    await userEvent.type(within(sheet).getByLabelText(copy.cpName), 'Team vLLM')
+    await userEvent.type(within(sheet).getByLabelText(copy.cpBaseUrl), 'https://llm.example.com/v1')
+    await userEvent.type(within(sheet).getByLabelText(copy.cpKey), KEY)
+    await userEvent.click(within(sheet).getByRole('button', { name: copy.save }))
+    await waitFor(() => expect(sheet).not.toBeInTheDocument())
+    expect(
+      await within(providers()).findByRole('button', { name: copy.configActions('Team vLLM') }),
+    ).toBeInTheDocument()
   })
 
   it('add rejects non-http URLs, tests with the typed key and saves', async () => {

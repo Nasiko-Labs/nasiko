@@ -8,8 +8,8 @@
  *   `is_default` and answers a plain-text 409 while live agents are attached.
  * - agent routing (`server/src/agents/llm_config.rs`): owner or superuser; an attach or a detach clears the agent
  *   pin; `pinned_model` applies only when `llm_config_id` is absent; `inbound_format` is checked after the writes.
- * - custom providers (`server/src/llm_router/custom_providers.rs`): writes are superuser-only; delete answers a
- *   JSON 409 `{message, referencing_configs}`.
+ * - custom providers (`server/src/llm_router/custom_providers.rs`): anyone registers; edit, delete and sync are
+ *   its creator's or a superuser's (403 otherwise); delete answers a JSON 409 `{message, referencing_configs}`.
  * Ids are `5eed0007-*` (configs) and `5eed0008-*` (custom providers), so the live seed can use the same ones.
  */
 import type {
@@ -212,6 +212,8 @@ export function buildRouterState(
         last_sync_status: 'ok',
         last_sync_error: null,
         created_at: iso,
+        // Another user's, so a non-superuser admin sees it without its actions.
+        created_by: others[0] ?? ADMIN_ID,
         deleted: false,
         models: ['custom-local'],
       },
@@ -589,7 +591,21 @@ const normalizeBase = (kind: string, base: string) => {
   return kind === 'azure-openai' ? b.replace(/\/openai$/, '').replace(/\/+$/, '') : b
 }
 
-export function createCustom(s: RouterState, body: CreateCustomProviderBody, now: number) {
+/** `custom_providers.rs` `managed`: 404 unknown, 403 unless the caller registered it or is a superuser. */
+export function managedCustom(s: RouterState, id: string, user: string, superuser: boolean) {
+  const p = s.custom.find((x) => x.id === id && !x.deleted)
+  if (!p) throw new MockHttpError(404, 'no such custom provider')
+  if (!superuser && p.created_by !== user)
+    throw new MockHttpError(403, "only the provider's creator or a superuser can change it")
+  return p
+}
+
+export function createCustom(
+  s: RouterState,
+  body: CreateCustomProviderBody,
+  now: number,
+  user: string,
+) {
   const dialect = validateDialect(body.kind, body.api_version)
   const display = body.display_name?.trim()
   const base = normalizeBase(dialect.kind, body.base_url ?? '')
@@ -615,6 +631,7 @@ export function createCustom(s: RouterState, body: CreateCustomProviderBody, now
     last_sync_status: null,
     last_sync_error: null,
     created_at: new Date(now).toISOString(),
+    created_by: user,
     deleted: false,
     models: [],
   }

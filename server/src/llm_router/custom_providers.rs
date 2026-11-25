@@ -15,11 +15,15 @@
 //!
 //! - `GET    /api/custom-providers`            — list (key masked). Any authenticated user.
 //! - `GET    /api/custom-providers/{id}/models`— discovered models for the provider.
-//! - `POST   /api/custom-providers`            — register (superuser).
-//! - `POST   /api/custom-providers/test`       — probe an endpoint without storing (superuser).
-//! - `PATCH  /api/custom-providers/{id}`       — update (superuser).
-//! - `DELETE /api/custom-providers/{id}`       — soft delete, blocked if referenced (superuser).
-//! - `POST   /api/custom-providers/{id}/sync`  — refresh the model list now (superuser).
+//! - `POST   /api/custom-providers`            — register. Any authenticated user.
+//! - `POST   /api/custom-providers/test`       — probe an endpoint without storing. Any authenticated user.
+//! - `PATCH  /api/custom-providers/{id}`       — update (its creator or a superuser).
+//! - `DELETE /api/custom-providers/{id}`       — soft delete, blocked if referenced (creator or superuser).
+//! - `POST   /api/custom-providers/{id}/sync`  — refresh the model list now (creator or superuser).
+//!
+//! Only a superuser may point a provider at a private address: the server calls the
+//! endpoint itself (probe, sync, every dispatch) and returns what it answers, so a
+//! private one from any user would reach internal services through it.
 //!
 //! Encryption uses `SecretsCrypto::for_platform_settings()` — the same scope the LLM
 //! router's resolver decrypts with — so a key stored here is readable on the dispatch
@@ -29,7 +33,6 @@ use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
-    middleware,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
@@ -43,7 +46,6 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::auth::Claims;
-use crate::auth::rbac::require_superuser;
 use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
@@ -56,21 +58,16 @@ const RESERVED_LABELS: &[&str] = &["openai", "anthropic", "gemini"];
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub fn router() -> Router<AppState> {
-    // Mutations are superuser-only (platform-wide config), matching model_registry::router().
-    let write = Router::new()
-        .route("/custom-providers", post(create))
+    // Any user may register; changing a provider is gated per row in `managed`.
+    Router::new()
+        .route("/custom-providers", get(list).post(create))
         .route("/custom-providers/test", post(test_endpoint))
         .route(
             "/custom-providers/{id}",
             axum::routing::patch(update).delete(delete_provider),
         )
-        .route("/custom-providers/{id}/sync", post(sync_now))
-        .layer(middleware::from_fn(require_superuser));
-
-    Router::new()
-        .route("/custom-providers", get(list))
         .route("/custom-providers/{id}/models", get(list_models))
-        .merge(write)
+        .route("/custom-providers/{id}/sync", post(sync_now))
 }
 
 /// A provider row as returned to clients — never carries the api key.
@@ -92,11 +89,13 @@ pub(crate) struct ProviderView {
     pub last_sync_status: Option<String>,
     pub last_sync_error: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Who registered it: they and superusers may change it.
+    pub created_by: Uuid,
 }
 
 const VIEW_COLS: &str = "id, label, display_name, base_url, kind, api_version, default_model, \
      catalog_sync_enabled, (encrypted_api_key <> '') AS api_key_set, \
-     last_sync_at, last_sync_status, last_sync_error, created_at";
+     last_sync_at, last_sync_status, last_sync_error, created_at, created_by";
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct CreateRequest {
@@ -151,6 +150,48 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 fn internal(context: &str, e: impl std::fmt::Display) -> Response {
     tracing::error!(%e, "custom_providers: {context}");
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
+}
+
+/// A non-superuser's endpoint must be public (see the module docs).
+async fn check_endpoint(claims: &Claims, base_url: &str) -> Result<(), Response> {
+    if claims.is_superuser {
+        return Ok(());
+    }
+    nasiko_mcp_gateway::net::check_public_url(base_url)
+        .await
+        .map_err(|reason| {
+            err(
+                StatusCode::BAD_REQUEST,
+                format!("base_url refused: {reason}. A private endpoint needs a superuser."),
+            )
+        })
+}
+
+/// The provider's `(label, kind)` when the caller may change it: its creator or a
+/// superuser. Anyone else gets a 403, because every config that names the provider
+/// shares it, so an edit would send their calls, and the stored key, to a new URL.
+async fn managed(
+    state: &AppState,
+    claims: &Claims,
+    id: Uuid,
+) -> Result<(String, String), Response> {
+    let row: Option<(String, String, Uuid)> = sqlx::query_as(
+        "SELECT label, kind, created_by FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(|e| internal("provider lookup", e))?;
+    let Some((label, kind, created_by)) = row else {
+        return Err(err(StatusCode::NOT_FOUND, "no such custom provider"));
+    };
+    if !claims.is_superuser && claims.user_uuid().ok() != Some(created_by) {
+        return Err(err(
+            StatusCode::FORBIDDEN,
+            "only the provider's creator or a superuser can change it",
+        ));
+    }
+    Ok((label, kind))
 }
 
 /// Auto-generate an internal label (slug) from a display name. The label is the
@@ -231,10 +272,10 @@ pub(crate) struct TestRequest {
 }
 
 /// Test a custom provider endpoint without storing anything. Probes chat (if a model
-/// is given) and fetches the model list. Superuser only.
+/// is given) and fetches the model list.
 pub(crate) async fn test_endpoint(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Json(body): Json<TestRequest>,
 ) -> Response {
     let dialect = match validate_dialect(&body.kind, body.api_version.as_deref()) {
@@ -244,6 +285,9 @@ pub(crate) async fn test_endpoint(
     let base_url = dialect.normalize_base(&body.base_url);
     if base_url.is_empty() || body.api_key.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "base_url and api_key are required");
+    }
+    if let Err(r) = check_endpoint(&claims, &base_url).await {
+        return r;
     }
 
     // Chat test (optional — only when a model is provided).
@@ -529,7 +573,7 @@ pub(crate) async fn list_models(
     }
 }
 
-/// Register a custom provider. Superuser only. The internal label is auto-generated
+/// Register a custom provider. The internal label is auto-generated
 /// from the display name; the model list is discovered by catalog sync (and can also
 /// be probed first via `POST /custom-providers/test`), so no model is required here.
 pub(crate) async fn create(
@@ -553,6 +597,9 @@ pub(crate) async fn create(
     }
     if body.api_key.trim().is_empty() {
         return err(StatusCode::BAD_REQUEST, "api_key is required");
+    }
+    if let Err(r) = check_endpoint(&claims, &base_url).await {
+        return r;
     }
 
     // Auto-generate internal label from display name.
@@ -638,31 +685,22 @@ pub(crate) async fn create(
     .into_response()
 }
 
-/// Update a custom provider. Superuser only. A provided `api_key` rotates the stored
+/// Update a custom provider (its creator or a superuser). A provided `api_key` rotates the stored
 /// credential; the resolver reads the row per request, so a rotation takes effect on
 /// the next call with no restart. `kind` is deliberately not updatable — changing the
 /// dialect repoints every config on this label at a different URL shape, which is a
 /// delete-and-re-register, not an edit.
 pub(crate) async fn update(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Path(id): Path<Uuid>,
     Json(body): Json<UpdateRequest>,
 ) -> Response {
     // The dialect is immutable, but normalizing an updated base URL needs it, so read
     // the stored kind first.
-    let current: Option<(String,)> = match sqlx::query_as(
-        "SELECT kind FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal("update kind lookup", e),
-    };
-    let Some((kind,)) = current else {
-        return err(StatusCode::NOT_FOUND, "no such custom provider");
+    let kind = match managed(&state, &claims, id).await {
+        Ok((_, kind)) => kind,
+        Err(r) => return r,
     };
     // `api_version` is validated against the stored kind: supplying one for a plain
     // OpenAI endpoint is a no-op, and blanking Azure's would violate the DB CHECK.
@@ -686,6 +724,11 @@ pub(crate) async fn update(
         .as_deref()
         .map(|k| SecretsCrypto::for_platform_settings().encrypt(k.trim()));
     let base_url = body.base_url.as_deref().map(|b| dialect.normalize_base(b));
+    if let Some(url) = &base_url
+        && let Err(r) = check_endpoint(&claims, url).await
+    {
+        return r;
+    }
     let result = sqlx::query(
         "UPDATE custom_providers SET \
            display_name = COALESCE($2, display_name), \
@@ -716,21 +759,12 @@ pub(crate) async fn update(
 /// names it — a dangling provider name would make the resolver fail on the next call.
 pub(crate) async fn delete_provider(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let label: Option<(String,)> = match sqlx::query_as(
-        "SELECT label FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal("delete label lookup", e),
-    };
-    let Some((label,)) = label else {
-        return err(StatusCode::NOT_FOUND, "no such custom provider");
+    let label = match managed(&state, &claims, id).await {
+        Ok((label, _)) => label,
+        Err(r) => return r,
     };
 
     // Referential block: list the configs that still point at this provider.
@@ -772,24 +806,15 @@ pub(crate) async fn delete_provider(
     ApiResponse::ok(json!({ "id": id }), "Custom provider deleted").into_response()
 }
 
-/// Refresh one provider's model list on demand. Superuser only.
+/// Refresh one provider's model list on demand (its creator or a superuser).
 pub(crate) async fn sync_now(
     State(state): State<AppState>,
-    _claims: Claims,
+    claims: Claims,
     Path(id): Path<Uuid>,
 ) -> Response {
-    let label: Option<(String,)> = match sqlx::query_as(
-        "SELECT label FROM custom_providers WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(r) => r,
-        Err(e) => return internal("sync label lookup", e),
-    };
-    let Some((label,)) = label else {
-        return err(StatusCode::NOT_FOUND, "no such custom provider");
+    let label = match managed(&state, &claims, id).await {
+        Ok((label, _)) => label,
+        Err(r) => return r,
     };
     match nasiko_llm_router::routing::catalog::sync_one(&state.db, &state.http_client, &label).await
     {

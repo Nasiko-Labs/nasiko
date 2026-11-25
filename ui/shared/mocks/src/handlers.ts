@@ -84,6 +84,7 @@ import {
   listCustom,
   listSecrets,
   deleteSecret,
+  managedCustom,
   myChoice,
   patchRouting,
   touchSecret,
@@ -2052,22 +2053,22 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return HttpResponse.json({ data: page, total: page.length })
       }),
     ),
-    // custom_providers.rs: list for anyone (never the key), writes superuser-only (require_superuser: 403).
+    // custom_providers.rs: list, register and test for anyone (never the key; a non-superuser's URL must be
+    // public); edit, delete and sync for its creator or a superuser (`managed`: 403).
     http.get('/api/custom-providers', () => routed(() => envelope(listCustom(getRouter())))),
     http.post('/api/custom-providers', async ({ request }) => {
-      const body = await request.json().catch(() => ({}))
-      return routed(
-        () =>
-          HttpResponse.json(
-            {
-              data: createCustom(getRouter(), body as never, nowFn()),
-              status_code: 201,
-              message: 'Custom provider created',
-            },
-            { status: 201 },
-          ),
-        true,
-      )
+      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
+      return routed(() => {
+        publicEndpoint(body.base_url)
+        return HttpResponse.json(
+          {
+            data: createCustom(getRouter(), body as never, nowFn(), sessionUser().id),
+            status_code: 201,
+            message: 'Custom provider created',
+          },
+          { status: 201 },
+        )
+      })
     }),
     http.post('/api/custom-providers/test', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as {
@@ -2081,26 +2082,33 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         validateDialect(body.kind, body.api_version)
         if (!body.base_url?.trim() || !body.api_key?.trim())
           throw new MockHttpError(400, 'base_url and api_key are required')
+        publicEndpoint(body.base_url)
         if (hasVariant('router-custom-down'))
           return envelope({ chat_ok: false, chat_error: 'connection refused', models: [] })
         return envelope({ chat_ok: !!body.model, models: ['custom-local', 'custom-large'] })
-      }, true)
+      })
     }),
     http.patch('/api/custom-providers/:id', async ({ params: prm, request }) => {
-      const body = await request.json().catch(() => ({}))
-      return routed(() => envelope(updateCustom(getRouter(), String(prm.id), body as never)), true)
+      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
+      return routed(() => {
+        manageCustom(String(prm.id))
+        publicEndpoint(body.base_url)
+        return envelope(updateCustom(getRouter(), String(prm.id), body as never))
+      })
     }),
     http.delete('/api/custom-providers/:id', ({ params: prm }) =>
-      routed(() => envelope(deleteCustom(getRouter(), String(prm.id))), true),
+      routed(() => {
+        manageCustom(String(prm.id))
+        return envelope(deleteCustom(getRouter(), String(prm.id)))
+      }),
     ),
     http.post('/api/custom-providers/:id/sync', ({ params: prm }) =>
-      routed(
-        () =>
-          envelope(
-            syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
-          ),
-        true,
-      ),
+      routed(() => {
+        manageCustom(String(prm.id))
+        return envelope(
+          syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
+        )
+      }),
     ),
   ],
   // Filled in below: chatHandlers() needs the seed getters defined in this file.
@@ -2210,6 +2218,28 @@ function routed(fn: () => Response, superuserOnly = false): Response {
     if (err instanceof Response) return err
     return text('internal error', 500)
   }
+}
+
+function manageCustom(id: string) {
+  const me = sessionUser()
+  managedCustom(getRouter(), id, me.id, me.is_superuser)
+}
+
+/** custom_providers.rs `check_endpoint`: a non-superuser's base URL must be public. The server resolves the host;
+ *  the mock only reads literal ones. */
+function publicEndpoint(url: string | undefined) {
+  if (!url || sessionUser().is_superuser) return
+  let host = ''
+  try {
+    host = new URL(url).hostname
+  } catch {
+    return
+  }
+  if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[::1\])/.test(host))
+    throw new MockHttpError(
+      400,
+      'base_url refused: url resolves to a disallowed (private/internal) address. A private endpoint needs a superuser.',
+    )
 }
 
 /** agents/llm_config.rs `agent_owner_or_reject`: 404 unknown, 403 "not the agent owner" unless owner or superuser. */

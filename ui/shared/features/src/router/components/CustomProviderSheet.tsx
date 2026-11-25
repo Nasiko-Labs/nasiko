@@ -1,5 +1,5 @@
 /**
- * Add or edit a custom provider (plan §4.6, superuser). Test posts the typed base URL and key (the server's test
+ * Add (anyone) or edit (its creator or a superuser) a custom provider (plan §4.6). Test posts the typed base URL and key (the server's test
  * endpoint takes them, not a provider id), so testing a saved provider needs its key typed again. The key is
  * write-only; the base URL must be http(s); test output renders as text only (eng #12). The endpoint type (`kind`) is
  * chosen on a create only: the server can't change it later. Azure also needs its `api-version`.

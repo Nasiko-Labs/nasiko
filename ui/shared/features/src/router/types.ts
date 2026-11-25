@@ -92,6 +92,8 @@ export interface CustomProvider {
   last_sync_status: string | null
   last_sync_error: string | null
   created_at: string
+  /** Who registered it (they and superusers may change it); absent on servers where only superusers could. */
+  created_by?: string
 }
 
 export interface CreateCustomProviderBody {
