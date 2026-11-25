@@ -602,12 +602,18 @@ fn strip_prefix_and_repack(raw: &[u8], size_cap: u64, max_files: usize) -> Resul
             )));
         }
 
+        // A fresh header, not a copy: GitHub splits a long path between the ustar `prefix` and
+        // `name` fields, and a copy keeps the old prefix, so the entry would land at
+        // `<old prefix>/<new path>`. `append_data` writes the path whole (a GNU long name if needed).
+        let mut header = tar::Header::new_gnu();
+        header.set_entry_type(etype);
+        header.set_mode(entry.header().mode().unwrap_or(0o644));
+        header.set_mtime(entry.header().mtime().unwrap_or(0));
+
         if etype.is_dir() {
-            let mut header = entry.header().clone();
-            header.set_path(&stripped).map_err(Error::Io)?;
-            header.set_cksum();
+            header.set_size(0);
             builder
-                .append(&header, std::io::empty())
+                .append_data(&mut header, &stripped, std::io::empty())
                 .map_err(Error::Io)?;
             continue;
         }
@@ -624,12 +630,9 @@ fn strip_prefix_and_repack(raw: &[u8], size_cap: u64, max_files: usize) -> Resul
         let mut data = Vec::with_capacity(size as usize);
         entry.read_to_end(&mut data).map_err(Error::Io)?;
 
-        let mut header = entry.header().clone();
-        header.set_path(&stripped).map_err(Error::Io)?;
         header.set_size(data.len() as u64);
-        header.set_cksum();
         builder
-            .append(&header, std::io::Cursor::new(data))
+            .append_data(&mut header, &stripped, std::io::Cursor::new(data))
             .map_err(Error::Io)?;
     }
 
@@ -789,6 +792,40 @@ mod tests {
         assert!(
             !entries.iter().any(|p| p.starts_with("owner-repo-abc123")),
             "prefix not stripped: {entries:?}"
+        );
+    }
+
+    #[test]
+    fn a_path_split_across_the_ustar_prefix_keeps_its_place() {
+        use flate2::{Compression, read::GzDecoder, write::GzEncoder};
+        // Over 100 bytes with the top-level directory, so ustar splits it into `prefix` + `name`.
+        let top = format!("owner-repo-{}", "a".repeat(40));
+        let path =
+            format!("{top}/oss/server/benches/a-rather-long-directory-name/control_plane.rs");
+        let mut raw = Vec::new();
+        {
+            let mut ar = tar::Builder::new(GzEncoder::new(&mut raw, Compression::default()));
+            let mut h = tar::Header::new_ustar();
+            h.set_entry_type(tar::EntryType::Regular);
+            h.set_path(&path).unwrap();
+            assert!(!h.as_ustar().unwrap().prefix.iter().all(|b| *b == 0));
+            h.set_size(2);
+            h.set_mode(0o644);
+            h.set_cksum();
+            ar.append(&h, b"fn".as_slice()).unwrap();
+            ar.into_inner().unwrap().finish().unwrap();
+        }
+
+        let repacked = strip_prefix_and_repack(&raw, 1024, AGENT_CLONE_MAX_FILES).unwrap();
+        let mut ar = tar::Archive::new(GzDecoder::new(std::io::Cursor::new(repacked)));
+        let names: Vec<_> = ar
+            .entries()
+            .unwrap()
+            .map(|e| e.unwrap().path().unwrap().display().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["oss/server/benches/a-rather-long-directory-name/control_plane.rs"]
         );
     }
 
