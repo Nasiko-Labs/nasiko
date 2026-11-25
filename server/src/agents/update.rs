@@ -530,6 +530,8 @@ pub async fn execute_agent_update(
 
     // The image build's captured output, filled once the build runs so the Builds tab can show it.
     let mut build_logs = String::new();
+    // Set when the runtime declines the deploy, so the user is told why instead of a generic reason.
+    let mut declined = None;
 
     let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
@@ -642,10 +644,10 @@ pub async fn execute_agent_update(
         // Capture the ports build_agent_spec actually resolved (defaults empty -> 8000)
         // so they can be persisted below (RUN-3b) — restart reads this back.
         let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
-        let deploy_status = scaling
-            .deploy(&spec)
-            .await
-            .map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = scaling.deploy(&spec).await.map_err(|e| {
+            declined = super::utils::declined_message(&e);
+            format!("deploy: {e}")
+        })?;
 
         set_upload_status(
             db,
@@ -755,7 +757,8 @@ pub async fn execute_agent_update(
             // Persist what explains the failure on the build row: the build output when the image
             // built, otherwise the error text, which carries the builder's own log for a build
             // failure. The `upload_status.error_message` column stays a generic reason because
-            // clients read it via GET /agents/uploads; the detail lives in the build logs.
+            // clients read it via GET /agents/uploads; the detail lives in the build logs. A deploy
+            // the runtime declined is the exception: its message is the reason, worded for the user.
             store_build_logs(
                 db,
                 state.oci_storage.as_ref(),
@@ -774,7 +777,7 @@ pub async fn execute_agent_update(
                 owner_id,
                 "failed",
                 None,
-                Some("agent update failed"),
+                Some(declined.as_deref().unwrap_or("agent update failed")),
             )
             .await;
             tracing::error!(build_id = %build_id, %agent_id, %e, "agent update failed");

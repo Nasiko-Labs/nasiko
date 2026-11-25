@@ -1091,6 +1091,8 @@ pub async fn execute_upload_and_deploy(
 
     // The image build's captured output, filled once the build runs so the Builds tab can show it.
     let mut build_logs = String::new();
+    // Set when the runtime declines the deploy, so the user is told why instead of a generic reason.
+    let mut declined = None;
     let result: Result<DeploymentStatus, String> = async {
         // Extract zip (with guards — re-run here so the worker is self-contained).
         let zp = zip_path.clone();
@@ -1184,10 +1186,10 @@ pub async fn execute_upload_and_deploy(
             agent_id,
         )
         .await;
-        let deploy_status = scaling
-            .deploy(&spec)
-            .await
-            .map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = scaling.deploy(&spec).await.map_err(|e| {
+            declined = super::utils::declined_message(&e);
+            format!("deploy: {e}")
+        })?;
 
         set_upload_status(
             db,
@@ -1274,6 +1276,8 @@ pub async fn execute_upload_and_deploy(
             // built (a later step failed), otherwise the error text, which carries the builder's
             // own log for a build failure. `upload_status.error_message` stays a generic reason
             // because clients read it via GET /agents/uploads; the detail lives in the build logs.
+            // A deploy the runtime declined is the exception: its message is the reason, worded
+            // for the user.
             store_build_logs(
                 db,
                 state.oci_storage.as_ref(),
@@ -1292,7 +1296,7 @@ pub async fn execute_upload_and_deploy(
                 owner_id,
                 "failed",
                 None,
-                Some("upload and deploy failed"),
+                Some(declined.as_deref().unwrap_or("upload and deploy failed")),
             )
             .await;
             super::utils::delete_agent_or_mark_failed(db, agent_id, &state.agent_deletion_hook)
@@ -1383,6 +1387,8 @@ pub async fn execute_clone_and_deploy(
 
     // The image build's captured output, filled once the build runs so the Builds tab can show it.
     let mut build_logs = String::new();
+    // Set when the runtime declines the deploy, so the user is told why instead of a generic reason.
+    let mut declined = None;
 
     let result: Result<(DeploymentStatus, String), String> = async {
         // Read tar.gz bytes then extract on the blocking pool.
@@ -1554,10 +1560,10 @@ pub async fn execute_clone_and_deploy(
             agent_id,
         )
         .await;
-        let deploy_status = scaling
-            .deploy(&spec)
-            .await
-            .map_err(|e| format!("BUILD_FAILED:deploy: {e}"))?;
+        let deploy_status = scaling.deploy(&spec).await.map_err(|e| {
+            declined = super::utils::declined_message(&e);
+            format!("BUILD_FAILED:deploy: {e}")
+        })?;
 
         set_upload_status(
             db,
@@ -1701,7 +1707,7 @@ pub async fn execute_clone_and_deploy(
                     owner_id,
                     "failed",
                     None,
-                    Some("clone and deploy failed"),
+                    Some(declined.as_deref().unwrap_or("clone and deploy failed")),
                 )
                 .await;
                 restore_prior_state_or_clean_up(

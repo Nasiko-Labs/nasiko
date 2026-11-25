@@ -30,7 +30,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::{AgentWake, lock_agent};
+use super::{AgentWake, WakeRefusal, lock_agent};
 use crate::agents::deployments::record_newest_deployment_status;
 use crate::agents::utils::answers_http;
 
@@ -121,7 +121,7 @@ impl ParkedAgentWake {
 
     /// Wakes the agent, or waits for the wake another caller in this process already started and
     /// then sees what it left.
-    async fn wake_once(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String> {
+    async fn wake_once(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), WakeRefusal> {
         let deadline = Instant::now() + self.budget;
         let gate = self.gate_of(agent_id);
         let _turn = match gate.try_lock() {
@@ -147,7 +147,7 @@ impl ParkedAgentWake {
         agent_id: Uuid,
         flow_id: Option<&str>,
         deadline: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), WakeRefusal> {
         let started = Instant::now();
         let _slot = self.wake_slot(agent_id, deadline).await?;
         let mut tx = self
@@ -179,16 +179,21 @@ impl ParkedAgentWake {
                 info!(%agent_id, "agent wake: scaled a parked agent up; waiting until it answers");
             }
             Ok(ScaleUp::NoWorkload) => self.deploy_workload(agent_id, deadline).await?,
-            // The refusing layer worded this for the caller; the rest is internal detail.
+            // The refusing layer worded this for the caller; the rest is internal detail. It
+            // declined before anything started, so there is nothing to scale back down.
             Err(RuntimeError::Declined { code, message }) => {
                 warn!(%agent_id, %code, "agent wake: the runtime declined to start the agent");
-                return Err(message);
+                undo.disarm();
+                return Err(WakeRefusal {
+                    message,
+                    declined: true,
+                });
             }
-            Err(e) => return Err(unavailable(agent_id, "scale", e)),
+            Err(e) => return Err(unavailable(agent_id, "scale", e).into()),
         }
         announce_waking(&self.deps.flow_events, agent_id, flow_id).await;
         let Some(address) = self.wait_answering(&container_id, deadline).await else {
-            return Err(not_in_time(agent_id));
+            return Err(not_in_time(agent_id).into());
         };
         mark_running(&mut tx, agent_id, &address)
             .await
@@ -342,6 +347,16 @@ async fn park_again(
 #[async_trait]
 impl AgentWake for ParkedAgentWake {
     async fn before_forward(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String> {
+        self.before_forward_or_decline(agent_id, flow_id)
+            .await
+            .map_err(|refusal| refusal.message)
+    }
+
+    async fn before_forward_or_decline(
+        &self,
+        agent_id: Uuid,
+        flow_id: Option<&str>,
+    ) -> Result<(), WakeRefusal> {
         if self.is_parked(agent_id).await? {
             return self.wake_once(agent_id, flow_id).await;
         }
