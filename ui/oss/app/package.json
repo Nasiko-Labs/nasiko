@@ -11,6 +11,6 @@
     "@nasiko/app-core": "workspace:*",
     "@nasiko/app-shell": "workspace:*",
     "@nasiko/ui": "workspace:*",
-    "vite": "^8.3.0"
+    "vite": "^8.3.3"
   }
 }
