@@ -8,7 +8,8 @@
 -- 1. A user with a live session bound to a platform row gets their own harness agent for that
 --    harness, as `sessions::own_agent::ensure` creates it (the display name and description match
 --    `nasiko_runtime::harness_agent`). The image is the platform row's; the session's sandbox
---    takes its image from the catalog, not from this column.
+--    takes its image from the catalog, not from this column. Approvals (`hitl_enabled`) are the
+--    platform row's, as `ensure` copied them, so a session that asked before still asks.
 -- 2. Each such session's sandbox token names the platform row, so it is revoked and forgotten; the
 --    session's next turn mints one naming the user's agent.
 -- 3. The session is bound to the user's agent. Its conversation is kept. Under the `pod` provider
@@ -19,13 +20,14 @@
 -- the deleted platform row, and its turns then find no agent.
 
 INSERT INTO agents (name, display_name, description, owner_id, image, status, is_public,
-                    workload_kind, harness_id, parking_policy, writable)
+                    workload_kind, harness_id, parking_policy, writable, hitl_enabled)
 SELECT DISTINCT ON (s.user_id, p.harness_id)
        'harness-' || p.harness_id,
        h.name || ' sessions',
        'Runs your ' || h.name || ' sessions with your own model settings and tools. '
            || 'Created by the platform and never shared.',
-       s.user_id, p.image, 'parked', false, 'harness', p.harness_id, 'auto', true
+       s.user_id, p.image, 'parked', false, 'harness', p.harness_id, 'auto', true,
+       p.hitl_enabled
 FROM chat_sessions s
 JOIN agents p ON p.id = s.agent_id AND p.workload_kind = 'harness' AND p.name = p.harness_id
 JOIN harness_catalog h ON h.id = p.harness_id

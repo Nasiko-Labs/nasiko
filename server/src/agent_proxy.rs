@@ -208,8 +208,8 @@ pub async fn agent_proxy(
     // `ensure_chat_session` persists the transcript and the flow row below, and a foreign
     // contextId must not collect either.
     let resolved_session =
-        if let Some(crate::coding::proxy::AgentTarget::Harness(_)) = &coding_target {
-            reject_foreign_harness_session(&state, &claims, agent_id, &body_bytes).await?
+        if let Some(crate::coding::proxy::AgentTarget::Harness(target)) = &coding_target {
+            reject_foreign_harness_session(&state, &claims, target, &body_bytes).await?
         } else {
             None
         };
@@ -874,21 +874,29 @@ fn complete_flow(db: &sqlx::PgPool, flow_id: &str) {
     });
 }
 
-/// 404 when a message send names a harness session that is someone else's. Resolving the
-/// session is `find_or_create_for_harness`, so an unknown contextId is created for the caller
-/// and a foreign one is indistinguishable from a missing one. A body without a contextId needs
-/// no check: `ensure_chat_session` mints a fresh one. Returns the resolved session so the turn
-/// does not look it up again.
+/// 404 when a message send is to someone else's harness agent, or names a harness session that
+/// is someone else's. The agent's owner is checked first, so a message without a contextId,
+/// which `ensure_chat_session` would give a fresh session, writes nothing on another user's
+/// agent either. Resolving the session is `find_or_create_for_harness`, so an unknown contextId
+/// is created for the caller and a foreign one is indistinguishable from a missing one. Returns
+/// the resolved session so the turn does not look it up again.
 async fn reject_foreign_harness_session(
     state: &AppState,
     claims: &Claims,
-    agent_id: Uuid,
+    target: &crate::coding::proxy::HarnessTarget,
     body: &[u8],
 ) -> Result<Option<crate::sessions::SessionRow>, StatusCode> {
+    if message_send_id(body).is_none() {
+        return Ok(None);
+    }
+    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    if target.owner_id != user_id {
+        return Err(StatusCode::NOT_FOUND);
+    }
     let Some(context_id) = message_send_context_id(body) else {
         return Ok(None);
     };
-    let user_id = claims.user_uuid().map_err(|_| StatusCode::UNAUTHORIZED)?;
+    let agent_id = target.agent_id;
     let session = crate::sessions::SessionStore::new(state.db.clone())
         .find_or_create_for_harness(agent_id, user_id, &context_id)
         .await

@@ -381,6 +381,7 @@ fn decode_cursor(cursor: &str) -> ApiResult<(DateTime<Utc>, String)> {
 /// Delete a session: its sandbox is released, its sandbox token revoked, the row removed. The
 /// owner or a superuser may; anyone else, and an unknown id, gets 404. A session a turn (or a
 /// suspend) holds is 409 `session_busy`: a running turn is not killed, the caller suspends first.
+/// A session whose sandbox is still starting is deleted once the start ends (`start::wait_out`).
 async fn delete_session(
     State(state): State<AppState>,
     claims: Claims,
@@ -393,6 +394,10 @@ async fn delete_session(
         .await
         .map_err(|e| ApiError::internal("get harness session", e))?
         .filter(|row| claims.is_superuser || row.user_id == caller)
+        .ok_or(ApiError::NOT_FOUND)?;
+    let row = super::start::wait_out(&state, row)
+        .await
+        .map_err(|e| ApiError::internal("get harness session", e))?
         .ok_or(ApiError::NOT_FOUND)?;
     let deleted = store
         .delete_idle(&id, row.turn_fence)
@@ -416,13 +421,18 @@ async fn delete_session(
 /// provider agrees is not running, has nothing to do (204), unless a turn is mid-start (409). A session a turn is using is `409`:
 /// the claim is fenced on the turn counter, so a turn that starts meanwhile wins. A session
 /// already being suspended is `202` while that claim's deadline holds; once it has lapsed the
-/// claim is taken over and finished.
+/// claim is taken over and finished. A session whose sandbox is still starting is suspended once
+/// the start ends (`start::wait_out`).
 async fn suspend_session(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     let (row, _) = owned_session(&state, &claims, &id).await?;
+    let row = super::start::wait_out(&state, row)
+        .await
+        .map_err(|e| ApiError::internal("get harness session", e))?
+        .ok_or(ApiError::NOT_FOUND)?;
     if let Some(done) = nothing_to_suspend(&row) {
         return Ok(done);
     }

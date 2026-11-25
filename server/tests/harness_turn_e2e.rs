@@ -2360,6 +2360,53 @@ async fn opening_a_session_starts_its_sandbox_and_the_first_message_runs_on_it()
     server.cleanup().await;
 }
 
+/// Deleting or suspending a session whose sandbox is still being started waits for the start
+/// instead of answering 409 `session_busy`, then acts on the session the start left.
+#[tokio::test]
+#[serial]
+async fn deleting_or_suspending_a_session_while_its_sandbox_starts_waits_for_the_start() {
+    let World { server, alice, .. } = world().await;
+    for action in ["delete", "suspend"] {
+        server.sandbox.delay_next_acquire(Duration::from_secs(2));
+        let (key, sid) = open_session(&server, (alice, "alice")).await;
+        let store = nasiko_server::sessions::SessionStore::new(server.db.clone());
+        let row = store.get(&sid).await.unwrap().expect("the session");
+        assert!(
+            nasiko_server::sessions::start::is_starting(&row),
+            "{action}: the start holds the lease"
+        );
+
+        let request = match action {
+            "delete" => server
+                .client
+                .delete(server.url(&format!("/api/sessions/{sid}"))),
+            _ => server
+                .client
+                .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        };
+        let resp = common::as_member(request, &alice.to_string(), "alice")
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = resp.text().await.unwrap();
+        assert!(status.is_success(), "{action}: {status} {body}");
+        assert_eq!(server.sandbox.creations(&key), 1, "{action}");
+        match store.get(&sid).await.unwrap() {
+            None => assert_eq!(action, "delete"),
+            Some(row) => {
+                assert_eq!(action, "suspend");
+                assert!(
+                    matches!(row.runtime_state.as_str(), "parked" | "stopping"),
+                    "suspend: {}",
+                    row.runtime_state
+                );
+            }
+        }
+    }
+    server.cleanup().await;
+}
+
 /// A message sent while the session's sandbox is still being started (the start holds the
 /// session's lease) waits for the start instead of being refused as busy, then completes on the
 /// sandbox the start created.
@@ -2553,6 +2600,28 @@ async fn a_superuser_sees_another_users_sessions_but_cannot_talk_to_their_harnes
 
         assert_eq!(written_by_others(&server, admin, &context_id).await, before);
     }
+    // Without a contextId the proxy would mint one; the owner is checked before it does.
+    let sessions_on_alices_agent = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM chat_sessions WHERE user_id = $1 AND agent_id = $2",
+        )
+        .bind(admin)
+        .bind(alice_agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let before = sessions_on_alices_agent().await;
+    let mut no_context = stream_body("", "hi");
+    no_context["params"]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("contextId");
+    let proxied = as_admin(&format!("/api/agents/{alice_agent}"), &no_context)
+        .await
+        .unwrap();
+    assert_eq!(proxied.status(), 404, "proxy, no contextId");
+    assert_eq!(sessions_on_alices_agent().await, before);
     assert_eq!(server.sandbox.acquire_count(&key), acquired);
 
     let listed: Value = common::as_superuser(

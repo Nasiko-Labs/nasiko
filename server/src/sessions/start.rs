@@ -40,6 +40,32 @@ pub fn is_starting(row: &SessionRow) -> bool {
             .is_some_and(|id| id.starts_with(START_ID_PREFIX))
 }
 
+/// How often [`wait_out`] reads the row again.
+const START_POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// `row` once no start holds its session: read again until the start gives up its lease, for at
+/// most `AGENT_STARTUP_BUDGET_SECS` (how long a sandbox may take to come up). Deleting or
+/// suspending a session that was just opened waits for its sandbox rather than being refused as
+/// busy, as its first message does (`turn::acquire_lease`). A start that outlasts the wait is
+/// returned as it stands, still starting; `None` when the row is gone meanwhile.
+pub async fn wait_out(state: &AppState, row: SessionRow) -> sqlx::Result<Option<SessionRow>> {
+    if !is_starting(&row) {
+        return Ok(Some(row));
+    }
+    let store = SessionStore::new(state.db.clone());
+    let budget = std::time::Duration::from_secs(state.config.agent_startup_budget_secs);
+    let waiting_since = tokio::time::Instant::now();
+    loop {
+        tokio::time::sleep(START_POLL).await;
+        let Some(fresh) = store.get(&row.session_id).await? else {
+            return Ok(None);
+        };
+        if !is_starting(&fresh) || waiting_since.elapsed() >= budget {
+            return Ok(Some(fresh));
+        }
+    }
+}
+
 /// Begin starting the sandbox of `session_id`, a session of `agent_id`: take its lease and mark
 /// it `starting`, then set the sandbox up in the background. `false` when no start began (a turn
 /// holds the session, or the start could not be set up, which is logged); the session's first
