@@ -113,22 +113,26 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
     Ok(())
 }
 
-/// The Cargo packages owning the files the fix and its tests change.
+/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
+/// ([`spec::task_test_scope`]).
 async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Vec<String>> {
-    let mut packages = Vec::new();
-    for text in [&task.patch, &task.test_patch] {
+    let mut files = Vec::new();
+    for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
-            if let Some(p) = forge
+            if let Some((package, manifest)) = forge
                 .cargo_package_of(&task.x_nasiko.gold_commit, file.path())
                 .await?
-                && !packages.contains(&p)
             {
-                packages.push(p);
+                files.push(spec::OwnedFile {
+                    path: file.path().to_string(),
+                    package,
+                    manifest,
+                    in_tests,
+                });
             }
         }
     }
-    packages.sort();
-    Ok(spec::cargo_scope(&packages))
+    Ok(spec::task_test_scope(&files))
 }
 
 /// The task image: the env and task recipes in one Dockerfile, with the repository at

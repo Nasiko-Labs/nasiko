@@ -165,20 +165,25 @@ fn build_task(
     }))
 }
 
-/// Cargo packages owning the files the fix and its tests change.
+/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
+/// ([`spec::task_test_scope`]).
 fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
-    let mut packages = Vec::new();
-    for text in [&task.patch, &task.test_patch] {
+    let mut files = Vec::new();
+    for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
-            if let Some(p) = repo.cargo_package_of(&task.x_nasiko.gold_commit, file.path())?
-                && !packages.contains(&p)
+            if let Some((package, manifest)) =
+                repo.cargo_package_of(&task.x_nasiko.gold_commit, file.path())?
             {
-                packages.push(p);
+                files.push(spec::OwnedFile {
+                    path: file.path().to_string(),
+                    package,
+                    manifest,
+                    in_tests,
+                });
             }
         }
     }
-    packages.sort();
-    Ok(spec::cargo_scope(&packages))
+    Ok(spec::task_test_scope(&files))
 }
 
 /// The three gate set-ups.

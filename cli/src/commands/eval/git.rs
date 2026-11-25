@@ -165,12 +165,13 @@ impl Repo {
             .map(|_| ())
     }
 
-    /// The Cargo package that owns `path` at a commit: the `[package] name` of the nearest
-    /// `Cargo.toml` above it. `None` when there is none (e.g. a root-only workspace manifest).
-    pub fn cargo_package_of(&self, sha: &str, path: &str) -> Result<Option<String>> {
+    /// The Cargo package that owns `path` at a commit, and its `Cargo.toml`: the `[package]
+    /// name` of the nearest one above it. `None` when there is none (e.g. a root-only workspace
+    /// manifest).
+    pub fn cargo_package_of(&self, sha: &str, path: &str) -> Result<Option<(String, String)>> {
         for manifest in nasiko_evals::spec::manifests_above(path) {
             if let Some(text) = self.file_at(sha, &manifest)? {
-                return Ok(package_name(&text));
+                return Ok(package_name(&text).map(|name| (name, manifest)));
             }
         }
         Ok(None)

@@ -108,6 +108,68 @@ pub fn cargo_scope(packages: &[String]) -> Vec<String> {
     packages.iter().map(|p| format!("-p {p}")).collect()
 }
 
+/// A file a task's fix or tests change, with the Cargo package that owns it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedFile {
+    /// The file, from the repo root.
+    pub path: String,
+    /// The owning package's name.
+    pub package: String,
+    /// The owning package's `Cargo.toml`, from the repo root.
+    pub manifest: String,
+    /// Whether the change is in the task's tests (the test patch) rather than its fix.
+    pub in_tests: bool,
+}
+
+/// The Cargo test scope of a task: the packages its fix and tests change ([`cargo_scope`]), or,
+/// when they are one package and every test file is one of its integration tests
+/// (`tests/<name>.rs` or `tests/<name>/main.rs`), just those test targets. A package's
+/// integration tests are each a binary linking the whole package, so building all of them for a
+/// task that changes one can outgrow the image builder; SWE-bench runs only the tests a task
+/// names, too.
+pub fn task_test_scope(files: &[OwnedFile]) -> Vec<String> {
+    let mut packages: Vec<String> = files.iter().map(|f| f.package.clone()).collect();
+    packages.sort();
+    packages.dedup();
+    if let [package] = packages.as_slice() {
+        let targets: Option<Vec<String>> = files
+            .iter()
+            .filter(|f| f.in_tests)
+            .map(integration_test_target)
+            .collect();
+        if let Some(mut targets) = targets.filter(|t| !t.is_empty()) {
+            targets.sort();
+            targets.dedup();
+            let mut scope = vec![format!("-p {package}")];
+            scope.extend(targets.iter().map(|t| format!("--test {t}")));
+            return scope;
+        }
+    }
+    cargo_scope(&packages)
+}
+
+/// The integration test target `file` is, when it is one: `tests/<name>.rs` or
+/// `tests/<name>/main.rs` under its package's folder. A shared helper (`tests/common/mod.rs`)
+/// or an inline test module is none.
+fn integration_test_target(file: &OwnedFile) -> Option<String> {
+    let dir = file
+        .manifest
+        .strip_suffix("Cargo.toml")?
+        .trim_end_matches('/');
+    let rel = if dir.is_empty() {
+        file.path.as_str()
+    } else {
+        file.path.strip_prefix(dir)?.strip_prefix('/')?
+    };
+    let rest = rel.strip_prefix("tests/")?;
+    let name = match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [file] => file.strip_suffix(".rs")?,
+        [name, "main.rs"] => name,
+        _ => return None,
+    };
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 /// The `Cargo.toml` paths that may own `path`, nearest first: each folder above it up to the
 /// repo root. The first one that exists names the file's package.
 pub fn manifests_above(path: &str) -> Vec<String> {
@@ -147,6 +209,60 @@ pub fn eval_script(spec: &EnvSpec, scope: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn owned(path: &str, package: &str, manifest: &str, in_tests: bool) -> OwnedFile {
+        OwnedFile {
+            path: path.into(),
+            package: package.into(),
+            manifest: manifest.into(),
+            in_tests,
+        }
+    }
+
+    #[test]
+    fn a_task_tested_by_integration_tests_builds_only_those() {
+        let server = "oss/server/Cargo.toml";
+        let files = [
+            owned("oss/server/src/pricing.rs", "nasiko-server", server, false),
+            owned(
+                "oss/server/tests/pricing_sync.rs",
+                "nasiko-server",
+                server,
+                true,
+            ),
+            owned(
+                "oss/server/tests/budgets/main.rs",
+                "nasiko-server",
+                server,
+                true,
+            ),
+        ];
+        assert_eq!(
+            task_test_scope(&files),
+            ["-p nasiko-server", "--test budgets", "--test pricing_sync"]
+        );
+    }
+
+    #[test]
+    fn inline_tests_shared_helpers_and_several_packages_keep_the_package_scope() {
+        let server = "oss/server/Cargo.toml";
+        let inline = [owned("oss/server/src/a.rs", "nasiko-server", server, true)];
+        assert_eq!(task_test_scope(&inline), ["-p nasiko-server"]);
+        let helper = [owned(
+            "oss/server/tests/common/mod.rs",
+            "nasiko-server",
+            server,
+            true,
+        )];
+        assert_eq!(task_test_scope(&helper), ["-p nasiko-server"]);
+        let two = [
+            owned("oss/server/tests/a.rs", "nasiko-server", server, true),
+            owned("oss/cli/src/b.rs", "nasiko", "oss/cli/Cargo.toml", false),
+        ];
+        assert_eq!(task_test_scope(&two), ["-p nasiko", "-p nasiko-server"]);
+        let root = [owned("tests/smoke.rs", "app", "Cargo.toml", true)];
+        assert_eq!(task_test_scope(&root), ["-p app", "--test smoke"]);
+    }
 
     #[test]
     fn manifests_are_listed_nearest_first() {

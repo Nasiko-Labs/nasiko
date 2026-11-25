@@ -180,11 +180,15 @@ impl Forge {
             .archive_bytes)
     }
 
-    /// The Cargo package owning `path` at `git_ref`: the nearest `Cargo.toml` above it.
-    pub async fn cargo_package_of(&self, git_ref: &str, path: &str) -> Result<Option<String>> {
+    /// The Cargo package owning `path` at `git_ref`, and its `Cargo.toml`: the nearest one above it.
+    pub async fn cargo_package_of(
+        &self,
+        git_ref: &str,
+        path: &str,
+    ) -> Result<Option<(String, String)>> {
         for manifest in nasiko_evals::spec::manifests_above(path) {
             if let Some(text) = self.file_at(git_ref, &manifest).await? {
-                return Ok(package_name(&text));
+                return Ok(package_name(&text).map(|name| (name, manifest)));
             }
         }
         Ok(None)
