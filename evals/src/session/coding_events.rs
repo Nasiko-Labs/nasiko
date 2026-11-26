@@ -51,11 +51,14 @@ pub fn from_payloads(
     let mut usage = Vec::new();
     let mut seen = BTreeSet::new();
     for turn in &turns {
+        // A prompt that opens with a tag is one the harness wrote (a background task's
+        // `<task-notification>`, a `<system-reminder>`, a slash command's echo), not the person:
+        // the same rule as the Claude Code log reader's.
         if let Some(text) = turn
             .prompt
             .as_deref()
             .map(str::trim)
-            .filter(|t| !t.is_empty())
+            .filter(|t| !t.is_empty() && !t.starts_with('<'))
         {
             user_messages.push(UserMessage {
                 at: turn.started_at,
@@ -230,6 +233,13 @@ mod tests {
                         "started_at": "2026-11-01T10:11:00Z",
                         "arguments": {"file_path": "/r/tests/t.rs", "content": "fn t() {}\n"}}]),
                 json!([call("c3", "msg-2", "2026-11-01T10:10:30Z", 7)]),
+            ),
+            turn(
+                "bg",
+                "2026-11-01T10:05:00Z",
+                Some("<task-notification>\n<task-id>b1</task-id>\n</task-notification>"),
+                json!([]),
+                json!([]),
             ),
             turn(
                 "t1",
