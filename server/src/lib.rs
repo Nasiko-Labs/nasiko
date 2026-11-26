@@ -34,12 +34,14 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod current_time;
+pub mod dashboard_limit;
 pub mod embedding_change;
 pub mod error_reporting;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
 pub mod hitl;
+pub mod invalidation;
 pub mod llm_configs;
 pub mod llm_router;
 pub mod maf;
@@ -67,6 +69,7 @@ pub mod seed_workflows;
 pub mod serve;
 pub mod sessions;
 pub mod settings;
+pub mod shutdown;
 /// The SPA serving shared by every binary that embeds a UI bundle.
 pub use nasiko_spa as spa;
 pub mod spend_gate;
@@ -90,7 +93,7 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::trace::TraceLayer;
 
 use crate::auth::Claims;
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{RateLimitStore, RateLimiter};
 use crate::state::AppState;
 
 /// Explicit origin allowlist — never `CorsLayer::permissive()`. The UI is
@@ -154,7 +157,12 @@ where
     F: Handler<T, ()> + Clone + Send + 'static,
     T: 'static,
 {
-    let login_limiter = RateLimiter::new(30, Duration::from_secs(60));
+    let login_limiter = RateLimiter::new(
+        &RateLimitStore::Redis(state.redis.clone()),
+        "login",
+        30,
+        Duration::from_secs(60),
+    );
     // Agent grants/visibility API (list grants, public toggle, user and
     // agent-agent shares, ownership transfer). Mounted HERE and not in
     // `agents::router()` so a caller composing its own app can replace it
@@ -333,16 +341,19 @@ where
 
     // Fixed-window limiters — see rate_limit.rs for why this app has none of
     // its own otherwise (gateway removal took the last rate limiting with it).
-    let a2a_limiter = RateLimiter::new(30, Duration::from_secs(60));
-    let oci_limiter = RateLimiter::new(300, Duration::from_secs(60));
-    let non_login_limiter = RateLimiter::new(30, Duration::from_secs(60));
-    let registry_limiter = RateLimiter::new(60, Duration::from_secs(60));
+    // Counted in Redis, so each budget holds across every replica.
+    let rate_limits = RateLimitStore::Redis(state.redis.clone());
+    let minute = Duration::from_secs(60);
+    let a2a_limiter = RateLimiter::new(&rate_limits, "a2a", 30, minute);
+    let oci_limiter = RateLimiter::new(&rate_limits, "oci-bearer", 300, minute);
+    let non_login_limiter = RateLimiter::new(&rate_limits, "auth-public", 30, minute);
+    let registry_limiter = RateLimiter::new(&rate_limits, "a2a-registry", 60, minute);
     // Per-caller, not global: /auth/change-password is authenticated, and it
     // costs two bcrypt cost-12 hashes. 10/min is generous for a human changing
     // their own password and still bounds the CPU burn from a scripted loop.
-    let change_password_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    let change_password_limiter = RateLimiter::new(&rate_limits, "change-password", 10, minute);
     // Each assessment is an S3 write; a human submits the form once or twice.
-    let assessment_limiter = RateLimiter::new(5, Duration::from_secs(60));
+    let assessment_limiter = RateLimiter::new(&rate_limits, "assessments", 5, minute);
     // Starting a MAF run is the single most expensive authenticated action in
     // the product: the executor makes 4 LLM calls minimum (plan, per-step
     // placeholder fill, per-step extraction, final synthesis) plus one agent
@@ -351,12 +362,12 @@ where
     // the deployment for the lot. `/maf/generate` and
     // `/maf/workflow/from-instruction` share the budget: both are LLM-backed
     // and neither is something a human does at speed.
-    let maf_run_limiter = RateLimiter::new(10, Duration::from_secs(60));
+    let maf_run_limiter = RateLimiter::new(&rate_limits, "maf-run", 10, minute);
     // MAF's read/CRUD surface. Loose on purpose — the UI polls
     // `/maf/execution/{id}` and `/maf/execution/{id}/usage` every couple of
     // seconds while a workflow runs, so this has to allow steady polling and
     // only bounds the pathological case.
-    let maf_read_limiter = RateLimiter::new(120, Duration::from_secs(60));
+    let maf_read_limiter = RateLimiter::new(&rate_limits, "maf-read", 120, minute);
 
     // Public A2A registry (agent discovery) — see registry_a2a.rs for why it
     // is unauthenticated; the global fixed window bounds enumeration abuse.
@@ -386,7 +397,7 @@ where
         .merge(context_selection::router())
         .merge(onboarding::router())
         .merge(assessment::router(assessment_limiter))
-        .merge(overview::router())
+        .merge(overview::router(state.clone()))
         .merge(coding_agent_onboarding::router())
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
@@ -449,19 +460,34 @@ where
     // Blob deletes commit a reclaim tombstone and then remove the bytes, so a
     // crash or storage outage between the two leaves work queued. Drain it in the
     // background at boot — inline would delay serving on a slow storage backend,
-    // and nothing else ever revisits a stranded tombstone.
+    // and nothing else ever revisits a stranded tombstone. Upload sessions a client
+    // abandoned a day or more ago are removed with their staged chunks, at boot and
+    // then hourly on one replica: a long-lived replica would otherwise hold them
+    // until it next restarts.
     {
+        const ABANDONED_UPLOAD_SWEEP: nasiko_leader::LockKey =
+            nasiko_leader::LockKey::named("oci.abandoned_upload_sweep");
         let sweep_state = oci_state.clone();
+        let db = state.db.clone();
         tokio::spawn(async move {
             nasiko_oci::ops::blobs::sweep_pending_blob_gc(&sweep_state).await;
+            nasiko_leader::every(
+                db,
+                ABANDONED_UPLOAD_SWEEP,
+                std::time::Duration::from_secs(3600),
+                || nasiko_oci::ops::blobs::sweep_abandoned_uploads(&sweep_state),
+            )
+            .await;
         });
     }
-    let oci_pull_limiter = RateLimiter::new(300, Duration::from_secs(60));
+    let oci_pull_limiter = RateLimiter::new(&rate_limits, "oci-agent", 300, minute);
     // Every in-cluster build pushes as the one `build-service` identity, so it gets a budget of
     // its own sized for overlapping builds instead of one agent's pull budget.
     let build_push_limiter = RateLimiter::new(
+        &rate_limits,
+        "oci-build-push",
         state.config.build_push_rate_limit_per_minute,
-        Duration::from_secs(60),
+        minute,
     );
     let build_push_token_hash = (!state.config.build_push_token.is_empty())
         .then(|| nasiko_oci::pull_credentials::hash_token(&state.config.build_push_token));
@@ -492,8 +518,10 @@ where
             auth::AgentCallerAuth {
                 app: state.clone(),
                 limiter: RateLimiter::new(
+                    &rate_limits,
+                    "agent-peer-calls",
                     state.config.agent_peer_call_rate_limit_per_minute,
-                    Duration::from_secs(60),
+                    minute,
                 ),
             },
             auth::require_user_or_agent,
@@ -570,6 +598,7 @@ where
 
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .merge(observability::router())
         .merge(openapi::router())
         .merge(auth::login::non_login_public_router(non_login_limiter))
@@ -580,6 +609,7 @@ where
         .merge(error_reporting::router(
             error_reporting::current_config(),
             state.http_client.clone(),
+            &rate_limits,
         ))
         .nest("/api", protected)
         .nest("/api", proxy_routes)
@@ -646,6 +676,8 @@ where
         // Outermost, so the request's Sentry transaction is the parent of the span above. A
         // pass-through unless this server reports to Sentry (see `error_reporting`).
         .layer(middleware::from_fn(error_reporting::trace_requests))
+        // The server's in-flight count, which its autoscaler reads (`telemetry::server_load`).
+        .layer(middleware::from_fn(telemetry::server_load::track))
 }
 
 /// The 404 for an unmatched `/api` path, in the envelope every other API error
@@ -744,6 +776,7 @@ async fn authenticate_oci_request(
             if let Err(retry_after) = auth_state
                 .build_push_limiter
                 .check(nasiko_oci::BUILD_SERVICE_USERNAME)
+                .await
             {
                 return rate_limit::too_many_requests_after(retry_after);
             }
@@ -759,6 +792,7 @@ async fn authenticate_oci_request(
                 if let Err(retry_after) = auth_state
                     .agent_credential_limiter
                     .check(&agent_id.to_string())
+                    .await
                 {
                     return rate_limit::too_many_requests_after(retry_after);
                 }
@@ -790,7 +824,7 @@ async fn authenticate_oci_request(
             };
         }
     };
-    if let Err(retry_after) = auth_state.bearer_limiter.check(&claims.sub) {
+    if let Err(retry_after) = auth_state.bearer_limiter.check(&claims.sub).await {
         return rate_limit::too_many_requests_after(retry_after);
     }
     req.extensions_mut().insert(nasiko_oci::CallerIdentity {
@@ -818,6 +852,18 @@ fn extract_basic_auth(headers: &axum::http::HeaderMap) -> Option<(String, String
 
 async fn health() -> &'static str {
     "ok"
+}
+
+/// Readiness, separate from `/health` (liveness): 503 once this replica is draining, so the load
+/// balancer moves its traffic to the others before it stops accepting connections.
+async fn ready(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, &'static str) {
+    if state.shutdown.is_draining() {
+        (axum::http::StatusCode::SERVICE_UNAVAILABLE, "draining")
+    } else {
+        (axum::http::StatusCode::OK, "ok")
+    }
 }
 
 async fn me(claims: Claims) -> Json<Claims> {
