@@ -56,10 +56,13 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
         repo: repo.to_string(),
         language: Language::Rust,
         toolchain_image: image,
+        // `libprotobuf-dev` ships protobuf's well-known types (`google/protobuf/*.proto`), which
+        // build scripts compiling `.proto` files import (`lance-encoding`, for one).
         system_packages: vec![
             "pkg-config".into(),
             "libssl-dev".into(),
             "protobuf-compiler".into(),
+            "libprotobuf-dev".into(),
         ],
         setup: vec!["cargo fetch".into()],
         build_cmd: "cargo test {scope} --no-run".into(),
