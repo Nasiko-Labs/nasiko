@@ -80,10 +80,8 @@ pub fn harvest(store: &Store, args: &HarvestArgs) -> Result<HarvestSummary> {
             continue;
         }
         let outcome = match harvest_one(store, &repo, &roots, log, args.since) {
-            Ok(Some((outcome, task_id))) => {
-                if let Some(id) = task_id {
-                    summary.new_tasks.push(id);
-                }
+            Ok(Some((outcome, task_ids))) => {
+                summary.new_tasks.extend(task_ids);
                 outcome
             }
             Ok(None) => continue,
@@ -132,7 +130,7 @@ fn harvest_one(
     roots: &[String],
     log: &Path,
     since: Option<DateTime<Utc>>,
-) -> Result<Option<(Outcome, Option<String>)>> {
+) -> Result<Option<(Outcome, Vec<String>)>> {
     let text =
         fs::read_to_string(log).with_context(|| format!("failed to read {}", log.display()))?;
     let session = parse_claude_code_log(&text)?;
@@ -141,7 +139,7 @@ fn harvest_one(
     }
     let edited = match harvest::precheck(&session, roots) {
         Ok(edited) => edited,
-        Err(outcome) => return Ok(Some((outcome, None))),
+        Err(outcome) => return Ok(Some((outcome, Vec::new()))),
     };
     let window = TimeWindow {
         from: session.started_at,
@@ -153,10 +151,31 @@ fn harvest_one(
             candidates.push(repo.commit_facts(&sha)?);
         }
     }
-    let linked = match harvest::link(&session, roots, candidates) {
-        Ok(linked) => linked,
-        Err(outcome) => return Ok(Some((outcome, None))),
+    let tasks = match harvest::link_tasks(&session, roots, candidates) {
+        Ok(tasks) => tasks,
+        Err(outcome) => return Ok(Some((outcome, Vec::new()))),
     };
+    let mut ids = Vec::new();
+    for linked in tasks {
+        if let Some(id) = save_task(store, repo, &session, linked)? {
+            ids.push(id);
+        }
+    }
+    let outcome = if ids.is_empty() {
+        Outcome::NoTests
+    } else {
+        Outcome::Task
+    };
+    Ok(Some((outcome, ids)))
+}
+
+/// Writes one linked piece of work's task; `None` when its commit changes no test.
+fn save_task(
+    store: &Store,
+    repo: &Repo,
+    session: &nasiko_evals::SessionRecord,
+    linked: harvest::Linked,
+) -> Result<Option<String>> {
     let (base, gold) = (linked.first().parent.clone(), linked.last().sha.clone());
     let mut split = harvest::split(&repo.diff(&base, &gold)?)?;
     let mut versions = BTreeMap::new();
@@ -171,7 +190,7 @@ fn harvest_one(
     }
     harvest::split_inline_rust_tests(&mut split, &versions)?;
     if !harvest::has_tests(&split) {
-        return Ok(Some((Outcome::NoTests, None)));
+        return Ok(None);
     }
     let task = harvest::draft_task(&repo.full_name(), &linked, split);
     let id = task.instance_id.clone();
@@ -180,7 +199,7 @@ fn harvest_one(
     let commits: Vec<&nasiko_evals::CommitFacts> = linked.commits.iter().collect();
     store.save_json(
         &layout.source_file(&id),
-        &nasiko_evals::TaskSource::new(&session, &linked.slice, &commits),
+        &nasiko_evals::TaskSource::new(session, &linked.slice, &commits),
     )?;
     store.save_json(
         &layout.link_file(&id),
@@ -189,7 +208,7 @@ fn harvest_one(
             candidates: linked.candidates,
         },
     )?;
-    Ok(Some((Outcome::Task, Some(id))))
+    Ok(Some(id))
 }
 
 #[derive(Serialize)]

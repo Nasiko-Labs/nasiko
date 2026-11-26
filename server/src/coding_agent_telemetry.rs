@@ -10,7 +10,8 @@ use chrono::{DateTime, Utc};
 use nasiko_types::{
     CODING_AGENT_BATCH_MAX_EVENTS, CapturePolicy, CodingAgentEventBatchRequest,
     CodingAgentEventBatchResponse, CodingAgentEventResult, CodingAgentEventStatus,
-    CodingAgentEventV1, CodingAgentToolCallStatus, CodingAgentTurn, coding_agent_session_id,
+    CodingAgentEventV1, CodingAgentSessionPlace, CodingAgentToolCallStatus, CodingAgentTurn,
+    coding_agent_session_id,
 };
 use serde_json::json;
 use uuid::Uuid;
@@ -84,7 +85,7 @@ async fn ingest_batch(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    if let Err(response) = guard.admit_events(&claims.sub, batch.events.len()).await {
+    if let Err(response) = guard.admit_events(&claims.sub, batch.events.len()) {
         return response;
     }
     let tempo_cutoff = tempo_cutoff(state.config.coding_agent_ingest.tempo_max_age_secs);
@@ -302,6 +303,10 @@ async fn process_event(
         let parent_session_id = scoped_session_id(agent_id, &parent.source_id);
         link_parent(&mut tx, &server_session_id, &parent_session_id, parent).await?;
     }
+    // Also before the receipt: re-syncing a session's history fills in where it ran.
+    if let Some(place) = &event.session.place {
+        record_place(&mut tx, &server_session_id, place).await?;
+    }
 
     let payload =
         serde_json::to_value(event).map_err(|error| ProcessError::Internal(error.into()))?;
@@ -427,16 +432,67 @@ async fn process_event(
     Ok(CodingAgentEventStatus::Accepted)
 }
 
+/// Fills in where a session ran, once: a later turn never moves a session that already has a
+/// place, and a turn without a repository never clears one. Its branches are the exception: each
+/// turn's are merged in, first seen first, up to the place's branch limit.
+async fn record_place(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    session_id: &str,
+    place: &CodingAgentSessionPlace,
+) -> Result<(), sqlx::Error> {
+    let repo = place.repo.as_ref();
+    sqlx::query(
+        r#"UPDATE chat_sessions
+              SET cwd = COALESCE(cwd, $2),
+                  git_branch = COALESCE(git_branch, $3),
+                  repo_host = COALESCE(repo_host, $4),
+                  repo_owner = CASE WHEN repo_host IS NULL THEN $5 ELSE repo_owner END,
+                  repo_name = CASE WHEN repo_host IS NULL THEN $6 ELSE repo_name END,
+                  repo_root = CASE WHEN repo_host IS NULL THEN $7 ELSE repo_root END,
+                  git_branches = ARRAY(
+                      SELECT b FROM unnest(git_branches || $8::text[]) WITH ORDINALITY AS t(b, n)
+                       GROUP BY b ORDER BY min(n) LIMIT $9)
+            WHERE session_id = $1"#,
+    )
+    .bind(session_id)
+    .bind(place.cwd.as_deref())
+    .bind(place.git_branch.as_deref())
+    .bind(repo.map(|r| r.host.as_str()))
+    .bind(repo.map(|r| r.owner.as_str()))
+    .bind(repo.map(|r| r.name.as_str()))
+    .bind(repo.and_then(|r| r.root.as_deref()))
+    .bind(&place.git_branches)
+    .bind(nasiko_types::CODING_AGENT_PLACE_MAX_BRANCHES as i64)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Whether `incoming` is a replay of the receipt already `stored` for its event id: the same
-/// turn, perhaps now carrying its subagent parent, or — once chat history stopped being kept — a
-/// turn stored earlier with its chat history, received again without it.
+/// turn, perhaps now carrying its subagent parent or where its session ran, or — once chat
+/// history stopped being kept — a turn stored earlier with its chat history, received again
+/// without it.
 fn is_replay(stored: &serde_json::Value, incoming: &serde_json::Value) -> bool {
+    let incoming = without_place(incoming);
     let without_content = serde_json::from_value::<CodingAgentEventV1>(stored.clone())
         .ok()
         .and_then(|event| serde_json::to_value(event.without_content()).ok());
-    std::iter::once(stored)
-        .chain(without_content.as_ref())
-        .any(|stored| stored == incoming || same_turn_but_parent(stored, incoming))
+    std::iter::once(without_place(stored))
+        .chain(without_content)
+        .any(|stored| stored == incoming || same_turn_but_parent(&stored, &incoming))
+}
+
+/// The event without `session.place`: a client that learned to send it replays turns it sent
+/// before without it, and those are the same turns.
+fn without_place(event: &serde_json::Value) -> serde_json::Value {
+    let mut event = event.clone();
+    if let Some(session) = event
+        .get_mut("session")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        session.remove("place");
+    }
+    event
 }
 
 /// The caller's live registration of the turn's coding agent, or the rejection
@@ -669,6 +725,7 @@ mod tests {
                 source_id: "source-session".into(),
                 title: None,
                 parent: None,
+                place: None,
             },
             turn: CodingAgentTurn {
                 id: "turn".into(),
@@ -710,6 +767,22 @@ mod tests {
         other.turn.llm_calls[0].input_tokens += 1;
         let other = serde_json::to_value(other).unwrap();
         assert!(!is_replay(&stored, &other));
+    }
+
+    #[test]
+    fn a_turn_replayed_with_where_it_ran_is_the_same_turn() {
+        let captured = event();
+        let stored = serde_json::to_value(&captured).unwrap();
+        let mut placed = captured.clone();
+        placed.session.place = Some(nasiko_types::CodingAgentSessionPlace {
+            cwd: Some("/src/app".into()),
+            git_branch: Some("main".into()),
+            git_branches: vec!["main".into()],
+            repo: None,
+        });
+        let placed = serde_json::to_value(placed).unwrap();
+        assert!(is_replay(&stored, &placed));
+        assert!(is_replay(&placed, &stored));
     }
 
     #[tokio::test]

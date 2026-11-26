@@ -4,8 +4,9 @@
 //! caller fetches what a step asks for and passes it in:
 //!
 //! 1. [`precheck`]: does the session have typed messages and edits in the repo at all?
-//! 2. [`link`]: given the commits in the session's window, which one (or which unbroken run)
-//!    is its work, and which slice of the session produced it.
+//! 2. [`link_tasks`]: given the commits in the session's window, which one (or which unbroken
+//!    run) is its work, or, for a long session, which commits are each a task of their own, and
+//!    which slice of the session produced each. Steps 3 to 5 then run once per task.
 //! 3. [`split`] the linked commits' diff into fix and tests, then
 //!    [`split_inline_rust_tests`] with the base and gold text of [`inline_test_paths`].
 //! 4. [`has_tests`]: a commit that changes no test cannot be a task.
@@ -77,6 +78,8 @@ pub struct Linked {
     /// The part of the session that produced the work.
     pub slice: SessionRecord,
     pub link_score: f64,
+    /// One of several tasks the session holds ([`link_tasks`]); its id then names its commit.
+    pub one_of_several: bool,
 }
 
 impl Linked {
@@ -89,21 +92,59 @@ impl Linked {
     }
 }
 
-/// Picks the session's commit(s) among `candidates` (the commits in its window that touch its
-/// edits, fetched in full).
-pub fn link(
+/// Picks the session's work among `candidates` (the commits in its window that touch its edits,
+/// fetched in full): one task (a commit, or a short unbroken run of them), or, for a long
+/// session whose several matching commits are not one short run, one task per commit
+/// ([`link::separate_tasks`]), each with the share of the session that led to it.
+pub fn link_tasks(
     session: &SessionRecord,
     roots: &[String],
     candidates: Vec<CommitFacts>,
-) -> Result<Linked, Outcome> {
-    let commits: Vec<CommitFacts> = candidates
+) -> Result<Vec<Linked>, Outcome> {
+    let mut commits: Vec<CommitFacts> = candidates
         .into_iter()
         .filter(|c| link::in_window(session, c) && link::is_eligible(c))
         .collect();
+    commits.sort_by_key(|c| c.committed_at);
     let scores: Vec<LinkScore> = commits
         .iter()
         .map(|c| link::score(session, roots, c))
         .collect();
+    let Some(separate) = link::separate_tasks(&scores) else {
+        return one_task(session, roots, &commits, scores).map(|linked| vec![linked]);
+    };
+    let mut tasks = Vec::new();
+    let mut previous = None;
+    for i in separate {
+        let commit = &commits[i];
+        // The message that led to this commit's first edit since the previous linked commit;
+        // a commit whose files were last edited before it starts where the session first
+        // edited them.
+        let start = session
+            .task_start_after(roots, &commit.files, previous)
+            .or_else(|| session.task_start(roots, &commit.files));
+        tasks.push(Linked {
+            slice: session.slice(start, commit.committed_at),
+            link_score: scores[i].total,
+            decision: LinkDecision::Single {
+                link: scores[i].clone(),
+            },
+            candidates: scores.clone(),
+            commits: vec![commit.clone()],
+            one_of_several: true,
+        });
+        previous = Some(commit.committed_at);
+    }
+    Ok(tasks)
+}
+
+/// The session's one task among `commits` (oldest first, scored as `scores`).
+fn one_task(
+    session: &SessionRecord,
+    roots: &[String],
+    commits: &[CommitFacts],
+    scores: Vec<LinkScore>,
+) -> Result<Linked, Outcome> {
     let decision = link::decide(&scores);
     let (first, last) = match &decision {
         LinkDecision::Single { link } => (link.clone(), link.clone()),
@@ -136,6 +177,7 @@ pub fn link(
         decision,
         candidates: scores,
         commits: linked,
+        one_of_several: false,
     })
 }
 
@@ -274,7 +316,11 @@ pub fn draft_task(repo_full_name: &str, linked: &Linked, split: SplitPatch) -> T
     let slug = repo_full_name.rsplit('/').next().unwrap_or(repo_full_name);
     let (statement, hints) = statement_and_hints(session);
     TaskInstance {
-        instance_id: instance::instance_id(slug, &session.session_id),
+        instance_id: if linked.one_of_several {
+            instance::commit_instance_id(slug, &session.session_id, &last.sha)
+        } else {
+            instance::instance_id(slug, &session.session_id)
+        },
         repo: repo_full_name.to_string(),
         base_commit: base.clone(),
         environment_setup_commit: base,
@@ -385,6 +431,7 @@ mod tests {
             source: SessionSource::ClaudeCode,
             cwd: "/r".into(),
             git_branch: Some("main".into()),
+            git_branches: vec!["main".into()],
             started_at: at("2026-11-01T10:00:00Z"),
             ended_at: at("2026-11-01T11:00:00Z"),
             user_messages: vec![
@@ -443,14 +490,18 @@ mod tests {
         let s = session();
         let roots = vec!["/r".to_string()];
         assert_eq!(precheck(&s, &roots), Ok(vec!["src/lib.rs".to_string()]));
-        let linked = link(&s, &roots, vec![commit("c1", "2026-11-01T10:30:00Z")]).expect("links");
+        let tasks =
+            link_tasks(&s, &roots, vec![commit("c1", "2026-11-01T10:30:00Z")]).expect("links");
+        let [linked] = tasks.as_slice() else {
+            panic!("one task")
+        };
         assert_eq!(linked.first().sha, "c1");
         let diff = patch::diff_texts(
             "src/lib.rs",
             Some("pub fn b() -> u8 { 1 }\n"),
             "pub fn b() -> u8 { 2 }\n",
         );
-        let task = draft_task("o/r", &linked, split(&diff).expect("splits"));
+        let task = draft_task("o/r", linked, split(&diff).expect("splits"));
         assert_eq!(task.instance_id, "r__abcdef12");
         assert_eq!(task.base_commit, "base");
         assert_eq!(task.problem_statement, "make b return 2");
@@ -464,9 +515,57 @@ mod tests {
         let s = session();
         let late = commit("c1", "2026-11-02T10:30:00Z");
         assert_eq!(
-            link(&s, &["/r".into()], vec![late]).err(),
+            link_tasks(&s, &["/r".into()], vec![late]).err(),
             Some(Outcome::NoMatch)
         );
+    }
+
+    #[test]
+    fn a_long_session_gives_a_task_per_commit_each_from_its_own_request() {
+        let mut s = session();
+        s.ended_at = at("2026-11-01T14:00:00Z");
+        s.user_messages = vec![
+            UserMessage {
+                at: at("2026-11-01T10:00:00Z"),
+                text: "make b return 2".into(),
+            },
+            UserMessage {
+                at: at("2026-11-01T12:00:00Z"),
+                text: "now add c".into(),
+            },
+        ];
+        s.edits.push(FileEdit {
+            at: at("2026-11-01T12:10:00Z"),
+            path: "/r/src/c.rs".into(),
+            added_lines: vec!["pub fn c() -> u8 { 3 }".into()],
+        });
+        let first = commit("c1aaaaaaaa", "2026-11-01T10:30:00Z");
+        let unrelated = CommitFacts {
+            files: vec!["README.md".into()],
+            added_lines: vec!["someone else's words".into()],
+            trailers: vec![],
+            ..commit("u1", "2026-11-01T11:00:00Z")
+        };
+        let second = CommitFacts {
+            files: vec!["src/c.rs".into()],
+            added_lines: vec!["pub fn c() -> u8 { 3 }".into()],
+            ..commit("c2bbbbbbbb", "2026-11-01T12:30:00Z")
+        };
+        let roots = vec!["/r".to_string()];
+        let tasks = link_tasks(&s, &roots, vec![second, unrelated, first]).expect("links");
+        let shas: Vec<&str> = tasks.iter().map(|t| t.first().sha.as_str()).collect();
+        assert_eq!(shas, ["c1aaaaaaaa", "c2bbbbbbbb"]);
+        assert!(tasks.iter().all(|t| t.one_of_several));
+        let requests: Vec<&str> = tasks
+            .iter()
+            .map(|t| t.slice.user_messages[0].text.as_str())
+            .collect();
+        assert_eq!(requests, ["make b return 2", "now add c"]);
+        let ids: Vec<String> = tasks
+            .iter()
+            .map(|t| draft_task("o/r", t, SplitPatch::default()).instance_id)
+            .collect();
+        assert_eq!(ids, ["r__abcdef12-c1aaaaa", "r__abcdef12-c2bbbbb"]);
     }
 
     #[test]

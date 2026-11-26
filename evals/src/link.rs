@@ -112,8 +112,9 @@ pub fn score(session: &SessionRecord, repo_roots: &[String], commit: &CommitFact
         .any(|t| AI_TRAILERS.iter().any(|p| t.to_lowercase().starts_with(p)));
     let same_branch = session
         .git_branch
-        .as_ref()
-        .is_some_and(|b| commit.branches.iter().any(|c| c == b));
+        .iter()
+        .chain(&session.git_branches)
+        .any(|b| commit.branches.iter().any(|c| c == b));
     let total = WEIGHT_FILES * file_overlap
         + WEIGHT_LINES * line_overlap
         + WEIGHT_TRAILER * f64::from(u8::from(has_ai_trailer))
@@ -174,6 +175,18 @@ pub fn decide(scored: &[LinkScore]) -> LinkDecision {
     }
 }
 
+/// The commits that are each a task of their own, given scores oldest commit first: every
+/// accepted commit, when several are and they are not one short unbroken run. That is a long
+/// session holding several pieces of work, which [`decide`] would call ambiguous or narrow to
+/// one. `None` when [`decide`] applies.
+pub fn separate_tasks(scored: &[LinkScore]) -> Option<Vec<usize>> {
+    let accepted: Vec<usize> = (0..scored.len())
+        .filter(|&i| scored[i].total >= ACCEPT_AT)
+        .collect();
+    let one_run = consecutive_run(&accepted).is_some_and(|run| run.len() <= MAX_RANGE);
+    (accepted.len() >= 2 && !one_run).then_some(accepted)
+}
+
 /// `indices` if they are one unbroken run (e.g. 3,4,5), else `None`.
 fn consecutive_run(indices: &[usize]) -> Option<&[usize]> {
     let unbroken = indices.windows(2).all(|w| w[1] == w[0] + 1);
@@ -196,6 +209,7 @@ mod tests {
             source: SessionSource::ClaudeCode,
             cwd: "/r".into(),
             git_branch: Some("fix/x".into()),
+            git_branches: vec!["fix/x".into()],
             started_at: at(0),
             ended_at: at(30),
             user_messages: vec![],

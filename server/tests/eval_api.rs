@@ -164,6 +164,7 @@ fn github_place() -> CodingAgentSessionPlace {
     CodingAgentSessionPlace {
         cwd: Some("/src/app".into()),
         git_branch: Some("main".into()),
+        git_branches: vec!["main".into()],
         repo: Some(CodingAgentRepo {
             host: "github.com".into(),
             owner: "acme".into(),
@@ -315,6 +316,29 @@ async fn sessions_carry_their_repository_and_are_judged_eligible_or_not() {
     .await
     .unwrap();
     assert_eq!(stored, (Some("main".into()), Some("/src/app".into())));
+
+    // A later turn on another branch adds it; the first branch stays the session's branch.
+    let mut moved = github_place();
+    moved.git_branch = Some("feat/x".into());
+    moved.git_branches = vec!["main".into(), "feat/x".into()];
+    ingest(
+        &server,
+        dev,
+        &[turn("dev-claude", "backfilled", 2, Some(moved))],
+    )
+    .await;
+    let branches: (Option<String>, Vec<String>) = sqlx::query_as(
+        "SELECT DISTINCT git_branch, git_branches FROM chat_sessions cs \
+         JOIN coding_agent_telemetry_events e ON e.session_id = cs.session_id \
+         WHERE e.source_session_id = 'backfilled'",
+    )
+    .fetch_one(db)
+    .await
+    .unwrap();
+    assert_eq!(
+        branches,
+        (Some("main".into()), vec!["main".into(), "feat/x".into()])
+    );
 
     // Another user sees none of it.
     let other = seed_user(db, "other").await;

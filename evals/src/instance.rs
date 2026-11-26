@@ -118,10 +118,20 @@ pub enum SessionSource {
 /// Number of session-id characters used in an instance id.
 pub const SESSION_ID_CHARS: usize = 8;
 
+/// Number of commit-sha characters used in the id of one of a session's several tasks.
+pub const COMMIT_SHA_CHARS: usize = 7;
+
 /// `<repo-slug>__<first 8 chars of the session id>`, e.g. `nasiko-cloud-rs__a2231e9a`.
 pub fn instance_id(repo_slug: &str, session_id: &str) -> String {
     let short: String = session_id.chars().take(SESSION_ID_CHARS).collect();
     format!("{repo_slug}__{short}")
+}
+
+/// The id of one of a session's several tasks: [`instance_id`] plus its commit,
+/// e.g. `nasiko-cloud-rs__a2231e9a-6a886ae`.
+pub fn commit_instance_id(repo_slug: &str, session_id: &str, sha: &str) -> String {
+    let short: String = sha.chars().take(COMMIT_SHA_CHARS).collect();
+    format!("{}-{short}", instance_id(repo_slug, session_id))
 }
 
 impl TaskInstance {

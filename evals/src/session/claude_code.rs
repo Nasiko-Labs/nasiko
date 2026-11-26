@@ -31,6 +31,7 @@ pub fn parse_claude_code_log(jsonl: &str) -> Result<SessionRecord, SessionError>
         source: SessionSource::ClaudeCode,
         cwd,
         git_branch: first(&lines, |l| l.git_branch.clone().filter(|b| !b.is_empty())),
+        git_branches: super::branches_in_order(lines.iter().filter_map(|l| l.git_branch.clone())),
         started_at,
         ended_at,
         user_messages: lines.iter().filter_map(typed_message).collect(),

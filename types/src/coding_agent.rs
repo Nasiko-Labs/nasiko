@@ -94,6 +94,10 @@ pub struct CodingAgentSessionPlace {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    /// Every branch the session reported, first seen first (`git_branch` is the first): a session
+    /// that switches branches commits on them all. At most [`CODING_AGENT_PLACE_MAX_BRANCHES`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub git_branches: Vec<String>,
     /// The git repository holding `cwd`, named by its `origin` remote.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub repo: Option<CodingAgentRepo>,
@@ -114,6 +118,9 @@ pub struct CodingAgentRepo {
 
 /// Longest path or ref name a session place may carry.
 pub const CODING_AGENT_PLACE_MAX_BYTES: usize = 4096;
+
+/// Most branches a session place may list.
+pub const CODING_AGENT_PLACE_MAX_BRANCHES: usize = 64;
 
 /// The session that spawned a subagent session, as the coding agent identifies it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -259,7 +266,16 @@ fn validate_place(place: &CodingAgentSessionPlace) -> Result<(), String> {
             repo.and_then(|r| r.root.as_deref()),
         ),
     ];
-    for (name, value) in texts {
+    if place.git_branches.len() > CODING_AGENT_PLACE_MAX_BRANCHES {
+        return Err(format!(
+            "session.place.git_branches must list at most {CODING_AGENT_PLACE_MAX_BRANCHES} branches"
+        ));
+    }
+    let branches = place
+        .git_branches
+        .iter()
+        .map(|b| ("session.place.git_branches[]", Some(b.as_str())));
+    for (name, value) in texts.into_iter().chain(branches) {
         let Some(value) = value else { continue };
         if value.trim().is_empty() || value.len() > CODING_AGENT_PLACE_MAX_BYTES {
             return Err(format!(
@@ -768,6 +784,7 @@ mod tests {
         event.session.place = Some(CodingAgentSessionPlace {
             cwd: Some("/src/app".into()),
             git_branch: Some("main".into()),
+            git_branches: vec!["main".into(), "feat/x".into()],
             repo: Some(CodingAgentRepo {
                 host: "github.com".into(),
                 owner: "acme".into(),
@@ -776,6 +793,13 @@ mod tests {
             }),
         });
         assert_eq!(event.validate(), Ok(()));
+        let mut too_many = event.clone();
+        if let Some(place) = too_many.session.place.as_mut() {
+            place.git_branches = (0..=CODING_AGENT_PLACE_MAX_BRANCHES)
+                .map(|i| format!("b{i}"))
+                .collect();
+        }
+        assert!(too_many.validate().is_err());
         assert_eq!(event.clone().without_content().session.place, None);
 
         let mut metadata = event.clone();

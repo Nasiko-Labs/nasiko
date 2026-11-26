@@ -17,6 +17,10 @@ pub struct SessionRecord {
     /// The folder the session ran in.
     pub cwd: String,
     pub git_branch: Option<String>,
+    /// Every branch the session reported, first seen first (`git_branch` is the first): a
+    /// session that switches branches commits on them all.
+    #[serde(default)]
+    pub git_branches: Vec<String>,
     pub started_at: DateTime<Utc>,
     pub ended_at: DateTime<Utc>,
     /// Only text the person typed, in order.
@@ -25,6 +29,18 @@ pub struct SessionRecord {
     pub edits: Vec<FileEdit>,
     /// One entry per distinct model reply.
     pub usage: Vec<ModelUsage>,
+}
+
+/// The distinct non-empty branch names among `seen`, first seen first.
+pub fn branches_in_order(seen: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut branches: Vec<String> = Vec::new();
+    for branch in seen {
+        let branch = branch.trim();
+        if !branch.is_empty() && !branches.iter().any(|b| b == branch) {
+            branches.push(branch.to_string());
+        }
+    }
+    branches
 }
 
 /// Something the person typed.
@@ -69,9 +85,21 @@ impl SessionRecord {
     /// first edit to any of `files` (repo-relative, under one of `repo_roots`). `None` when the
     /// session never edited those files.
     pub fn task_start(&self, repo_roots: &[String], files: &[String]) -> Option<DateTime<Utc>> {
+        self.task_start_after(repo_roots, files, None)
+    }
+
+    /// [`SessionRecord::task_start`] counting only edits after `after`: where the next of a
+    /// long session's tasks began, once the previous one was committed at `after`.
+    pub fn task_start_after(
+        &self,
+        repo_roots: &[String],
+        files: &[String],
+        after: Option<DateTime<Utc>>,
+    ) -> Option<DateTime<Utc>> {
         let first_edit = self
             .edits
             .iter()
+            .filter(|e| after.is_none_or(|a| e.at > a))
             .filter(|e| {
                 repo_roots.iter().any(|r| {
                     let root = format!("{}/", r.trim_end_matches('/'));

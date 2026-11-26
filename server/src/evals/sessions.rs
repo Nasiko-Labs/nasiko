@@ -197,6 +197,8 @@ pub struct PlacedSession {
     pub session_id: String,
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// Every branch the session reported, first seen first.
+    pub git_branches: Vec<String>,
     pub repo_host: Option<String>,
     pub repo_owner: Option<String>,
     pub repo_name: Option<String>,
@@ -220,6 +222,15 @@ impl PlacedSession {
             .cloned()
             .collect()
     }
+
+    /// The branches to search for the session's commits: every one it reported (the first
+    /// alone for a session synced before branches were listed), then `default_branch`.
+    pub fn branches(&self, default_branch: &str) -> Vec<String> {
+        let reported = self.git_branch.iter().chain(&self.git_branches).cloned();
+        nasiko_evals::session::branches_in_order(
+            reported.chain(std::iter::once(default_branch.to_string())),
+        )
+    }
 }
 
 /// The caller's session of `harness`, or `None` when it is not theirs.
@@ -230,8 +241,8 @@ pub async fn placed(
     session_id: &str,
 ) -> Result<Option<PlacedSession>> {
     Ok(sqlx::query_as(
-        r#"SELECT cs.session_id, cs.cwd, cs.git_branch, cs.repo_host, cs.repo_owner,
-                  cs.repo_name, cs.repo_root
+        r#"SELECT cs.session_id, cs.cwd, cs.git_branch, cs.git_branches, cs.repo_host,
+                  cs.repo_owner, cs.repo_name, cs.repo_root
            FROM chat_sessions cs JOIN agents a ON a.id = cs.agent_id
            WHERE cs.session_id = $1 AND cs.user_id = $2
              AND a.coding_agent_integration_id = $3 AND cs.deleted_at IS NULL"#,
@@ -272,6 +283,7 @@ pub async fn record(
         source_session_id: source_session_id.clone(),
         cwd: session.cwd.clone(),
         git_branch: session.git_branch.clone(),
+        git_branches: session.git_branches.clone(),
     };
     coding_events::from_payloads(&place, &payloads)
         .map(Some)

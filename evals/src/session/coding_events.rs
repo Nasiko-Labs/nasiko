@@ -24,6 +24,8 @@ pub struct SessionPlace {
     pub source_session_id: String,
     pub cwd: Option<String>,
     pub git_branch: Option<String>,
+    /// Every branch the session reported, first seen first.
+    pub git_branches: Vec<String>,
 }
 
 /// Builds the session from its turns' payloads, in any order.
@@ -92,6 +94,7 @@ pub fn from_payloads(
         source: SessionSource::ClaudeCode,
         cwd: place.cwd.clone().unwrap_or_default(),
         git_branch: place.git_branch.clone().filter(|b| !b.is_empty()),
+        git_branches: super::branches_in_order(place.git_branches.iter().cloned()),
         started_at,
         ended_at: last,
         user_messages,
@@ -257,6 +260,7 @@ mod tests {
             source_session_id: "sess-1".into(),
             cwd: Some("/r".into()),
             git_branch: Some("main".into()),
+            git_branches: vec!["main".into()],
         };
         let s = from_payloads(&place, &payloads).expect("rebuilds");
         assert_eq!(s.session_id, "sess-1");

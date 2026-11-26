@@ -14,14 +14,17 @@ use nasiko_evals::remote::RepoRef;
 use nasiko_types::{CodingAgentRepo, CodingAgentSessionPlace};
 use serde::Deserialize;
 
-/// The session's place from a Claude Code transcript: the first `cwd` and `gitBranch` recorded,
-/// plus the repository holding that folder. `None` when the transcript names no folder.
+/// The session's place from a Claude Code transcript: the first `cwd` recorded, every `gitBranch`
+/// (first seen first), plus the repository holding that folder. `None` when the transcript names
+/// no folder.
 pub fn from_claude_transcript(content: &str) -> Option<CodingAgentSessionPlace> {
-    let (cwd, git_branch) = claude_folder_and_branch(content);
+    let (cwd, mut git_branches) = claude_folder_and_branches(content);
     let cwd = cwd?;
+    git_branches.truncate(nasiko_types::CODING_AGENT_PLACE_MAX_BRANCHES);
     Some(CodingAgentSessionPlace {
         repo: repo_of(&cwd),
-        git_branch,
+        git_branch: git_branches.first().cloned(),
+        git_branches,
         cwd: Some(cwd),
     })
 }
@@ -33,8 +36,9 @@ struct Line {
     git_branch: Option<String>,
 }
 
-fn claude_folder_and_branch(content: &str) -> (Option<String>, Option<String>) {
-    let (mut cwd, mut branch) = (None, None);
+fn claude_folder_and_branches(content: &str) -> (Option<String>, Vec<String>) {
+    let mut cwd = None;
+    let mut seen = Vec::new();
     for line in content.lines() {
         let Ok(line) = serde_json::from_str::<Line>(line) else {
             continue;
@@ -42,14 +46,9 @@ fn claude_folder_and_branch(content: &str) -> (Option<String>, Option<String>) {
         if cwd.is_none() {
             cwd = line.cwd.filter(|c| !c.trim().is_empty());
         }
-        if branch.is_none() {
-            branch = line.git_branch.filter(|b| !b.trim().is_empty());
-        }
-        if cwd.is_some() && branch.is_some() {
-            break;
-        }
+        seen.extend(line.git_branch);
     }
-    (cwd, branch)
+    (cwd, nasiko_evals::session::branches_in_order(seen))
 }
 
 /// The repository holding `cwd`, asked of git once per folder per process. `None` when the
@@ -97,18 +96,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn folder_and_branch_come_from_the_first_lines_that_have_them() {
+    fn the_folder_is_the_first_and_every_branch_is_kept_in_order() {
         let transcript = concat!(
             "{\"type\":\"summary\"}\n",
             "not json\n",
             "{\"type\":\"user\",\"cwd\":\"/src/app\",\"gitBranch\":\"\"}\n",
             "{\"type\":\"assistant\",\"cwd\":\"/src/other\",\"gitBranch\":\"feat/x\"}\n",
+            "{\"type\":\"user\",\"cwd\":\"/src/app\",\"gitBranch\":\"feat/y\"}\n",
+            "{\"type\":\"user\",\"cwd\":\"/src/app\",\"gitBranch\":\"feat/x\"}\n",
         );
         assert_eq!(
-            claude_folder_and_branch(transcript),
-            (Some("/src/app".into()), Some("feat/x".into()))
+            claude_folder_and_branches(transcript),
+            (
+                Some("/src/app".into()),
+                vec!["feat/x".to_string(), "feat/y".to_string()]
+            )
         );
-        assert_eq!(claude_folder_and_branch("{}\n"), (None, None));
+        assert_eq!(claude_folder_and_branches("{}\n"), (None, vec![]));
     }
 
     #[test]
