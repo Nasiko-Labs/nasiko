@@ -35,7 +35,9 @@ impl ForgeRefusal {
     }
 }
 
-/// The caller's GitHub service and token, when both exist.
+/// The caller's GitHub service and token, when both exist and GitHub still accepts the token.
+/// A revoked token counts as not connected, so the person is asked to connect again instead of
+/// every repository read failing; a GitHub outage does not (the token may be fine).
 pub async fn connection(
     state: &AppState,
     user_id: Uuid,
@@ -47,6 +49,9 @@ pub async fn connection(
     let token = crate::github::load_github_token(&state.db, user_id)
         .await
         .ok_or(ForgeRefusal::GithubNotConnected)?;
+    if let Ok(false) = svc.verify_token(&token).await {
+        return Err(ForgeRefusal::GithubNotConnected);
+    }
     Ok((svc, token))
 }
 
@@ -69,8 +74,13 @@ impl Forge {
             Ok(c) => c,
             Err(refusal) => return Ok(Err(refusal)),
         };
-        let Some(info) = svc.repo(&token, repo).await? else {
-            return Ok(Err(ForgeRefusal::RepoNotAccessible));
+        let info = match svc.repo(&token, repo).await {
+            Ok(Some(info)) => info,
+            Ok(None) => return Ok(Err(ForgeRefusal::RepoNotAccessible)),
+            Err(nasiko_github::Error::Auth(_)) => {
+                return Ok(Err(ForgeRefusal::GithubNotConnected));
+            }
+            Err(e) => return Err(e.into()),
         };
         Ok(Ok(Self {
             svc,
