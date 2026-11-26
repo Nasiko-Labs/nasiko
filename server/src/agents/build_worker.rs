@@ -394,9 +394,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             writable,
             writable_path,
             workload_kind,
-            prior_version,
-            prior_image,
-            prior_status,
         } => {
             let job_env = match open_job_env(owner_id, env, env_encrypted) {
                 Ok(env) => env,
@@ -431,9 +428,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 writable,
                 writable_path,
                 workload_kind,
-                prior_version,
-                prior_image,
-                prior_status,
             )
             .await;
         }
@@ -449,7 +443,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
             new_version,
             prev_version,
             prev_image,
-            prev_status,
             changelog,
             writable,
             writable_path,
@@ -483,7 +476,6 @@ async fn execute_claimed_job(state: AppState, job: BuildJob) {
                 new_version,
                 prev_version,
                 prev_image,
-                prev_status,
                 changelog,
                 writable,
                 writable_path,

@@ -67,9 +67,6 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
-    /// The `(code, message)` every `deploy` is refused with, as a layer that declines to run
-    /// workloads answers: not a failure of the deploy, so callers keep what they had.
-    decline_deploy: std::sync::Mutex<Option<(String, String)>>,
     /// When set, `build` fails instead of succeeding - a failed image build, which must leave
     /// the running agent untouched.
     fail_build: std::sync::atomic::AtomicBool,
@@ -168,14 +165,6 @@ impl FakeRuntime {
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
-    /// Make every `deploy` answer `RuntimeError::Declined` with `code` and `message` until
-    /// cleared with `None`.
-    #[allow(dead_code)]
-    pub fn set_decline_deploy(&self, declined: Option<(&str, &str)>) {
-        *self.decline_deploy.lock().unwrap() =
-            declined.map(|(code, message)| (code.to_owned(), message.to_owned()));
-    }
-
     /// Make `build` calls fail instead of succeeding.
     #[allow(dead_code)]
     pub fn set_fail_build(&self, fail: bool) {
@@ -271,9 +260,6 @@ impl ContainerRuntime for FakeRuntime {
             return Err(nasiko_runtime::RuntimeError::BackendUnreachable(
                 "fake deploy failure (scripted by test)".into(),
             ));
-        }
-        if let Some((code, message)) = self.decline_deploy.lock().unwrap().clone() {
-            return Err(nasiko_runtime::RuntimeError::Declined { code, message });
         }
         let status = fake_status(&spec.container_id);
         self.deployed.lock().unwrap().push(spec.clone());

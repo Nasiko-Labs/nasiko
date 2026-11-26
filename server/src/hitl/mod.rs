@@ -408,26 +408,16 @@ async fn deliver(state: AppState, row: HitlRequest) {
 
     // Woken, then resolved by kind, so resuming a pause on a parked agent wakes it first. After
     // the flow guard, so a resume it rejects never wakes anything.
-    if let Err(refusal) = state
+    if let Err(msg) = state
         .agent_wake
-        .before_forward_or_decline(row.agent_id, Some(&flow_ctx.flow_id))
+        .before_forward(row.agent_id, Some(&flow_ctx.flow_id))
         .await
     {
-        // A declined start is not a failed delivery: the human's answer waits for it to pass
-        // instead of running down the attempts.
-        let failure = if refusal.declined {
-            FailureKind::Declined
-        } else {
-            RETRYABLE
-        };
         fail_resume(
             &state,
             &row,
-            &format!(
-                "agent '{agent_name}' cannot be reached: {}",
-                refusal.message
-            ),
-            failure,
+            &format!("agent '{agent_name}' cannot be reached: {msg}"),
+            RETRYABLE,
         )
         .await;
         return;

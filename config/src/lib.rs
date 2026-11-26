@@ -694,7 +694,8 @@ pub struct Config {
     /// since users without a key would silently run on that shared one.
     /// Holds API keys — deliver it as a secret. Example:
     /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart seeds exactly these by default).
+    /// (both per-user; the Helm chart's default seeds these plus Tavily, also
+    /// `oauth2`).
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
