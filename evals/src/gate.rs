@@ -49,6 +49,9 @@ pub enum GateRejection {
     NoFailToPass,
     /// Every candidate test was flaky.
     AllFlaky,
+    /// Neither the old code nor the old code with the new tests compiled, so nothing tells
+    /// which tests passed before the fix; counting them all as fixed would be a false task.
+    BaseDoesNotBuild,
 }
 
 pub fn judge(runs: &GateRuns) -> GateVerdict {
@@ -65,6 +68,11 @@ pub fn judge(runs: &GateRuns) -> GateVerdict {
         .map(|(name, _)| name)
         .collect();
     let before_built = !runs.before.is_empty() && runs.before.iter().all(|r| r.built);
+    if !before_built && !runs.pristine.built {
+        return GateVerdict::Rejected {
+            reason: GateRejection::BaseDoesNotBuild,
+        };
+    }
     let mut lists = TestLists {
         fail_to_pass: Vec::new(),
         pass_to_pass: Vec::new(),
@@ -74,7 +82,7 @@ pub fn judge(runs: &GateRuns) -> GateVerdict {
         let passed_before = if before_built {
             runs.before[0].results.get(name) == Some(&TestStatus::Passed)
         } else {
-            runs.pristine.built && runs.pristine.results.get(name) == Some(&TestStatus::Passed)
+            runs.pristine.results.get(name) == Some(&TestStatus::Passed)
         };
         if passed_before {
             lists.pass_to_pass.push(name.clone());
@@ -147,6 +155,21 @@ mod tests {
         };
         assert_eq!(l.fail_to_pass, vec!["new"]);
         assert_eq!(l.pass_to_pass, vec!["old"]);
+    }
+
+    #[test]
+    fn when_the_old_code_never_compiles_no_test_counts_as_fixed() {
+        let runs = GateRuns {
+            pristine: run(false, &[]),
+            before: vec![run(false, &[]); 3],
+            after: vec![run(true, &[("old", Passed), ("new", Passed)]); 3],
+        };
+        assert_eq!(
+            judge(&runs),
+            GateVerdict::Rejected {
+                reason: GateRejection::BaseDoesNotBuild
+            }
+        );
     }
 
     #[test]

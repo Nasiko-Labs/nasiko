@@ -126,11 +126,15 @@ pub struct OwnedFile {
 /// (`tests/<name>.rs` or `tests/<name>/main.rs`), just those test targets. A package's
 /// integration tests are each a binary linking the whole package, so building all of them for a
 /// task that changes one can outgrow the image builder; SWE-bench runs only the tests a task
-/// names, too.
-pub fn task_test_scope(files: &[OwnedFile]) -> Vec<String> {
+/// names, too. `None` when no package owns any of the files: the task's tests would then be the
+/// whole workspace's, which proves nothing about the task and can outgrow any builder.
+pub fn task_test_scope(files: &[OwnedFile]) -> Option<Vec<String>> {
     let mut packages: Vec<String> = files.iter().map(|f| f.package.clone()).collect();
     packages.sort();
     packages.dedup();
+    if packages.is_empty() {
+        return None;
+    }
     if let [package] = packages.as_slice() {
         let targets: Option<Vec<String>> = files
             .iter()
@@ -142,10 +146,10 @@ pub fn task_test_scope(files: &[OwnedFile]) -> Vec<String> {
             targets.dedup();
             let mut scope = vec![format!("-p {package}")];
             scope.extend(targets.iter().map(|t| format!("--test {t}")));
-            return scope;
+            return Some(scope);
         }
     }
-    cargo_scope(&packages)
+    Some(cargo_scope(&packages))
 }
 
 /// The integration test target `file` is, when it is one: `tests/<name>.rs` or
@@ -238,7 +242,7 @@ mod tests {
             ),
         ];
         assert_eq!(
-            task_test_scope(&files),
+            task_test_scope(&files).unwrap(),
             ["-p nasiko-server", "--test budgets", "--test pricing_sync"]
         );
     }
@@ -247,21 +251,29 @@ mod tests {
     fn inline_tests_shared_helpers_and_several_packages_keep_the_package_scope() {
         let server = "oss/server/Cargo.toml";
         let inline = [owned("oss/server/src/a.rs", "nasiko-server", server, true)];
-        assert_eq!(task_test_scope(&inline), ["-p nasiko-server"]);
+        assert_eq!(task_test_scope(&inline).unwrap(), ["-p nasiko-server"]);
         let helper = [owned(
             "oss/server/tests/common/mod.rs",
             "nasiko-server",
             server,
             true,
         )];
-        assert_eq!(task_test_scope(&helper), ["-p nasiko-server"]);
+        assert_eq!(task_test_scope(&helper).unwrap(), ["-p nasiko-server"]);
         let two = [
             owned("oss/server/tests/a.rs", "nasiko-server", server, true),
             owned("oss/cli/src/b.rs", "nasiko", "oss/cli/Cargo.toml", false),
         ];
-        assert_eq!(task_test_scope(&two), ["-p nasiko", "-p nasiko-server"]);
+        assert_eq!(
+            task_test_scope(&two).unwrap(),
+            ["-p nasiko", "-p nasiko-server"]
+        );
         let root = [owned("tests/smoke.rs", "app", "Cargo.toml", true)];
-        assert_eq!(task_test_scope(&root), ["-p app", "--test smoke"]);
+        assert_eq!(task_test_scope(&root).unwrap(), ["-p app", "--test smoke"]);
+    }
+
+    #[test]
+    fn a_task_no_package_owns_has_no_scope_not_the_whole_workspace() {
+        assert_eq!(task_test_scope(&[]), None);
     }
 
     #[test]

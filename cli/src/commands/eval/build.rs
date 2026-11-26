@@ -183,7 +183,8 @@ fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
             }
         }
     }
-    Ok(spec::task_test_scope(&files))
+    spec::task_test_scope(&files)
+        .context("no Cargo package owns the task's files, so it has no tests to run")
 }
 
 /// The three gate set-ups.

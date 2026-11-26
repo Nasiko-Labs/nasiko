@@ -170,6 +170,9 @@ fn harvest_one(
         );
     }
     harvest::split_inline_rust_tests(&mut split, &versions)?;
+    if !harvest::has_tests(&split) {
+        return Ok(Some((Outcome::NoTests, None)));
+    }
     let task = harvest::draft_task(&repo.full_name(), &linked, split);
     let id = task.instance_id.clone();
     let layout = store.layout();

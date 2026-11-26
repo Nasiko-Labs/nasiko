@@ -118,6 +118,9 @@ async fn harvest_session(
         );
     }
     harvest::split_inline_rust_tests(&mut split, &versions).context("unreadable diff")?;
+    if !harvest::has_tests(&split) {
+        return Err(skipped(Outcome::NoTests.label()));
+    }
     let mut task = harvest::draft_task(&forge.repo, &linked, split);
     if task.patch.len() + task.test_patch.len() > MAX_PATCH_BYTES {
         return Err(skipped("too_large"));

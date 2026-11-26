@@ -8,7 +8,8 @@
 //!    is its work, and which slice of the session produced it.
 //! 3. [`split`] the linked commits' diff into fix and tests, then
 //!    [`split_inline_rust_tests`] with the base and gold text of [`inline_test_paths`].
-//! 4. [`draft_task`].
+//! 4. [`has_tests`]: a commit that changes no test cannot be a task.
+//! 5. [`draft_task`].
 
 use std::collections::BTreeMap;
 
@@ -30,6 +31,8 @@ pub enum Outcome {
     NoMatch,
     Ambiguous,
     Unreadable,
+    /// The linked commits change no test, so nothing could prove the task was done.
+    NoTests,
 }
 
 impl Outcome {
@@ -41,6 +44,7 @@ impl Outcome {
             Outcome::NoMatch => "no_match",
             Outcome::Ambiguous => "ambiguous",
             Outcome::Unreadable => "unreadable",
+            Outcome::NoTests => "no_tests",
         }
     }
 }
@@ -211,6 +215,48 @@ pub fn split_inline_rust_tests(
     split.gold = gold_files;
     split.mixed = unsplit;
     Ok(())
+}
+
+/// Whether the test patch changes a test, not just test helpers: a commit whose only test
+/// changes are in shared helpers (`tests/common/mod.rs`) or that has none cannot yield a test
+/// that fails before the fix and passes after it. A test file counts when it is an integration
+/// test target (`tests/<name>.rs`, `tests/<name>/main.rs`), lies outside a `tests/` folder (an
+/// inline test module moved here, a `*_test.rs`), or adds a `#[…test…]` attribute.
+pub fn has_tests(split: &SplitPatch) -> bool {
+    split
+        .test
+        .iter()
+        .any(|f| !in_tests_folder(f.path()) || is_test_target(f.path()) || adds_test_attr(f))
+}
+
+fn in_tests_folder(path: &str) -> bool {
+    path.starts_with("tests/") || path.contains("/tests/")
+}
+
+/// `…/tests/<name>.rs` or `…/tests/<name>/main.rs`.
+fn is_test_target(path: &str) -> bool {
+    let rest = match path.rsplit_once("tests/") {
+        Some((before, rest)) if before.is_empty() || before.ends_with('/') => rest,
+        _ => return false,
+    };
+    match rest.split('/').collect::<Vec<_>>().as_slice() {
+        [file] => file.ends_with(".rs"),
+        [_, "main.rs"] => true,
+        _ => false,
+    }
+}
+
+/// Adds an attribute whose last path segment names a test: `#[test]`, `#[tokio::test]`,
+/// `#[sqlx::test(...)]`, `#[rstest]`, `#[test_case(...)]`.
+fn adds_test_attr(file: &FileDiff) -> bool {
+    file.added.iter().any(|line| {
+        let Some(attr) = line.trim_start().strip_prefix("#[") else {
+            return false;
+        };
+        let path = attr.split(['(', ']']).next().unwrap_or_default().trim();
+        let last = path.rsplit("::").next().unwrap_or_default();
+        matches!(last, "test" | "rstest" | "test_case")
+    })
 }
 
 /// Until prompt P1 rewrites it: the first typed message is the statement, later ones are hints.
@@ -442,6 +488,36 @@ mod tests {
         assert!(parts.gold[0].text.contains("+pub fn b() -> u8 { 2 }"));
         assert!(parts.test[0].text.contains("fn new()"));
         assert!(parts.mixed.is_empty());
+        assert!(has_tests(&parts));
+    }
+
+    #[test]
+    fn a_commit_changing_only_test_helpers_or_no_tests_has_none() {
+        let only = |path: &str, old: &str, new: &str| {
+            split(&patch::diff_texts(path, Some(old), new)).expect("splits")
+        };
+        assert!(!has_tests(&only("justfile", "run:\n", "run: build\n")));
+        assert!(!has_tests(&only(
+            "oss/server/tests/common/mod.rs",
+            "pub fn cfg() {}\n",
+            "pub fn cfg() { let _ = 1; }\n"
+        )));
+        assert!(has_tests(&only(
+            "oss/server/tests/common/mod.rs",
+            "\n",
+            "#[tokio::test(flavor = \"multi_thread\")]\nasync fn t() {}\n"
+        )));
+        assert!(has_tests(&only(
+            "oss/server/tests/pricing.rs",
+            "fn a() {}\n",
+            "fn a() { assert!(true) }\n"
+        )));
+        assert!(has_tests(&only("tests/budgets/main.rs", "\n", "mod x;\n")));
+        assert!(!has_tests(&only(
+            "tests/budgets/helpers.rs",
+            "\n",
+            "fn h() {}\n"
+        )));
     }
 
     #[test]

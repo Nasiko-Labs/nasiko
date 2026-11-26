@@ -42,7 +42,13 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
         Ok(forge) => forge,
         Err(refusal) => bail!("the repository cannot be read: {}", refusal.code()),
     };
-    let scope = test_scope(&forge, &task).await?;
+    let Some(scope) = test_scope(&forge, &task).await? else {
+        task.x_nasiko.status = TaskStatus::Rejected;
+        task.x_nasiko.reject_reason =
+            Some("build: no Cargo package owns the task's files, so it has no tests to run".into());
+        store::save_task(&state.db, row.id, &task, "done").await?;
+        return Ok(());
+    };
     task.image = build_image(state, &forge, &spec, &task.base_commit, &scope).await?;
     task.eval_script = spec::eval_script(&spec, &scope);
     task.log_parser = spec.log_parser.swebench_name().to_string();
@@ -114,8 +120,8 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
 }
 
 /// The task's test scope, from the Cargo packages owning the files the fix and its tests change
-/// ([`spec::task_test_scope`]).
-async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Vec<String>> {
+/// ([`spec::task_test_scope`]); `None` when no package owns them.
+async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Option<Vec<String>>> {
     let mut files = Vec::new();
     for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
