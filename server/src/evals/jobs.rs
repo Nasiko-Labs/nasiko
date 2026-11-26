@@ -227,23 +227,32 @@ async fn recover(db: &sqlx::PgPool) -> sqlx::Result<u64> {
     .rows_affected())
 }
 
-/// Starts the eval worker (once per process).
+/// Starts the eval worker and its recovery sweep (once per process).
 pub fn spawn_worker(state: AppState) {
+    tokio::spawn(recover_forever(state.db.clone(), state.eval_jobs.clone()));
     tokio::spawn(run(state));
+}
+
+/// The recovery sweep, on its own timer: inside the claim loop it would wait for a free worker
+/// slot, so while every slot runs a long job, jobs of a server that died would sit `running`.
+async fn recover_forever(db: sqlx::PgPool, jobs: Arc<tokio::sync::Notify>) {
+    let mut every = tokio::time::interval(RECOVER_EVERY);
+    loop {
+        every.tick().await;
+        match recover(&db).await {
+            Ok(0) => {}
+            Ok(n) => {
+                tracing::warn!(jobs = n, "evals: took over jobs whose server stopped");
+                jobs.notify_one();
+            }
+            Err(e) => tracing::error!(error = %e, "evals: job recovery failed"),
+        }
+    }
 }
 
 async fn run(state: AppState) {
     let permits = Arc::new(Semaphore::new(state.config.evals.worker_concurrency));
-    let mut last_recover = tokio::time::Instant::now() - RECOVER_EVERY;
     loop {
-        if last_recover.elapsed() >= RECOVER_EVERY {
-            match recover(&state.db).await {
-                Ok(0) => {}
-                Ok(n) => tracing::warn!(jobs = n, "evals: took over jobs whose server stopped"),
-                Err(e) => tracing::error!(error = %e, "evals: job recovery failed"),
-            }
-            last_recover = tokio::time::Instant::now();
-        }
         let Ok(permit) = permits.clone().acquire_owned().await else {
             return;
         };
