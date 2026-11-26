@@ -591,7 +591,6 @@ harness-shim/src/main.rs
 harness-shim/src/procstats.rs
 harness-shim/src/reaper.rs
 harness-shim/src/server.rs
-harness-shim/src/supervisor/confine.rs
 harness-shim/src/supervisor/mod.rs
 harness-shim/src/supervisor/routes.rs
 harness-shim/src/supervisor/session.rs
@@ -864,6 +863,7 @@ migrations/0110_discovered_agents.sql
 migrations/0111_discovered_agent_instances.sql
 migrations/0112_oci_upload_parts.sql
 migrations/0113_oci_upload_staged_parts.sql
+migrations/0114_retire_platform_harness_agents.sql
 migrations/storage-classes.txt
 observability/Cargo.toml
 observability/config/otel-collector.yaml
@@ -975,6 +975,7 @@ runtime/src/docker/sandbox.rs
 runtime/src/docker/stats.rs
 runtime/src/docker_sandbox_connect.rs
 runtime/src/error.rs
+runtime/src/harness_agent.rs
 runtime/src/lib.rs
 runtime/src/sandbox.rs
 runtime/src/sandbox_fake.rs
@@ -1210,13 +1211,16 @@ server/src/sessions/keys.rs
 server/src/sessions/live.rs
 server/src/sessions/mod.rs
 server/src/sessions/model.rs
+server/src/sessions/own_agent.rs
 server/src/sessions/pending.rs
 server/src/sessions/profile.rs
+server/src/sessions/readiness.rs
 server/src/sessions/reaper.rs
 server/src/sessions/reaper/agents.rs
 server/src/sessions/reaper/workloads.rs
 server/src/sessions/routes.rs
 server/src/sessions/scratch.rs
+server/src/sessions/start.rs
 server/src/sessions/suspend.rs
 server/src/sessions/tasks.rs
 server/src/sessions/teardown.rs
@@ -1297,6 +1301,7 @@ server/tests/compact_tools_usage.rs
 server/tests/composio_settings.rs
 server/tests/cost_path_differential.rs
 server/tests/cross_origin_writes.rs
+server/tests/custom_provider_access.rs
 server/tests/deploy_env.rs
 server/tests/direct_turn_budget_refusal.rs
 server/tests/discovered_agents.rs
