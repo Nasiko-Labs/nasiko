@@ -96,6 +96,7 @@ import {
   updateConfig,
   updateCustom,
   usageByAgent,
+  type ProviderViewer,
   type RouterState,
 } from './router'
 import {
@@ -440,6 +441,15 @@ function sessionUser(): SessionUser {
     is_superuser: v.id === ADMIN_ID ? superuser() : v.is_superuser,
   }
 }
+
+/** The signed-in user as `custom_providers::usable_by` sees them. */
+function providerViewer(): ProviderViewer {
+  const u = sessionUser()
+  return { id: u.id, superuser: u.is_superuser }
+}
+
+/** The seed admin, whose configs the config routes read and write, as `usable_by` sees them. */
+const configViewer = (): ProviderViewer => ({ id: ADMIN_ID, superuser: superuser() })
 
 /** The onboarding card's states (`?mock=agents-*`, but not `agents-absent`) are a viewer with no registered harness
  *  yet: their usage counts none (their activity stays, as for a deleted registration). Memoised per viewer. */
@@ -1572,7 +1582,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         if (m.model === 'gemini-2.0-flash') rows.push(row('boot seed (static list)', 12))
         byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), ...rows])
       }
-      const me = sessionUser().id
+      const me = providerViewer()
       const custom = new Map(listCustom(getRouter(), me).map((c) => [c.label, c]))
       const hidden = hiddenCustomLabels(getRouter(), me)
       return HttpResponse.json({
@@ -1887,7 +1897,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return routed(() =>
         HttpResponse.json(
           {
-            data: createConfig(getRouter(), ADMIN_ID, body as never, nowFn()),
+            data: createConfig(getRouter(), configViewer(), body as never, nowFn()),
             status_code: 201,
             message: 'LLM config created successfully',
           },
@@ -1898,7 +1908,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     http.patch('/api/llm-configs/:id', async ({ params: prm, request }) => {
       const body = await request.json().catch(() => ({}))
       return routed(() =>
-        envelope(updateConfig(getRouter(), String(prm.id), ADMIN_ID, body as never, nowFn())),
+        envelope(updateConfig(getRouter(), String(prm.id), configViewer(), body as never, nowFn())),
       )
     }),
     http.delete('/api/llm-configs/:id', ({ params: prm }) =>
@@ -2059,10 +2069,10 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       }),
     ),
     // custom_providers.rs: register and test for anyone (a non-superuser's URL must be public); the list (never
-    // the key) holds the caller's own and superusers' (`usable_by`); edit, delete and sync for its creator or a
-    // superuser (`managed`: 403).
+    // the key) holds the caller's own, and for a superuser other superusers' (`usable_by`); edit, delete and sync
+    // for its creator or a superuser (`managed`: 403).
     http.get('/api/custom-providers', () =>
-      routed(() => envelope(listCustom(getRouter(), sessionUser().id))),
+      routed(() => envelope(listCustom(getRouter(), providerViewer()))),
     ),
     http.post('/api/custom-providers', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as { base_url?: string }

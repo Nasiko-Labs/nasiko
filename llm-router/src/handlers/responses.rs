@@ -1277,6 +1277,7 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
+            _: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }

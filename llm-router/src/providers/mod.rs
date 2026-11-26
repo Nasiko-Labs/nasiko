@@ -82,24 +82,43 @@ pub fn provider_for(
             .with_cache_markers(cfg.cache_markers_enabled),
         )),
         other => match custom_endpoint {
-            Some(endpoint) => match &endpoint.dialect {
-                // Bedrock Converse has its own wire format; use the dedicated provider.
-                ProviderDialect::BedrockConverse => Ok(Box::new(
-                    BedrockConverseProvider::new(http.clone(), endpoint.base_url.clone())
-                        .with_cache_markers(cfg.cache_markers_enabled),
-                )),
-                // Other custom providers carry OpenAI-shaped bodies; the dialect
-                // supplies the envelope (URL layout + credential header).
-                _ => Ok(Box::new(OpenAiProvider::with_dialect(
-                    http.clone(),
-                    endpoint.base_url.clone(),
-                    endpoint.dialect.clone(),
-                ))),
-            },
+            Some(endpoint) => {
+                // A member's endpoint goes out only through the public-only client.
+                let guarded;
+                let http = if endpoint.public_only {
+                    guarded = crate::public_only_client();
+                    &guarded
+                } else {
+                    http
+                };
+                custom_provider_client(endpoint, http, cfg)
+            }
             None => Err(GatewayError::Internal(format!(
                 "provider '{other}' has no endpoint (unregistered custom provider?)"
             ))),
         },
+    }
+}
+
+/// The client for a custom provider's endpoint, over `http`.
+fn custom_provider_client(
+    endpoint: &CustomEndpoint,
+    http: &reqwest::Client,
+    cfg: &GatewayConfig,
+) -> Result<Box<dyn ProviderClient>, GatewayError> {
+    match &endpoint.dialect {
+        // Bedrock Converse has its own wire format; use the dedicated provider.
+        ProviderDialect::BedrockConverse => Ok(Box::new(
+            BedrockConverseProvider::new(http.clone(), endpoint.base_url.clone())
+                .with_cache_markers(cfg.cache_markers_enabled),
+        )),
+        // Other custom providers carry OpenAI-shaped bodies; the dialect
+        // supplies the envelope (URL layout + credential header).
+        _ => Ok(Box::new(OpenAiProvider::with_dialect(
+            http.clone(),
+            endpoint.base_url.clone(),
+            endpoint.dialect.clone(),
+        ))),
     }
 }
 
@@ -612,6 +631,7 @@ mod tests {
             custom_endpoint: base_url.map(|base_url| crate::resolver::CustomEndpoint {
                 base_url: base_url.to_string(),
                 dialect,
+                public_only: false,
             }),
             is_coding_agent: false,
             is_discovered_agent: false,

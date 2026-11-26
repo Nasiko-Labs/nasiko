@@ -209,15 +209,13 @@ describe('custom providers', () => {
   const providers = () =>
     screen.getByRole('heading', { name: copy.providersTitle }).closest('section')!
 
-  it("a normal user adds one and gets its actions, but none on another user's", async () => {
+  it("a normal user adds one and gets its actions, and never sees another user's", async () => {
     configureMocks({ superuser: false })
     renderApp('/router')
     await ready()
     await showTab(copy.anchors.providers)
-    expect(within(providers()).getAllByText('Custom').length).toBeGreaterThan(0)
-    expect(
-      within(providers()).queryByRole('button', { name: copy.configActions('Custom') }),
-    ).toBeNull()
+    // The seed's provider is another superuser's: not listed for a member at all.
+    expect(within(providers()).queryByText('Custom')).toBeNull()
     await userEvent.click(within(providers()).getByRole('button', { name: copy.addCustom }))
     const sheet = await screen.findByRole('dialog', { name: copy.cpNew })
     // A member's provider is private to them.

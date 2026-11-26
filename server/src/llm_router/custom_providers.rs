@@ -25,10 +25,12 @@
 //! endpoint itself (probe, sync, every dispatch) and returns what it answers, so a
 //! private one from any user would reach internal services through it.
 //!
-//! A member's provider is theirs alone: a call through it spends the key they
-//! registered, so no one else sees it or can name it in a config ([`usable_by`]). A
-//! superuser's is the workspace's, shared with everyone, as every provider was before
-//! members could add them.
+//! A provider is its creator's alone: a call through it spends the key they registered,
+//! so no one else sees it or can name it in a config ([`usable_by`]), and the router
+//! refuses a config that names someone else's. Superusers share theirs among themselves,
+//! so the platform's agents (seed agents run on a superuser's config) work whichever
+//! superuser registered the provider. A member's endpoint is reached, at dispatch and
+//! catalog sync too, only through the router's public-only client.
 //!
 //! Encryption uses `SecretsCrypto::for_platform_settings()` — the same scope the LLM
 //! router's resolver decrypts with — so a key stored here is readable on the dispatch
@@ -55,9 +57,10 @@ use crate::mcp::ApiResponse;
 use crate::state::AppState;
 
 /// Built-in provider labels a custom provider may never shadow — they route through
-/// dedicated clients, so a custom row under one of these names would be unreachable
-/// and would collide with the built-in dispatch path.
-const RESERVED_LABELS: &[&str] = &["openai", "anthropic", "gemini"];
+/// dedicated clients, so a custom row under one of these names would be unreachable,
+/// would collide with the built-in dispatch path, and its catalog sync would replace the
+/// built-in's shared model list. Every name the router treats as built-in.
+const RESERVED_LABELS: &[&str] = &["openai", "anthropic", "gemini", "vertex", "openrouter"];
 
 /// Upper bound on the chat-test probe so a slow/hung endpoint can't stall the request.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
@@ -157,12 +160,13 @@ fn internal(context: &str, e: impl std::fmt::Display) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
-/// SQL over `custom_providers`: whether the user bound at `$n` may see the provider and
-/// route through it. Its creator may; everyone may when a superuser registered it.
-// ponytail: reads the creator's superuser flag live, so demoting a superuser makes their
-// providers private again; store a `shared` column if that ever matters.
+/// SQL over `custom_providers`: whether the user bound at `$n` (`NULL` = the platform)
+/// may see the provider and route through it. The router enforces the same rule at call
+/// time ([`nasiko_llm_router::resolver::usable_by_sql`]).
+// ponytail: reads the superuser flags live, so demoting a superuser takes their providers
+// away from the other superusers' configs; store a `shared` column if that ever matters.
 pub(crate) fn usable_by(n: u8) -> String {
-    format!("(created_by = ${n} OR created_by IN (SELECT id FROM users WHERE is_superuser))")
+    nasiko_llm_router::resolver::usable_by_sql(n)
 }
 
 /// A non-superuser's endpoint must be public (see the module docs).
@@ -302,18 +306,17 @@ pub(crate) async fn test_endpoint(
     if let Err(r) = check_endpoint(&claims, &base_url).await {
         return r;
     }
+    // The check above runs once; a member's probe must also stay public at connect time
+    // and through redirects, as their calls will.
+    let http = if claims.is_superuser {
+        state.http_client.clone()
+    } else {
+        nasiko_llm_router::public_only_client()
+    };
 
     // Chat test (optional — only when a model is provided).
     let chat_ok = if let Some(ref model) = body.model {
-        match probe_chat(
-            &state.http_client,
-            &dialect,
-            &base_url,
-            &body.api_key,
-            model,
-        )
-        .await
-        {
+        match probe_chat(&http, &dialect, &base_url, &body.api_key, model).await {
             Ok(()) => true,
             Err(reason) => {
                 return ApiResponse::ok(
@@ -328,7 +331,7 @@ pub(crate) async fn test_endpoint(
     };
 
     // Fetch model list.
-    let models = fetch_model_list(&state.http_client, &dialect, &base_url, &body.api_key).await;
+    let models = fetch_model_list(&http, &dialect, &base_url, &body.api_key).await;
 
     ApiResponse::ok(
         json!({ "chat_ok": chat_ok, "models": models }),

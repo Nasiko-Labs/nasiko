@@ -905,6 +905,7 @@ mod tests {
         p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: "https://acme.openai.azure.com".into(),
             dialect: dialect.clone(),
+            public_only: false,
         });
         let attempts = build_attempts(&p, &cfg("sk-platform"));
         assert_eq!(attempts.len(), 2);
@@ -1289,6 +1290,7 @@ mod tests {
         p.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: base,
             dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+            public_only: false,
         });
         p
     }
@@ -1948,6 +1950,7 @@ mod tests {
         primary.custom_endpoint = Some(crate::resolver::CustomEndpoint {
             base_url: stalled,
             dialect: crate::providers::ProviderDialect::OpenAi,
+            public_only: false,
         });
         let req: ChatRequest =
             serde_json::from_value(json!({ "messages": [{ "role": "user", "content": "hi" }] }))

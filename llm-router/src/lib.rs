@@ -217,6 +217,51 @@ pub fn provider_client(read_timeout: Duration) -> reqwest::Client {
         .expect("failed to build provider http client")
 }
 
+/// The client for custom providers a member registered (`CustomEndpoint::public_only`).
+/// Their base URL is user input, so every call, catalog sync included, must reach public
+/// addresses only. The host installs a client whose DNS resolver refuses private ones,
+/// with redirects off (a redirect to an IP literal skips the resolver); this crate cannot
+/// build one itself, because the guard lives in a crate that depends on this one.
+static PUBLIC_ONLY_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+
+/// Install [`provider_client`]'s settings over `guarded`, a builder whose DNS resolver
+/// refuses private addresses, with redirects off, as the client [`public_only_client`]
+/// returns. First call wins.
+pub fn install_public_only_client(guarded: reqwest::ClientBuilder, read_timeout: Duration) {
+    let client = guarded
+        .pool_max_idle_per_host(20)
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(read_timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .expect("failed to build public-only provider http client");
+    let _ = PUBLIC_ONLY_CLIENT.set(client);
+}
+
+/// The installed public-only client, or, when the host installed none, one that refuses
+/// every host: a member's endpoint fails closed rather than going out unguarded.
+pub fn public_only_client() -> reqwest::Client {
+    PUBLIC_ONLY_CLIENT.get().cloned().unwrap_or_else(|| {
+        reqwest::Client::builder()
+            .dns_resolver(Arc::new(RefuseAll))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("failed to build refusing http client")
+    })
+}
+
+/// A resolver that resolves nothing, behind [`public_only_client`]'s default.
+struct RefuseAll;
+
+impl reqwest::dns::Resolve for RefuseAll {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let host = name.as_str().to_owned();
+        Box::pin(async move {
+            Err(format!("no public-only http client installed; refusing '{host}'").into())
+        })
+    }
+}
+
 /// Build the request classifier from config. The only place backend selection happens, shared by
 /// the router and the `classifier_eval` example so both exercise the same path.
 ///
@@ -540,6 +585,20 @@ mod provider_client_tests {
             .await
             .unwrap();
         assert_eq!(body, "x".repeat(8));
+    }
+
+    #[tokio::test]
+    async fn a_member_endpoint_fails_closed_when_the_host_installed_no_guarded_client() {
+        // Nothing in this crate's tests installs one, so the default answers.
+        let url = serve_once(|s| reply_after(Duration::ZERO, s))
+            .await
+            .replace("127.0.0.1", "localhost");
+        let err = super::public_only_client()
+            .get(url)
+            .send()
+            .await
+            .unwrap_err();
+        assert!(err.is_connect(), "expected a refused lookup, got {err}");
     }
 }
 

@@ -2054,6 +2054,7 @@ mod tests {
         let endpoint = crate::resolver::CustomEndpoint {
             base_url: server.url(),
             dialect: ProviderDialect::OpenAi,
+            public_only: false,
         };
         let (name, endpoint) = if custom {
             ("self-hosted", Some(&endpoint))

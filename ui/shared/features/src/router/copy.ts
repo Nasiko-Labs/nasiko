@@ -297,7 +297,7 @@ export const copy = {
   cpNew: 'Add custom provider',
   cpDescription: (shared: boolean) =>
     shared
-      ? 'An endpoint the router can call, for every user’s configs.'
+      ? 'An endpoint the router can call, for your configs and other superusers’, so the platform’s own agents can use it.'
       : 'An endpoint the router can call, for your own configs only. No one else sees it or spends its key.',
   cpEdit: (name: string) => `Edit ${name}`,
   cpName: 'Name',
