@@ -128,7 +128,7 @@ impl FakeSandboxProvider {
     }
 
     /// Test hook: with `true`, a resumed sandbox runs on the resuming spec's env, as the bare pod
-    /// (recreated from the resuming spec) and shared runtime pods (configured at attach) do, and
+    /// (recreated from the resuming spec) and a harness agent's sessions (configured at attach) do, and
     /// `resume_takes_new_env` says so. The default, `false`, keeps the env the sandbox was created
     /// with, as Docker does.
     pub fn set_resume_takes_new_env(&self, takes: bool) {

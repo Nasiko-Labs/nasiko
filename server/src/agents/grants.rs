@@ -8,7 +8,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use super::sharing::{ensure_may_be_made_private, ensure_shareable};
+use super::sharing::ensure_shareable;
 use crate::auth::Claims;
 use crate::state::AppState;
 
@@ -198,11 +198,6 @@ async fn make_private(
     if let Err(r) = check_access(&state, &claims, agent_id).await {
         return r;
     }
-    // The platform's harness agents stay public; any other agent may be made private.
-    if let Err(refusal) = ensure_may_be_made_private(&state.db, agent_id).await {
-        return refusal.into_response();
-    }
-
     let result = sqlx::query(
         "UPDATE agents SET is_public = false, updated_at = now() WHERE id = $1 AND deleted_at IS NULL",
     )

@@ -43,15 +43,27 @@ pub enum FailureKind {
     /// Retryable up to `max_attempts` total dispatch attempts — recorded as terminal `failed` only
     /// once `resume_dispatch_attempts` reaches this cap.
     Retryable { max_attempts: i32 },
+    /// The agent could not be started because a layer declined to, for a reason that can pass
+    /// (`resume_last_error` carries its message). Nothing failed, so the human's answer must not
+    /// be lost to it: the attempt this claim took is given back and the row never turns `failed`.
+    /// The claim's lease is kept, so the next try comes when it lapses, not on every poll. The wait
+    /// is bounded: a request resolved more than 24 hours ago turns `failed`, so an approval is
+    /// never delivered days after it was given.
+    Declined,
 }
+
+/// How long after a request was resolved a declined resume is still retried.
+const DECLINED_RESUME_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 impl FailureKind {
     /// The `resume_dispatch_attempts` threshold at or above which `mark_resume_failed` flips
-    /// `resume_status` to `failed` — `0` for `Permanent` (any attempt count is already `>= 0`).
+    /// `resume_status` to `failed`: `0` for `Permanent` (any attempt count is already `>= 0`),
+    /// out of reach for `Declined`.
     fn threshold(self) -> i32 {
         match self {
             FailureKind::Permanent => 0,
             FailureKind::Retryable { max_attempts } => max_attempts,
+            FailureKind::Declined => i32::MAX,
         }
     }
 }
@@ -133,8 +145,10 @@ pub trait HitlStore: Send + Sync {
     async fn mark_resume_completed(&self, id: Uuid) -> Result<(), HitlError>;
     /// Delivery failed before or during the attempt. Releases the lease for a retry unless
     /// `resume_dispatch_attempts` has reached `failure`'s threshold, in which case `resume_status`
-    /// becomes the terminal `failed`. Returns the `resume_status` the row holds afterwards, so the
-    /// caller knows whether this failure was terminal without reading the row back.
+    /// becomes the terminal `failed`. [`FailureKind::Declined`] instead gives the attempt back and
+    /// keeps the lease, until the request was resolved more than 24 hours ago. Returns the
+    /// `resume_status` the row holds afterwards, so the caller knows whether this failure was
+    /// terminal without reading the row back.
     async fn mark_resume_failed(
         &self,
         id: Uuid,
@@ -764,14 +778,20 @@ impl HitlStore for PgHitlStore {
         let status: Option<String> = sqlx::query_scalar(
             "UPDATE hitl_requests
                 SET resume_last_error = $2,
-                    resume_claimed_at = NULL,
-                    resume_status = CASE WHEN resume_dispatch_attempts >= $3 THEN 'failed' ELSE resume_status END
+                    resume_claimed_at = CASE WHEN $4 THEN resume_claimed_at ELSE NULL END,
+                    resume_dispatch_attempts =
+                        CASE WHEN $4 THEN resume_dispatch_attempts - 1 ELSE resume_dispatch_attempts END,
+                    resume_status = CASE WHEN resume_dispatch_attempts >= $3
+                                           OR ($4 AND resolved_at < now() - make_interval(secs => $5))
+                                         THEN 'failed' ELSE resume_status END
               WHERE id = $1
           RETURNING resume_status",
         )
         .bind(id)
         .bind(error)
         .bind(failure.threshold())
+        .bind(failure == FailureKind::Declined)
+        .bind(DECLINED_RESUME_MAX_AGE.as_secs_f64())
         .fetch_optional(&self.pool)
         .await?;
         let status = status.ok_or(HitlError::NotFound(id))?;

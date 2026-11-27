@@ -19,7 +19,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::auth::RATE_WINDOW;
 use super::error::StateError;
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{RateLimitStore, RateLimiter};
 
 /// How many agents' budgets one address may spend before its requests are refused unread.
 const AGENTS_PER_ADDRESS: u32 = 10;
@@ -29,8 +29,10 @@ const AGENTS_PER_ADDRESS: u32 = 10;
 pub(super) struct PeerLimit(RateLimiter);
 
 impl PeerLimit {
-    pub(super) fn new(agent_requests_per_minute: u32) -> Self {
+    pub(super) fn new(rate_limits: &RateLimitStore, agent_requests_per_minute: u32) -> Self {
         Self(RateLimiter::new(
+            rate_limits,
+            "agent-state-address",
             per_address_allowance(agent_requests_per_minute),
             RATE_WINDOW,
         ))
@@ -56,7 +58,7 @@ pub(super) async fn limit_by_peer(
         warn_once_that_peers_are_unknown();
         return next.run(request).await;
     };
-    match limiter.check(&peer.ip().to_string()) {
+    match limiter.check(&peer.ip().to_string()).await {
         Ok(()) => next.run(request).await,
         Err(wait) => StateError::rate_limited(wait).into_response(),
     }

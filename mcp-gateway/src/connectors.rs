@@ -368,6 +368,13 @@ pub async fn register_connector(
         ));
     }
     crate::net::validate_public_url(&input.url).await?;
+    crate::net::validate_connector_headers(
+        input
+            .headers
+            .iter()
+            .flat_map(|h| h.keys().map(String::as_str))
+            .chain(input.credential_header_name.as_deref()),
+    )?;
     // Same normalisation the SQL applies, so the returned row matches storage.
     let oauth_scopes = input
         .oauth_scopes
@@ -595,6 +602,13 @@ pub async fn update_connector(
     if let Some(url) = &input.url {
         crate::net::validate_public_url(url).await?;
     }
+    crate::net::validate_connector_headers(
+        input
+            .headers
+            .iter()
+            .flat_map(|h| h.keys().map(String::as_str))
+            .chain(input.credential_header_name.as_deref()),
+    )?;
     // Name-collision check within the owner's scope.
     let owner = connector.owner_id.unwrap_or(caller);
     if let Some(name) = &input.name

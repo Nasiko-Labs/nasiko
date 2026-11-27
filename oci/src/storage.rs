@@ -1,8 +1,13 @@
 use aws_config::{BehaviorVersion, Region};
 use aws_sdk_s3::{
-    Client, config::Credentials, error::ProvideErrorMetadata, presigning::PresigningConfig,
+    Client,
+    config::Credentials,
+    error::ProvideErrorMetadata,
+    presigning::PresigningConfig,
+    types::{CompletedMultipartUpload, CompletedPart},
 };
-use nasiko_runtime::{BlobStore, BlobStoreError};
+use bytes::{Bytes, BytesMut};
+use nasiko_runtime::{BlobStore, BlobStoreError, BlobStream, BlobWriter};
 use std::time::Duration;
 
 /// Renders an S3 failure with the detail needed to act on it.
@@ -93,22 +98,25 @@ impl S3Storage {
     pub fn blob_key(digest: &str) -> String {
         format!("blobs/{}", digest.replace(':', "/"))
     }
-}
 
-#[async_trait::async_trait]
-impl BlobStore for S3Storage {
-    async fn put_blob(&self, digest: &str, data: bytes::Bytes) -> Result<i64, BlobStoreError> {
-        let key = Self::blob_key(digest);
+    async fn put_blob_at(&self, key: &str, data: Bytes) -> Result<i64, BlobStoreError> {
         let size = data.len() as i64;
         self.client
             .put_object()
             .bucket(&self.bucket)
-            .key(&key)
+            .key(key)
             .body(data.into())
             .send()
             .await
             .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
         Ok(size)
+    }
+}
+
+#[async_trait::async_trait]
+impl BlobStore for S3Storage {
+    async fn put_blob(&self, digest: &str, data: bytes::Bytes) -> Result<i64, BlobStoreError> {
+        self.put_blob_at(&Self::blob_key(digest), data).await
     }
 
     async fn get_blob(&self, digest: &str) -> Result<bytes::Bytes, BlobStoreError> {
@@ -139,6 +147,48 @@ impl BlobStore for S3Storage {
             .await
             .map_err(|e| BlobStoreError::Backend(e.to_string()))?;
         Ok(data.into_bytes())
+    }
+
+    async fn get_blob_stream(&self, digest: &str) -> Result<BlobStream, BlobStoreError> {
+        let key = Self::blob_key(digest);
+        let resp = self
+            .client
+            .get_object()
+            .bucket(&self.bucket)
+            .key(&key)
+            .send()
+            .await
+            .map_err(|e| {
+                let msg = s3_error(&e);
+                if e.into_service_error().is_no_such_key() {
+                    BlobStoreError::NotFound(format!("blob {digest} not found"))
+                } else {
+                    BlobStoreError::Backend(msg)
+                }
+            })?;
+        let pieces = futures::stream::unfold(resp.body, |mut body| async move {
+            let piece = body
+                .try_next()
+                .await
+                .map_err(|e| BlobStoreError::Backend(e.to_string()))
+                .transpose()?;
+            Some((piece, body))
+        });
+        Ok(Box::pin(pieces))
+    }
+
+    async fn blob_writer<'a>(
+        &'a self,
+        digest: &str,
+    ) -> Result<Box<dyn BlobWriter + 'a>, BlobStoreError> {
+        Ok(Box::new(S3BlobWriter {
+            storage: self,
+            key: Self::blob_key(digest),
+            pending: BytesMut::new(),
+            upload_id: None,
+            parts: Vec::new(),
+            size: 0,
+        }))
     }
 
     async fn presigned_get_url(
@@ -230,6 +280,156 @@ impl BlobStore for S3Storage {
     }
 }
 
+/// Size of each part of a multipart write: above S3's 5 MiB minimum for every
+/// part but the last, and few enough parts for the registry's largest blob
+/// (5 GiB is 320 of them, against S3's 10,000).
+const MULTIPART_PART_BYTES: usize = 16 * 1024 * 1024;
+
+/// A blob written to S3 in parts. It holds at most one part in memory. An object
+/// smaller than one part is a single `PutObject` at `finish`; a larger one is a
+/// multipart upload, started with the first full part, that S3 shows under the
+/// key only once it is completed.
+struct S3BlobWriter<'a> {
+    storage: &'a S3Storage,
+    key: String,
+    pending: BytesMut,
+    upload_id: Option<String>,
+    parts: Vec<CompletedPart>,
+    size: i64,
+}
+
+impl S3BlobWriter<'_> {
+    async fn upload_id(&mut self) -> Result<String, BlobStoreError> {
+        if let Some(id) = &self.upload_id {
+            return Ok(id.clone());
+        }
+        let created = self
+            .storage
+            .client
+            .create_multipart_upload()
+            .bucket(&self.storage.bucket)
+            .key(&self.key)
+            .send()
+            .await
+            .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
+        let id = created.upload_id.ok_or_else(|| {
+            BlobStoreError::Backend(format!("no upload id for multipart write of {}", self.key))
+        })?;
+        self.upload_id = Some(id.clone());
+        Ok(id)
+    }
+
+    async fn upload_part(&mut self, data: Bytes) -> Result<(), BlobStoreError> {
+        let upload_id = self.upload_id().await?;
+        let part_number = self.parts.len() as i32 + 1;
+        let uploaded = self
+            .storage
+            .client
+            .upload_part()
+            .bucket(&self.storage.bucket)
+            .key(&self.key)
+            .upload_id(upload_id)
+            .part_number(part_number)
+            .body(data.into())
+            .send()
+            .await
+            .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
+        self.parts.push(
+            CompletedPart::builder()
+                .set_e_tag(uploaded.e_tag)
+                .part_number(part_number)
+                .build(),
+        );
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl BlobWriter for S3BlobWriter<'_> {
+    async fn write(&mut self, data: Bytes) -> Result<(), BlobStoreError> {
+        self.size += data.len() as i64;
+        self.pending.extend_from_slice(&data);
+        while self.pending.len() >= MULTIPART_PART_BYTES {
+            let part = self.pending.split_to(MULTIPART_PART_BYTES).freeze();
+            self.upload_part(part).await?;
+        }
+        Ok(())
+    }
+
+    async fn finish(mut self: Box<Self>) -> Result<i64, BlobStoreError> {
+        let rest = std::mem::take(&mut self.pending).freeze();
+        let Some(upload_id) = self.upload_id.clone() else {
+            return self.storage.put_blob_at(&self.key, rest).await;
+        };
+        if !rest.is_empty() {
+            self.upload_part(rest).await?;
+        }
+        self.storage
+            .client
+            .complete_multipart_upload()
+            .bucket(&self.storage.bucket)
+            .key(&self.key)
+            .upload_id(upload_id)
+            .multipart_upload(
+                CompletedMultipartUpload::builder()
+                    .set_parts(Some(std::mem::take(&mut self.parts)))
+                    .build(),
+            )
+            .send()
+            .await
+            .map_err(|e| BlobStoreError::Backend(s3_error(&e)))?;
+        // Completed: nothing left for `Drop` to abort.
+        self.upload_id = None;
+        Ok(self.size)
+    }
+
+    async fn abort(mut self: Box<Self>) {
+        if let Some(upload_id) = self.upload_id.take() {
+            abort_multipart(
+                self.storage.client.clone(),
+                self.storage.bucket.clone(),
+                self.key.clone(),
+                upload_id,
+            )
+            .await;
+        }
+    }
+}
+
+/// A writer dropped before it finished — its request cancelled when the client
+/// went away, or a failed `finish` — aborts its multipart upload, since S3 keeps
+/// an incomplete upload's parts (and bills them) until something aborts it.
+impl Drop for S3BlobWriter<'_> {
+    fn drop(&mut self) {
+        let Some(upload_id) = self.upload_id.take() else {
+            return;
+        };
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            tracing::warn!(key = %self.key, "multipart write dropped outside a runtime; parts left");
+            return;
+        };
+        runtime.spawn(abort_multipart(
+            self.storage.client.clone(),
+            self.storage.bucket.clone(),
+            self.key.clone(),
+            upload_id,
+        ));
+    }
+}
+
+async fn abort_multipart(client: Client, bucket: String, key: String, upload_id: String) {
+    if let Err(e) = client
+        .abort_multipart_upload()
+        .bucket(bucket)
+        .key(&key)
+        .upload_id(upload_id)
+        .send()
+        .await
+    {
+        tracing::warn!(key = %key, error = %s3_error(&e), "abort multipart write");
+    }
+}
+
 /// `S3_FORCE_PATH_STYLE`: path-style requests (`endpoint.com/bucket/key`),
 /// defaulting **true** — RustFS/MinIO (every in-cluster install) require it,
 /// so only an explicit `false`/`0` switches to virtual-hosted style. The
@@ -255,5 +455,52 @@ mod tests {
         assert!(parse_force_path_style(Some("garbage")));
         assert!(!parse_force_path_style(Some("false")));
         assert!(!parse_force_path_style(Some("0")));
+    }
+}
+
+/// Against a real S3 endpoint (the local RustFS is enough):
+/// `cargo test -p nasiko-oci --lib -- --ignored dropped_writer`
+#[cfg(test)]
+mod s3_tests {
+    use super::*;
+
+    async fn open_uploads(storage: &S3Storage, key: &str) -> usize {
+        storage
+            .client
+            .list_multipart_uploads()
+            .bucket(&storage.bucket)
+            .prefix(key)
+            .send()
+            .await
+            .expect("list multipart uploads")
+            .uploads
+            .unwrap_or_default()
+            .len()
+    }
+
+    #[tokio::test]
+    #[ignore = "needs an S3 endpoint (S3_* env)"]
+    async fn a_dropped_writer_aborts_its_multipart_upload() {
+        let storage = S3Storage::from_env("nasiko-test-artifacts".into()).await;
+        storage.ensure_bucket(false).await.unwrap();
+        let digest = format!("test:dropped-{}", std::process::id());
+        let key = S3Storage::blob_key(&digest);
+
+        let mut writer = storage.blob_writer(&digest).await.unwrap();
+        writer
+            .write(Bytes::from(vec![7u8; MULTIPART_PART_BYTES + 1]))
+            .await
+            .unwrap();
+        assert_eq!(open_uploads(&storage, &key).await, 1, "a part was uploaded");
+
+        drop(writer);
+        for _ in 0..50 {
+            if open_uploads(&storage, &key).await == 0 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(open_uploads(&storage, &key).await, 0);
+        assert!(!storage.blob_exists(&digest).await);
     }
 }

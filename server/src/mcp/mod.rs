@@ -8,6 +8,7 @@ pub mod build;
 mod handlers;
 pub mod identity;
 pub mod openapi;
+pub(crate) mod search_sync;
 mod service;
 pub mod wiring;
 

@@ -181,8 +181,11 @@ async fn update_settings(
         )
             .into_response();
     }
+    // Every agent's embeddings use the org default, so it is the platform's and may name
+    // only a superuser's provider (`None`), which the router checks the same way per call.
     if let Some(provider) = &incoming_embedding.provider
-        && let Err(message) = crate::llm_configs::require_known_provider(&state.db, provider).await
+        && let Err(message) =
+            crate::llm_configs::resolve_provider_label(&state.db, provider, None).await
     {
         return (
             StatusCode::BAD_REQUEST,

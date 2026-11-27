@@ -179,7 +179,7 @@ async fn queue_upload(
 
     tx.commit().await?;
 
-    let _ = state.build_tx.send(()).await;
+    state.wake_build_worker().await;
 
     Ok((connector_id, build_id))
 }
@@ -575,13 +575,10 @@ pub async fn deploy_and_verify_uploaded_connector(
 
     if let Err(e) = settings.runtime.deploy(&spec).await {
         tracing::error!(build_id = %build_id, connector_id = %connector_id, %e, "mcp server build failed");
-        fail_mcp_connector(
-            &settings.db,
-            build_id,
-            connector_id,
-            &format!("deploy: {e}"),
-        )
-        .await;
+        // A deploy the runtime declined is reported in the words of the layer that declined it.
+        let reason =
+            crate::agents::utils::declined_message(&e).unwrap_or_else(|| format!("deploy: {e}"));
+        fail_mcp_connector(&settings.db, build_id, connector_id, &reason).await;
         return false;
     }
 

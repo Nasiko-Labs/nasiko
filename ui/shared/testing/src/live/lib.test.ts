@@ -1,7 +1,7 @@
 // @vitest-environment node
 /**
  * The live-contract scripts' shared pieces (plans/feat-live-contract.md §7.5): the loopback guard, the scrub and
- * secret guard, login's no-retry handling of lockout and rate limits and its remaining failures, the error table,
+ * secret guard, login's no-retry handling of a refused login and a rate limit and its remaining failures, the error table,
  * the stack guards (they refuse before any docker call), OTLP attribute encoding, and the seed wrapper's database
  * guards, --otlp rules and trace posting. Scripts are imported by relative path, like the chat smoke's fixture test.
  */
@@ -153,29 +153,18 @@ describe('login', () => {
       isSuperuser: true,
     })
   })
-  it('reports an account lock with its retry time and never retries', async () => {
-    const f = respond(429, {
-      error: 'account temporarily locked',
-      code: 'account_locked',
-      retry_after_secs: 300,
-    })
-    await expect(login('http://localhost:8181', 'admin', 'pw')).rejects.toMatchObject({
-      stage: 'login',
-      code: EXIT.notReady,
-      message: expect.stringContaining('retry in 300 s'),
-    })
-    expect(f).toHaveBeenCalledTimes(1)
-  })
-  it('tells a rate limit apart from a lock', async () => {
+  it('reports a rate limit', async () => {
     respond(429, { error: 'too many requests' })
     await expect(login('http://localhost:8181', 'admin', 'pw')).rejects.toMatchObject({
       message: 'login rate-limited',
     })
   })
-  it('includes remaining attempts on a 401 and never retries', async () => {
-    const f = respond(401, { error: 'invalid credentials', remaining_attempts: 2 })
+  it('reports a refused login and never retries', async () => {
+    const f = respond(401, { error: 'invalid credentials' })
     await expect(login('http://localhost:8181', 'admin', 'pw')).rejects.toMatchObject({
-      message: expect.stringContaining('2 attempts left'),
+      stage: 'login',
+      code: EXIT.notReady,
+      message: 'login as admin failed: HTTP 401',
     })
     expect(f).toHaveBeenCalledTimes(1)
   })
@@ -190,8 +179,7 @@ describe('error table', () => {
     nonSeed: ERRORS.nonSeed('3 rows'),
     dbRefused: ERRORS.dbRefused('nasiko_dev'),
     dirty: ERRORS.dirty('../nasiko-cloud-rs', 2),
-    loginFailed: ERRORS.loginFailed('admin', 401, ''),
-    accountLocked: ERRORS.accountLocked('admin', 120),
+    loginFailed: ERRORS.loginFailed('admin', 401),
     rateLimited: ERRORS.rateLimited(),
     pgvector: ERRORS.pgvector(),
     tempo: ERRORS.tempo('no image'),
@@ -249,7 +237,7 @@ describe('scripts on unhappy paths', () => {
   afterEach(() => vi.unstubAllGlobals())
 
   describe('login: the remaining failures (never retried)', () => {
-    it('a refused connection, a lock with no wait, a plain-text 500 and a 200 without a token each fail at login', async () => {
+    it('a refused connection, a plain-text 500 and a 200 without a token each fail at login', async () => {
       vi.stubGlobal(
         'fetch',
         vi.fn(async () => {
@@ -268,11 +256,6 @@ describe('scripts on unhappy paths', () => {
           'fetch',
           vi.fn(async () => new Response(text, { status })),
         )
-      respond(429, JSON.stringify({ code: 'account_locked' }))
-      await expect(login('http://localhost:8181', 'admin', 'pw')).rejects.toMatchObject({
-        message: 'account admin is locked after too many failed logins',
-        fix: expect.stringMatching(/^sleep 60 && /),
-      })
       respond(500, 'internal error')
       await expect(login('http://localhost:8181', 'admin', 'pw')).rejects.toMatchObject({
         message: 'login as admin failed: HTTP 500',

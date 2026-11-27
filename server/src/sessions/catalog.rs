@@ -18,12 +18,6 @@ use super::model::SessionRow;
 /// The port the in-image ACP shim listens on (WebSocket).
 pub const SHIM_PORT: u16 = 7000;
 
-/// The `agents` rows that are the platform's own harness agents (unqualified columns): the one
-/// boot seeding names after its harness. Other rows of kind `harness` may exist (a provider can
-/// give each user an agent of their own for a harness), so a lookup of "the" agent of a harness
-/// must match this, never the kind and `harness_id` alone.
-pub const PLATFORM_HARNESS_AGENT: &str = "workload_kind = 'harness' AND name = harness_id";
-
 /// One `harness_catalog` row.
 #[derive(Debug, Clone, FromRow)]
 pub struct Harness {
@@ -124,7 +118,7 @@ fn build_spec(
     }
 }
 
-fn qualified_image(image: &str, prefix: &str) -> String {
+pub(crate) fn qualified_image(image: &str, prefix: &str) -> String {
     if image.contains('/') {
         image.to_owned()
     } else {

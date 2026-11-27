@@ -5,10 +5,10 @@
 //! The exec-based coding path (`coding::turn`) does the same job against a container it execs
 //! into; this one talks to the shim inside a per-session sandbox. Everything that does not
 //! depend on the transport is shared with it: the lease, the permission policy, the ACP session
-//! open/restore, the turn driver (heartbeat, deadline, reply persistence, telemetry, token
-//! revocation) and the SSE mapping.
+//! open/restore, the turn driver (heartbeat, deadline, reply persistence, telemetry) and the SSE
+//! mapping.
 //!
-//! # Two credentials
+//! # The credential
 //!
 //! A sandbox's environment is applied whenever the provider creates or recreates it, and the
 //! provider contract is that every acquire passes the full, stable env. So the *sandbox token*
@@ -16,16 +16,21 @@
 //! decrypts it and rebuilds the whole env from it. It is replaced only when missing, unusable
 //! (secret rotated) or within 24 h of expiry, and then the sandbox is stopped first so the new
 //! env lands: suspended where the provider resumes it on the new env, released only where it
-//! cannot (`sessions::token::stop_for_new_env`), so its files stay. The *turn token* is minted
-//! per turn and handed to the agent only as the ACP MCP header, and is revoked when the turn
-//! ends. A failed acquire revokes nothing: a container or pod that survived the failure still
-//! carries the token.
+//! cannot (`sessions::token::stop_for_new_env`), so its files stay. The same token is the ACP
+//! MCP header the harness reaches the MCP gateway with ([`begin_prompt`]): the harness and its MCP
+//! client outlive a turn, so a credential of the turn's own would be dead on the next one. A
+//! failed acquire revokes nothing: a container or pod that survived the failure still carries
+//! the token.
+//!
+//! The token names the session's agent, the user's own harness agent (`sessions::own_agent`), so
+//! the router and the gateway resolve the user's own settings.
 //!
 //! # The profile
 //!
 //! The model the harness asks the router for, and the per-harness settings that point it there,
-//! are the session's *profile* (`sessions::profile`), rendered on every turn from the user's
-//! default LLM config and the HITL toggle. It joins the env (and, for a harness that reads its
+//! are the session's *profile* (`sessions::profile`), rendered on every turn from the LLM config
+//! the router resolves for the session's agent (the one attached to it, else its owner's
+//! default) and the HITL toggle. It joins the env (and, for a harness that reads its
 //! settings from disk, the `files` the shim writes before the harness starts). A handshake-mode
 //! shim restarts the harness when the configuration changes, so a changed profile reaches a
 //! running sandbox on the next turn; an env-mode sandbox carries the profile it was created with
@@ -33,7 +38,8 @@
 //!
 //! # Runtime state on failure
 //!
-//! The row says `starting` while a turn is being set up. A turn that fails before the sandbox
+//! The row says `starting` while a turn, or the start of a new session's sandbox
+//! (`sessions::start`), is setting the sandbox up. A turn that fails before the sandbox
 //! was acquired leaves the row as it found it when it already had a sandbox (`sandbox_ref` set),
 //! and `parked` when it did not: parking a row whose sandbox is alive would orphan it. A turn
 //! that fails after acquire leaves the row `running`, so the next turn re-attaches and the idle
@@ -56,19 +62,18 @@ use super::handshake::{
     Configure, ControlClient, HandshakeError, acp_tls, configure_body, control_http, prepare,
     sanitize_routing, upgrade_headers,
 };
-use super::identity::{mint_session_token, session_env, shim_token};
+use super::identity::{session_env, shim_token};
 use super::keys::{session_key, set_sandbox_key};
 use super::live::{LiveRegistration, LiveTurn};
 use super::model::{SessionRow, SessionRuntimeState, SessionStore};
 use super::pending::{clear_pending, set_pending};
-use super::profile::{HarnessProfile, ModelChoice, ProfileInputs, model_choice_for_user};
+use super::profile::{HarnessProfile, ModelChoice, ProfileInputs, model_choice_for_agent};
 use super::scratch::add_scratch_env;
 use super::token::{TokenNeeds, ensure_sandbox_token};
 use crate::coding::lifecycle::{self, TurnLease};
 use crate::coding::permission::PendingPermissionSink;
 use crate::coding::proxy::{CodingAgentKind, HarnessTarget, codex_hitl_args};
 use crate::coding::questions::TurnQuestions;
-use crate::coding::revocation::{RevokedTokenId, revoke_session_token};
 use crate::coding::turn::{
     CodingTurnError, CodingTurnEvent, DriveTurn, HitlPolicyInput, ShimRestart, TelemetryKeys,
     hitl_permission_policy, new_turn_telemetry, open_acp_session, replica_id, session_params,
@@ -87,7 +92,8 @@ const CONNECT_BACKOFF: Duration = Duration::from_millis(500);
 /// `acquire` is create-or-resume, so once the row is `parked` the turn simply resumes the
 /// sandbox.
 const SUSPEND_WAIT: Duration = Duration::from_secs(15);
-const SUSPEND_POLL: Duration = Duration::from_millis(250);
+/// How often a turn waiting for the lease looks again.
+const LEASE_POLL: Duration = Duration::from_millis(250);
 
 /// What one harness turn needs from its caller. The caller has already authorized the user,
 /// resolved the session (`SessionStore::find_or_create_for_harness`) and opened the flow the
@@ -134,10 +140,11 @@ pub async fn run_harness_turn_sse(
     Ok(super::live::sse(first))
 }
 
-/// A turn that failed while starting, and the state the session should be left in.
-struct StartFailure {
-    error: CodingTurnError,
-    leave: SessionRuntimeState,
+/// A turn (or a start, `sessions::start`) that failed while setting the sandbox up, and the
+/// state the session should be left in.
+pub(super) struct StartFailure {
+    pub(super) error: CodingTurnError,
+    pub(super) leave: SessionRuntimeState,
 }
 
 impl StartFailure {
@@ -213,21 +220,6 @@ async fn start_harness_turn(
     };
     let req = HarnessTurnRequest { session, ..req };
 
-    let minted = match mint_session_token(
-        &state.config,
-        req.target.agent_id,
-        req.user_id,
-        &session_id,
-        req.flow_id,
-    ) {
-        Ok(minted) => minted,
-        Err(e) => {
-            let _ = lifecycle::release_turn(&state.db, &lease).await;
-            return Err(CodingTurnError::from_credential("session credential", e));
-        }
-    };
-    let token_id = RevokedTokenId::from_minted(&minted);
-
     let (setup_beat, lease_lost) = StartHeartbeat::spawn(state, &lease);
     let ctx = TurnCtx {
         state,
@@ -238,7 +230,7 @@ async fn start_harness_turn(
         lease_lost,
         questions: TurnQuestions::default(),
     };
-    let started = start_turn(&ctx, minted.token, &token_id).await;
+    let started = start_turn(&ctx).await;
     drop(setup_beat);
     match started {
         Ok(rx) => Ok(rx),
@@ -250,21 +242,23 @@ async fn start_harness_turn(
                 .await;
             warn_missed_write("leave state", &session_id, left);
             let _ = lifecycle::release_turn(&state.db, &lease).await;
-            let _ = revoke_session_token(&state.db, &token_id.jti, token_id.expires_at).await;
             Err(failure.error)
         }
     }
 }
 
-/// Take the session's turn lease, waiting out an in-progress suspend (up to [`SUSPEND_WAIT`]).
-/// `Busy` when another turn holds it, or the suspend does not finish in time.
+/// Take the session's turn lease, waiting out an in-progress suspend (up to [`SUSPEND_WAIT`]) or
+/// the start of the session's sandbox (`sessions::start`, up to the turn deadline, since the turn
+/// would otherwise start the sandbox itself). `Busy` when another turn holds it, or the wait runs
+/// out.
 async fn acquire_lease(
     state: &AppState,
     session_id: &str,
     turn_id: &str,
 ) -> Result<TurnLease, CodingTurnError> {
     let store = SessionStore::new(state.db.clone());
-    let deadline = tokio::time::Instant::now() + SUSPEND_WAIT;
+    let waiting_since = tokio::time::Instant::now();
+    let start_wait = Duration::from_secs(state.config.agent_call_timeout_secs);
     loop {
         let lease = lifecycle::acquire_turn(
             &state.db,
@@ -277,20 +271,21 @@ async fn acquire_lease(
         if let Some(lease) = lease {
             return Ok(lease);
         }
-        let suspending = store
-            .get(session_id)
-            .await?
-            .is_some_and(|row| is_suspending(&row));
-        if !suspending || tokio::time::Instant::now() >= deadline {
+        let wait = match store.get(session_id).await? {
+            Some(row) if is_suspending(&row) => SUSPEND_WAIT,
+            Some(row) if super::start::is_starting(&row) => start_wait,
+            _ => return Err(CodingTurnError::Busy),
+        };
+        if waiting_since.elapsed() >= wait {
             return Err(CodingTurnError::Busy);
         }
-        tokio::time::sleep(SUSPEND_POLL).await;
+        tokio::time::sleep(LEASE_POLL).await;
     }
 }
 
 /// Log a failure-path state write that missed because a suspend claim took the lease: the row
 /// now belongs to the claim, and there is nothing left for this turn to write.
-fn warn_missed_write(what: &str, session_id: &str, result: sqlx::Result<bool>) {
+pub(super) fn warn_missed_write(what: &str, session_id: &str, result: sqlx::Result<bool>) {
     match result {
         Ok(true) => {}
         Ok(false) => {
@@ -302,7 +297,7 @@ fn warn_missed_write(what: &str, session_id: &str, result: sqlx::Result<bool>) {
 
 /// A fenced state write the turn depends on. A write that matched no row means a suspend claim
 /// took the lease and fence, so the turn must stop before it touches the sandbox again.
-fn require_fence(result: sqlx::Result<bool>) -> Result<(), CodingTurnError> {
+pub(super) fn require_fence(result: sqlx::Result<bool>) -> Result<(), CodingTurnError> {
     if result? {
         Ok(())
     } else {
@@ -313,10 +308,10 @@ fn require_fence(result: sqlx::Result<bool>) -> Result<(), CodingTurnError> {
 /// Keeps the turn's lease alive while the turn is being set up (`acquire` can outlast a lease),
 /// the way `drive_turn` does once it runs, and raises a flag when the lease is lost so the next
 /// gate stops the turn even if the database cannot be asked. Stops when dropped.
-struct StartHeartbeat(tokio::task::JoinHandle<()>);
+pub(super) struct StartHeartbeat(tokio::task::JoinHandle<()>);
 
 impl StartHeartbeat {
-    fn spawn(state: &AppState, lease: &TurnLease) -> (Self, Arc<AtomicBool>) {
+    pub(super) fn spawn(state: &AppState, lease: &TurnLease) -> (Self, Arc<AtomicBool>) {
         let db = state.db.clone();
         let lease = lease.clone();
         let lease_secs = state.config.coding_agent_turn_lease_secs;
@@ -372,13 +367,22 @@ impl TurnCtx<'_, '_> {
         &self.req.session.session_id
     }
 
+    /// What setting this turn's sandbox up needs.
+    fn sandbox_start(&self) -> SandboxStart<'_> {
+        SandboxStart {
+            state: self.state,
+            target: self.req.target,
+            session: &self.req.session,
+            user_id: self.req.user_id,
+            flow_id: self.req.flow_id,
+            lease: self.lease,
+            lease_lost: &self.lease_lost,
+        }
+    }
+
     /// Stop here if the lease was lost while an earlier step ran.
     fn gate(&self) -> Result<(), CodingTurnError> {
-        if self.lease_lost.load(Ordering::SeqCst) {
-            Err(CodingTurnError::Superseded)
-        } else {
-            Ok(())
-        }
+        self.sandbox_start().gate()
     }
 
     /// A last lease check, immediately before the prompt goes out: the lease is renewed, or the
@@ -398,72 +402,103 @@ impl TurnCtx<'_, '_> {
 /// Everything between holding the lease and handing back the event stream.
 async fn start_turn(
     ctx: &TurnCtx<'_, '_>,
-    turn_token: String,
-    token_id: &RevokedTokenId,
 ) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, StartFailure> {
+    let start = ctx.sandbox_start();
+    mark_starting(&start).await?;
+    let Provisioned { handle, env, token } = provision_sandbox(&start).await?;
+    ctx.gate().map_err(StartFailure::running)?;
+    begin_prompt(ctx, token, &handle, env).await
+}
+
+/// What setting a session's sandbox up needs, under the session's lease: a turn's, or that of the
+/// start of a new session's sandbox (`sessions::start`).
+pub(super) struct SandboxStart<'a> {
+    pub(super) state: &'a AppState,
+    pub(super) target: &'a HarnessTarget,
+    pub(super) session: &'a SessionRow,
+    pub(super) user_id: Uuid,
+    /// The flow a newly minted sandbox token names (`identity::mint_sandbox_token`).
+    pub(super) flow_id: &'a str,
+    pub(super) lease: &'a TurnLease,
+    /// Raised by [`StartHeartbeat`] when the lease is lost.
+    pub(super) lease_lost: &'a AtomicBool,
+}
+
+impl SandboxStart<'_> {
+    /// Stop here if the lease was lost while an earlier step ran.
+    fn gate(&self) -> Result<(), CodingTurnError> {
+        if self.lease_lost.load(Ordering::SeqCst) {
+            Err(CodingTurnError::Superseded)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Mark the session `starting` and record which sandbox is about to be created, under the lease.
+pub(super) async fn mark_starting(start: &SandboxStart<'_>) -> Result<(), StartFailure> {
     // The first fenced write is the gate: a suspend claim that took the lease since it was
-    // acquired makes it miss, and the turn stops here, before it touches the sandbox.
-    let started = SessionStore::new(ctx.state.db.clone())
-        .set_runtime_state_fenced(ctx.lease, SessionRuntimeState::Starting)
+    // acquired makes it miss, and the start stops here, before it touches the sandbox.
+    let started = SessionStore::new(start.state.db.clone())
+        .set_runtime_state_fenced(start.lease, SessionRuntimeState::Starting)
         .await;
-    require_fence(started).map_err(|e| StartFailure::before_acquire(&ctx.req.session, e))?;
+    require_fence(started).map_err(|e| StartFailure::before_acquire(start.session, e))?;
     // Record which sandbox is about to be created, under the lease, before anything can create it:
     // `sandbox_ref` is only written after the provider answers, and the orphan pass must be able to
     // tell a first acquire's sandbox from an orphan.
-    let keyed = set_sandbox_key(&ctx.state.db, ctx.lease, &session_key(&ctx.req.session)).await;
-    require_fence(keyed).map_err(|e| StartFailure::before_acquire(&ctx.req.session, e))?;
+    let keyed = set_sandbox_key(&start.state.db, start.lease, &session_key(start.session)).await;
+    require_fence(keyed).map_err(|e| StartFailure::before_acquire(start.session, e))
+}
 
-    let (handle, env) = provision_sandbox(ctx).await?;
-    ctx.gate().map_err(StartFailure::running)?;
-    begin_prompt(ctx, turn_token, token_id, &handle, env).await
+/// A session's sandbox, ready for its turn.
+pub(super) struct Provisioned {
+    handle: SandboxHandle,
+    /// The env it runs with, the platform's additions included.
+    env: HashMap<String, String>,
+    /// The session's sandbox token, which the env carries too.
+    token: String,
 }
 
 /// Get the session a sandbox with its full env: harness, token, spec, acquire, record the ref.
 /// Nothing here revokes a credential when `acquire` fails.
-async fn provision_sandbox(
-    ctx: &TurnCtx<'_, '_>,
-) -> Result<(SandboxHandle, HashMap<String, String>), StartFailure> {
-    let (state, req) = (ctx.state, ctx.req);
-    let early = |e: CodingTurnError| StartFailure::before_acquire(&req.session, e);
-    let hitl = hitl_kind(&req.target.harness_id, req.target.hitl_enabled).map_err(early)?;
-    let harness = turn_harness(state, req.target, hitl).await.map_err(early)?;
+pub(super) async fn provision_sandbox(
+    start: &SandboxStart<'_>,
+) -> Result<Provisioned, StartFailure> {
+    let (state, target, session) = (start.state, start.target, start.session);
+    let early = |e: CodingTurnError| StartFailure::before_acquire(session, e);
+    let hitl = hitl_kind(&target.harness_id, target.hitl_enabled).map_err(early)?;
+    let harness = turn_harness(state, target, hitl).await.map_err(early)?;
     let token = ensure_sandbox_token(&TokenNeeds {
         state,
-        lease: ctx.lease,
-        session: &req.session,
-        agent_id: req.target.agent_id,
-        user_id: req.user_id,
-        flow_id: req.flow_id,
+        lease: start.lease,
+        session,
+        agent_id: target.agent_id,
+        user_id: start.user_id,
+        flow_id: start.flow_id,
     })
     .await
     .map_err(early)?;
-    ctx.gate().map_err(early)?;
-    let workspace = workspace_env(state, req).await;
+    start.gate().map_err(early)?;
+    let workspace = workspace_env(state, session, start.user_id).await;
     let gateway = nasiko_llm_router::GatewayConfig::from_env();
-    let profile = turn_profile(state, req, &gateway, hitl.is_some()).await;
+    let profile = turn_profile(state, target, &gateway, hitl.is_some()).await;
     let env = sandbox_env(
         state,
-        &session_key(&req.session),
+        &session_key(session),
         &token,
         &gateway.llm_gateway_base_url,
         profile,
         workspace,
     )
     .map_err(early)?;
-    let spec = spec_for_session(
-        &harness,
-        &req.session,
-        env,
-        req.target.owner_id,
-        &state.config,
-    );
+    let spec = spec_for_session(&harness, session, env, target.owner_id, &state.config);
     let handle = state
         .sandbox
         .acquire(&spec)
         .await
         .map_err(|e| early(e.into()))?;
     let recorded = SessionStore::new(state.db.clone())
-        .set_sandbox_ref_fenced(ctx.lease, &handle.sandbox_ref())
+        .set_sandbox_ref_fenced(start.lease, &handle.sandbox_ref())
         .await;
     require_fence(recorded).map_err(StartFailure::running)?;
     // The decorator adds the platform's OTEL env inside `acquire`; a shim configured over HTTP
@@ -473,14 +508,21 @@ async fn provision_sandbox(
         &state.config,
         &spec.key,
     ));
-    Ok((handle, env))
+    Ok(Provisioned { handle, env, token })
 }
 
 /// Attach to the sandbox, open the agent session, send the prompt and hand the turn to its driver.
+///
+/// The MCP gateway is attached with the session's sandbox token, not a token of this turn's: the
+/// shim keeps the harness, and the MCP client it opened, from one turn to the next, so a
+/// credential revoked when its turn ended would leave every later turn without tools. The
+/// sandbox token lives as long as the session's sandbox, which carries it already; replacing it
+/// stops the sandbox (`token::ensure_sandbox_token`), so the harness that next opens or loads
+/// the session connects with the new one. The gateway attributes each call to the turn it falls
+/// in, whichever token carried it.
 async fn begin_prompt(
     ctx: &TurnCtx<'_, '_>,
-    turn_token: String,
-    token_id: &RevokedTokenId,
+    sandbox_token: String,
     handle: &SandboxHandle,
     env: HashMap<String, String>,
 ) -> Result<mpsc::UnboundedReceiver<CodingTurnEvent>, StartFailure> {
@@ -514,8 +556,13 @@ async fn begin_prompt(
     require_fence(running).map_err(StartFailure::running)?;
 
     let cwd = session_cwd(workspace.as_deref());
-    let params = session_params(state, &Some(turn_token), cwd, conn.capabilities().mcp_http)
-        .map_err(StartFailure::running)?;
+    let params = session_params(
+        state,
+        &Some(sandbox_token),
+        cwd,
+        conn.capabilities().mcp_http,
+    )
+    .map_err(StartFailure::running)?;
     let acp_session = open_acp_session(&state.db, &conn, lease, params)
         .await
         .map_err(StartFailure::running)?;
@@ -547,7 +594,7 @@ async fn begin_prompt(
         lease_secs: state.config.coding_agent_turn_lease_secs,
         heartbeat_secs: state.config.coding_agent_lease_heartbeat_secs.max(1),
         telemetry,
-        session_token_id: Some(token_id.clone()),
+        session_token_id: None,
         cancel_session,
         turn_timeout: Duration::from_secs(state.config.agent_call_timeout_secs),
         turn_id: ctx.turn_id.to_owned(),
@@ -660,22 +707,22 @@ fn with_hitl_argv(mut harness: Harness, hitl: Option<CodingAgentKind>) -> Harnes
 /// kind. A harness whose kind is unknown gets no profile (its image's own defaults apply).
 async fn turn_profile(
     state: &AppState,
-    req: &HarnessTurnRequest<'_>,
+    target: &HarnessTarget,
     gateway: &nasiko_llm_router::GatewayConfig,
     hitl: bool,
 ) -> HarnessProfile {
-    let Ok(kind) = CodingAgentKind::from_harness_id(&req.target.harness_id) else {
-        tracing::info!(harness = %req.target.harness_id, "harness has no known kind; no profile rendered");
+    let Ok(kind) = CodingAgentKind::from_harness_id(&target.harness_id) else {
+        tracing::info!(harness = %target.harness_id, "harness has no known kind; no profile rendered");
         return HarnessProfile::default();
     };
-    let choice = model_choice_for_user(&state.db, req.user_id, gateway).await;
+    let choice = model_choice_for_agent(&state.db, target.agent_id, gateway).await;
     let platform = ModelChoice {
         provider: gateway.default_provider.clone(),
         model: gateway.default_model.clone(),
         source: super::profile::ModelSource::PlatformDefault,
     };
     tracing::debug!(
-        harness = %req.target.harness_id,
+        harness = %target.harness_id,
         provider = %choice.provider,
         model = %choice.model,
         source = ?choice.source,
@@ -696,10 +743,9 @@ async fn turn_profile(
 /// its package caches and build output go to (`sessions::scratch`), each unless the profile
 /// already sets it.
 ///
-/// Deliberately not the agent's deploy-time env (`agents::deploy_env::build`): a harness agent
-/// is one shared row owned by the admin who seeded it, so its secrets and rotating agent-scoped
-/// tokens must never reach another user's sandbox. The sandbox token is the sandbox's identity
-/// for the router and the MCP gateway.
+/// Deliberately not the agent's deploy-time env (`agents::deploy_env::build`): the sandbox token
+/// is the sandbox's identity for the router and the MCP gateway, and the agent's own rotating
+/// agent-scoped tokens have no place in it.
 fn sandbox_env(
     state: &AppState,
     key: &SandboxKey,
@@ -731,11 +777,11 @@ fn sandbox_env(
 /// Every other repository is cloned anonymously.
 async fn workspace_env(
     state: &AppState,
-    req: &HarnessTurnRequest<'_>,
+    session: &SessionRow,
+    user_id: Uuid,
 ) -> std::collections::HashMap<String, String> {
     let mut env = std::collections::HashMap::new();
-    let Some(repo) = req
-        .session
+    let Some(repo) = session
         .workspace_repo
         .as_deref()
         .filter(|r| !r.trim().is_empty())
@@ -744,7 +790,7 @@ async fn workspace_env(
     };
     env.insert("WORKSPACE_REPO".to_owned(), repo.to_owned());
     if is_github_https(repo)
-        && let Some(token) = crate::github::load_github_token(&state.db, req.user_id).await
+        && let Some(token) = crate::github::load_github_token(&state.db, user_id).await
     {
         env.insert("WORKSPACE_REPO_TOKEN".to_owned(), token);
     }

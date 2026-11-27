@@ -4,7 +4,9 @@
 //! truncates `hitl_requests` on entry, same `--test-threads=1` convention the repo's own
 //! `test-server-oss`/`test-one` recipes use).
 
-use nasiko_hitl::{HitlIdentity, HitlKind, HitlStatus, HitlStore, NewHitlRequest, PgHitlStore};
+use nasiko_hitl::{
+    FailureKind, HitlIdentity, HitlKind, HitlStatus, HitlStore, NewHitlRequest, PgHitlStore,
+};
 use serde_json::json;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -881,6 +883,174 @@ async fn mark_resume_agent_lost_task_ignores_a_superseded_claim() {
     let after = store.get(id).await.unwrap().unwrap();
     assert_eq!(after.resume_status, nasiko_hitl::ResumeStatus::NotStarted);
     assert_eq!(after.resume_last_error, None);
+}
+
+/// Lets a lease lapse, as the dispatcher's wait for it would.
+async fn lapse_the_lease(pool: &PgPool, id: Uuid) {
+    sqlx::query(
+        "UPDATE hitl_requests SET resume_claimed_at = now() - interval '1 hour' WHERE id = $1",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// A declined start is not a failed delivery: the attempt the claim took is given back, the
+/// message is stored, and the lease is kept, so the next try comes when it lapses and not on the
+/// very next poll.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn a_declined_resume_gives_the_attempt_back_keeps_the_lease_and_stays_retryable() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let id = claimed_row(&store, &pool).await;
+
+    let status = store
+        .mark_resume_failed(id, "the start was declined", FailureKind::Declined)
+        .await
+        .unwrap();
+
+    assert_eq!(status, nasiko_hitl::ResumeStatus::NotStarted);
+    let after = store.get(id).await.unwrap().unwrap();
+    assert_eq!(after.resume_dispatch_attempts, 0);
+    assert!(
+        after.resume_claimed_at.is_some(),
+        "the lease is kept so the row is not retried on every poll"
+    );
+    assert_eq!(
+        after.resume_last_error.as_deref(),
+        Some("the start was declined")
+    );
+    assert!(
+        store.claim_for_resume(120).await.unwrap().is_none(),
+        "a live lease holds the row back"
+    );
+
+    lapse_the_lease(&pool, id).await;
+    let again = store
+        .claim_for_resume(120)
+        .await
+        .unwrap()
+        .expect("the row is claimable once its lease lapsed");
+    assert_eq!(again.id, id);
+    assert_eq!(
+        again.resume_dispatch_attempts, 1,
+        "the retry is the first attempt, not the second"
+    );
+}
+
+/// The dispatcher gives up after five attempts, so a resume that is declined more often than
+/// that must still be there when the start stops being declined.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn a_resume_declined_again_and_again_never_runs_out_of_attempts() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let id = claimed_row(&store, &pool).await;
+
+    for round in 1..=8 {
+        let status = store
+            .mark_resume_failed(id, "the start was declined", FailureKind::Declined)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            nasiko_hitl::ResumeStatus::NotStarted,
+            "round {round}"
+        );
+        lapse_the_lease(&pool, id).await;
+        let claimed = store.claim_for_resume(120).await.unwrap();
+        assert_eq!(claimed.map(|row| row.id), Some(id), "round {round}");
+    }
+
+    let after = store.get(id).await.unwrap().unwrap();
+    assert_eq!(after.resume_status, nasiko_hitl::ResumeStatus::NotStarted);
+    assert_eq!(after.resume_dispatch_attempts, 1);
+}
+
+/// The contrast that gives the test above its meaning: with every attempt used, an ordinary
+/// retryable failure is terminal and a declined one is not.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn a_resume_that_used_every_attempt_fails_when_retryable_but_not_when_declined() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let retryable = claimed_row(&store, &pool).await;
+    let declined = claimed_row(&store, &pool).await;
+    for id in [retryable, declined] {
+        sqlx::query("UPDATE hitl_requests SET resume_dispatch_attempts = 5 WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    let retryable_status = store
+        .mark_resume_failed(
+            retryable,
+            "agent HTTP 502",
+            FailureKind::Retryable { max_attempts: 5 },
+        )
+        .await
+        .unwrap();
+    let declined_status = store
+        .mark_resume_failed(declined, "the start was declined", FailureKind::Declined)
+        .await
+        .unwrap();
+
+    assert_eq!(retryable_status, nasiko_hitl::ResumeStatus::Failed);
+    assert_eq!(declined_status, nasiko_hitl::ResumeStatus::NotStarted);
+    let after = store.get(declined).await.unwrap().unwrap();
+    assert_eq!(after.resume_dispatch_attempts, 4);
+}
+
+/// A declined resume waits for the start to be allowed again, but an approval is never delivered
+/// days after it was given: past 24 hours since the human answered, it is terminal with the
+/// message.
+#[tokio::test]
+#[ignore = "requires PostgreSQL (DATABASE_URL)"]
+async fn a_declined_resume_turns_failed_once_the_request_was_resolved_over_a_day_ago() {
+    let pool = pool().await;
+    let store = PgHitlStore::new(pool.clone());
+    let id = claimed_row(&store, &pool).await;
+    let resolved_hours_ago = |hours: i32| {
+        sqlx::query(
+            "UPDATE hitl_requests SET resolved_at = now() - make_interval(hours => $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(hours)
+        .execute(&pool)
+    };
+
+    resolved_hours_ago(23).await.unwrap();
+    let within_the_day = store
+        .mark_resume_failed(id, "the start was declined", FailureKind::Declined)
+        .await
+        .unwrap();
+    assert_eq!(
+        within_the_day,
+        nasiko_hitl::ResumeStatus::NotStarted,
+        "still waiting at 23 hours"
+    );
+
+    resolved_hours_ago(25).await.unwrap();
+    let past_the_day = store
+        .mark_resume_failed(id, "the start was still declined", FailureKind::Declined)
+        .await
+        .unwrap();
+
+    assert_eq!(past_the_day, nasiko_hitl::ResumeStatus::Failed);
+    let after = store.get(id).await.unwrap().unwrap();
+    assert_eq!(after.resume_status, nasiko_hitl::ResumeStatus::Failed);
+    assert_eq!(
+        after.resume_last_error.as_deref(),
+        Some("the start was still declined")
+    );
+    assert!(
+        store.claim_for_resume(0).await.unwrap().is_none(),
+        "a failed resume is never claimed again"
+    );
 }
 
 #[tokio::test]

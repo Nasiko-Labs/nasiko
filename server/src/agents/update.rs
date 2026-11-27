@@ -121,13 +121,14 @@ pub(crate) async fn update_agent(
         name: String,
         version: String,
         image: Option<String>,
+        status: String,
         owner_id: Uuid,
         writable: bool,
         writable_path: Option<String>,
     }
 
     let agent: Option<UpdateAgentRow> = match sqlx::query_as(
-        "SELECT name, version, image, owner_id, writable, writable_path FROM agents WHERE id = $1",
+        "SELECT name, version, image, status, owner_id, writable, writable_path FROM agents WHERE id = $1",
     )
     .bind(agent_id)
     .fetch_optional(&state.db)
@@ -144,6 +145,7 @@ pub(crate) async fn update_agent(
         name: agent_name,
         version: current_version,
         image: prev_image,
+        status: prev_status,
         owner_id: agent_owner_id,
         writable,
         writable_path,
@@ -385,6 +387,7 @@ pub(crate) async fn update_agent(
         new_version: new_version.clone(),
         prev_version: current_version.clone(),
         prev_image,
+        prev_status: Some(prev_status),
         changelog,
         writable,
         writable_path,
@@ -400,7 +403,7 @@ pub(crate) async fn update_agent(
         tracing::error!(%e, %agent_id, "update: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
-    let _ = state.build_tx.send(()).await;
+    state.wake_build_worker().await;
 
     (
         StatusCode::ACCEPTED,
@@ -514,6 +517,7 @@ pub async fn execute_agent_update(
     new_version: String,
     prev_version: String,
     prev_image: Option<String>,
+    prev_status: Option<String>,
     changelog: Option<String>,
     writable: bool,
     writable_path: Option<String>,
@@ -530,6 +534,8 @@ pub async fn execute_agent_update(
 
     // The image build's captured output, filled once the build runs so the Builds tab can show it.
     let mut build_logs = String::new();
+    // Set when the runtime declines the deploy, so the user is told why instead of a generic reason.
+    let mut declined = None;
 
     let result: Result<(DeploymentStatus, Vec<i32>), String> = async {
         // Resolve the source directory — either from a zip or a GitHub re-deploy.
@@ -642,10 +648,10 @@ pub async fn execute_agent_update(
         // Capture the ports build_agent_spec actually resolved (defaults empty -> 8000)
         // so they can be persisted below (RUN-3b) — restart reads this back.
         let spec_ports: Vec<i32> = spec.ports.iter().map(|&p| p as i32).collect();
-        let deploy_status = scaling
-            .deploy(&spec)
-            .await
-            .map_err(|e| format!("deploy: {e}"))?;
+        let deploy_status = scaling.deploy(&spec).await.map_err(|e| {
+            declined = super::utils::declined_message(&e);
+            format!("deploy: {e}")
+        })?;
 
         set_upload_status(
             db,
@@ -741,13 +747,25 @@ pub async fn execute_agent_update(
             // Roll back both version and image so the row stays consistent with
             // what is actually running. prev_image is None only for the very first
             // deploy, in which case NULL is the correct fallback anyway.
+            // A deploy the runtime declined is no failure of the agent, which keeps the status it
+            // had (a stopped or parked agent stays so); a job queued before the status was carried
+            // has none to restore and ends `failed`, as does one that read another update's
+            // `deploying` placeholder.
+            let status = match (&declined, &prev_status) {
+                (Some(_), Some(prev)) if prev != "deploying" => prev.as_str(),
+                _ => "failed",
+            };
+            // The status moves only while the row still says `deploying`: one someone set during
+            // the build (a stop) is not overwritten.
             let _ = sqlx::query(
-                "UPDATE agents SET status = 'failed', version = $2, image = $3, updated_at = now() \
-                 WHERE id = $1",
+                "UPDATE agents SET \
+                 status = CASE WHEN status = 'deploying' THEN $4 ELSE status END, \
+                 version = $2, image = $3, updated_at = now() WHERE id = $1",
             )
             .bind(agent_id)
             .bind(&prev_version)
             .bind(&prev_image)
+            .bind(status)
             .execute(db)
             .await;
 
@@ -755,7 +773,8 @@ pub async fn execute_agent_update(
             // Persist what explains the failure on the build row: the build output when the image
             // built, otherwise the error text, which carries the builder's own log for a build
             // failure. The `upload_status.error_message` column stays a generic reason because
-            // clients read it via GET /agents/uploads; the detail lives in the build logs.
+            // clients read it via GET /agents/uploads; the detail lives in the build logs. A deploy
+            // the runtime declined is the exception: its message is the reason, worded for the user.
             store_build_logs(
                 db,
                 state.oci_storage.as_ref(),
@@ -774,7 +793,7 @@ pub async fn execute_agent_update(
                 owner_id,
                 "failed",
                 None,
-                Some("agent update failed"),
+                Some(declined.as_deref().unwrap_or("agent update failed")),
             )
             .await;
             tracing::error!(build_id = %build_id, %agent_id, %e, "agent update failed");
@@ -964,7 +983,7 @@ pub(crate) async fn rollback_agent(
         tracing::error!(%e, %agent_id, "rollback: queue build_jobs db error");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
-    let _ = state.build_tx.send(()).await;
+    state.wake_build_worker().await;
 
     (
         StatusCode::ACCEPTED,

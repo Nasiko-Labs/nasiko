@@ -46,6 +46,9 @@ struct WorkloadRuntime {
     replicas: Mutex<HashMap<ContainerId, u32>>,
     /// Every scale to zero fails, as a runtime that cannot be reached does.
     fail_scale_down: AtomicBool,
+    /// The `(code, message)` every scale up is refused with, as a layer that declines to start
+    /// workloads answers.
+    decline_scale_up: Mutex<Option<(String, String)>>,
 }
 
 impl WorkloadRuntime {
@@ -99,6 +102,11 @@ impl ContainerRuntime for WorkloadRuntime {
     async fn scale(&self, id: &ContainerId, replicas: u32) -> RuntimeResult<()> {
         if replicas == 0 && self.fail_scale_down.load(Ordering::SeqCst) {
             return Err(RuntimeError::BackendUnreachable("runtime down".into()));
+        }
+        if replicas > 0
+            && let Some((code, message)) = self.decline_scale_up.lock().unwrap().clone()
+        {
+            return Err(RuntimeError::Declined { code, message });
         }
         match self.replicas.lock().unwrap().get_mut(id) {
             Some(current) => {
@@ -888,9 +896,39 @@ async fn a_request_that_lost_the_park_race_gets_a_503_to_retry_when_the_wake_fai
     let refused = resolve_loaded(&server.state, &read_as_running, &Caller::default()).await;
 
     let err = refused.expect_err("nothing woke it");
-    assert!(matches!(err, ResolveError::ParkedMidRequest), "{err:?}");
+    assert!(matches!(err, ResolveError::ParkedMidRequest(_)), "{err:?}");
     assert_eq!(err.http_status().as_u16(), 503);
     assert!(err.client_message().contains("try again"));
+    assert_eq!(status(&server, agent).await, "parked");
+    server.cleanup().await;
+}
+
+/// The same race when the wake is refused on its merits (a layer declined to start the agent): the
+/// 503 carries the refusal's own words, still with a `Retry-After`, and the row stays parked.
+#[tokio::test]
+#[serial]
+async fn a_request_that_lost_the_park_race_is_told_why_when_the_wake_is_declined() {
+    const MESSAGE: &str =
+        "This workspace cannot start more agents. Ask an admin to change the plan.";
+    let runtime = WorkloadRuntime::answering_at(start_answering_agent().await);
+    *runtime.decline_scale_up.lock().unwrap() =
+        Some(("plan_refused".to_owned(), MESSAGE.to_owned()));
+    let server = server_over(&runtime).await;
+    install_platform_wake(&server, &runtime);
+    let agent = seed_agent(&server, &runtime, Seed::idle()).await;
+    let read_as_running = load_agent(&server.state, agent).await.unwrap();
+    park_row_only(&server, agent).await;
+
+    let refused = resolve_loaded(&server.state, &read_as_running, &Caller::default()).await;
+
+    let err = refused.expect_err("the wake was declined");
+    assert!(
+        matches!(&err, ResolveError::ParkedMidRequest(m) if m == MESSAGE),
+        "{err:?}"
+    );
+    assert_eq!(err.http_status().as_u16(), 503);
+    assert_eq!(err.client_message(), MESSAGE);
+    assert!(err.retry_after_secs().is_some());
     assert_eq!(status(&server, agent).await, "parked");
     server.cleanup().await;
 }

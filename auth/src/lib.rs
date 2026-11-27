@@ -158,6 +158,23 @@ pub trait AuthService: Send + Sync + 'static {
     async fn revoke_tokens_for_agent(&self, agent_id: &str) -> Result<u64, AuthError>;
     async fn can_access_agent(&self, identity: &Identity, agent_id: &str) -> bool;
 
+    /// The agents in `agent_ids` that `identity` may access, by the rule [`Self::can_access_agent`]
+    /// applies to one. A database-backed impl answers in one read, so a view scoped to everything
+    /// the caller can see costs one query, not one per agent in the deployment.
+    async fn accessible_agents(
+        &self,
+        identity: &Identity,
+        agent_ids: &[uuid::Uuid],
+    ) -> Vec<uuid::Uuid> {
+        let mut accessible = Vec::new();
+        for id in agent_ids {
+            if self.can_access_agent(identity, &id.to_string()).await {
+                accessible.push(*id);
+            }
+        }
+        accessible
+    }
+
     // ─── Permission checks (OSS: allow-all; EE: DB-backed RBAC) ──────────────────
 
     /// May the identity deploy/build agents and manage containers? (EE: ≥ team_member)
@@ -224,6 +241,29 @@ pub trait AuthService: Send + Sync + 'static {
     }
 }
 
+/// Why `AuthService::authenticate` refused a password login. Recorded, never
+/// shown: every variant is answered with the same 401.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginRefusal {
+    UnknownName,
+    WrongPassword,
+    Deactivated,
+    /// The account is locked, or this wrong password is the one that locked it.
+    Locked,
+}
+
+impl LoginRefusal {
+    /// The reason as the log line and any recorder write it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::UnknownName => "unknown_name",
+            Self::WrongPassword => "wrong_password",
+            Self::Deactivated => "deactivated",
+            Self::Locked => "locked",
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     #[error("missing token")]
@@ -235,20 +275,21 @@ pub enum AuthError {
     Expired,
     #[error("token revoked")]
     Revoked,
-    /// Bad username/access-key or wrong secret. Maps to 401.
-    /// `remaining_attempts` is `Some` when login lockout is approaching.
+    /// A refused password login: an unknown name, a wrong password, a deactivated
+    /// account or a locked one. Maps to one 401 with one body, so the answer never
+    /// says which. `reason` and `user_id` (`None` for an unknown name) are for the
+    /// server's own recorders and must never reach a response.
     #[error("invalid credentials")]
-    InvalidCredentials { remaining_attempts: Option<i32> },
+    InvalidCredentials {
+        reason: LoginRefusal,
+        user_id: Option<String>,
+    },
     /// Account is deactivated. Maps to 401/403.
     #[error("account disabled")]
     Disabled,
     /// Sign-in is members-only and this account has not been invited. Maps to 403.
     #[error("this account has not been invited")]
     NotInvited,
-    /// Too many failed login attempts — account temporarily locked.
-    /// `retry_after_secs` is the number of seconds until the lockout expires.
-    #[error("account locked")]
-    AccountLocked { retry_after_secs: u64 },
     /// Requested user/agent/record does not exist. Maps to 404.
     #[error("not found")]
     NotFound,

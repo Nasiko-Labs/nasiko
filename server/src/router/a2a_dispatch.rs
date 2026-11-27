@@ -35,7 +35,7 @@ use crate::agent_wake::AgentWake;
 use crate::auth::Claims;
 use crate::chat::turn_artifacts::Attachable;
 use crate::orchestrator_policy::TurnKind;
-use crate::sessions::admission::refuse_session;
+use crate::sessions::admission::refuse_turn;
 use crate::state::AppState;
 use crate::telemetry::agent_request::RequestOutcome;
 
@@ -244,7 +244,7 @@ pub async fn a2a_dispatch_handler(
         // authorize on the resolved id unconditionally. Gating the authz check
         // behind "does target happen to parse as a UUID" let any name-addressed
         // request (the common case from the UI/CLI) skip the check entirely.
-        let agent = resolve_agent(&state, target).await?;
+        let agent = resolve_agent(&state, target, user_id).await?;
         // Edition-aware view access (superuser short-circuit lives inside the check).
         //
         // Deliberately returns the SAME AgentNotFound response as "no such agent"
@@ -257,11 +257,12 @@ pub async fn a2a_dispatch_handler(
         Some(agent)
     };
     // The caller picks `contextId` and `metadata.session_id`, and both are used to read history
-    // and to append messages. A session that already belongs to someone else is answered exactly
-    // like a missing agent would be, so ids cannot be probed; superusers keep their access.
+    // and to append messages. A session that already belongs to someone else is a `404
+    // session_not_found`, as the proxy and the harness path answer it, never a `403` that would
+    // confirm it exists; superusers keep their access.
     for sid in std::iter::once(context_id.as_str()).chain(session_id.as_deref()) {
         if session_owned_by_other(&state, sid, user_id, claims.is_superuser).await? {
-            return Err(A2aDispatchError::Forbidden("session not found".into()));
+            return Err(A2aDispatchError::SessionNotFound);
         }
     }
     // Whoever reads this history decides whether it is compressed: the addressed agent on a direct
@@ -455,7 +456,9 @@ async fn reconnect_stream(
     // dedicated `mcp_tool` resume dispatcher (`oss/hitl::dispatcher`) never touches
     // `continuation_events` at all. A standalone, never-mirrored `mcp_tool` row's id would
     // otherwise `watch()` the same kind of buffer nothing will ever terminate.
-    if row.origin == nasiko_hitl::HitlOrigin::McpTool && !state.continuation_events.exists(row.id) {
+    if row.origin == nasiko_hitl::HitlOrigin::McpTool
+        && !state.continuation_events.exists(row.id).await
+    {
         return Err(A2aDispatchError::InvalidRequest(
             "this HITL request has no agent-visible continuation to reconnect to — poll GET /api/hitl/pending instead"
                 .into(),
@@ -1454,7 +1457,16 @@ fn foreign_flow_rejection(flow_id: &str, user_id: Uuid) -> A2aDispatchError {
     A2aDispatchError::Forbidden("traceparent does not belong to this user".into())
 }
 
-async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDispatchError> {
+/// The agent `target` names for `caller`: its UUID, or a name. Names are unique per owner, not
+/// platform-wide, so a name resolves to the caller's own agent of that name when there is one,
+/// else to the oldest other; and every user's harness agent for a harness has the same name
+/// (`harness-<harness id>`), so by name only the caller's own is ever found. Another user's
+/// harness agent is reached by its UUID only, and only by whoever the access check lets through.
+async fn resolve_agent(
+    state: &AppState,
+    target: &str,
+    caller: Uuid,
+) -> Result<AgentRow, A2aDispatchError> {
     // Excludes `is_internal` agents unconditionally, including for the owning
     // superuser — this is the platform's only generic A2A entry point, and an
     // internal agent (e.g. Weave's dashboard-generator) must be reachable
@@ -1470,10 +1482,14 @@ async fn resolve_agent(state: &AppState, target: &str) -> Result<AgentRow, A2aDi
                 owner_id, workload_kind, image, url, transport_path, writable, deleted_at, \
                 is_internal, false AS keeps_session_memory \
          FROM agents \
-         WHERE (id::text = $1 OR name = $1) AND status IN ('running', 'parked') AND NOT is_internal \
-           AND deleted_at IS NULL",
+         WHERE (id::text = $1 OR (name = $1 AND (workload_kind <> $3 OR owner_id = $2))) \
+           AND status IN ('running', 'parked') AND NOT is_internal AND deleted_at IS NULL \
+         ORDER BY id::text = $1 DESC, owner_id = $2 DESC, created_at, id \
+         LIMIT 1",
     )
     .bind(target)
+    .bind(caller)
+    .bind(nasiko_auth::sharing::HARNESS_WORKLOAD_KIND)
     .fetch_optional(&state.db)
     .await
     .map_err(|e| A2aDispatchError::Internal(e.to_string()))?
@@ -3036,7 +3052,11 @@ async fn harness_task_reply(
     if target == "orchestrator" {
         return Ok(None);
     }
-    let agent = resolve_agent(state, target).await?;
+    let caller = match claims.user_uuid() {
+        Ok(id) => id,
+        Err(e) => return Ok(Some(e.into_response())),
+    };
+    let agent = resolve_agent(state, target, caller).await?;
     // The same answer as an unknown agent when the caller may not see this one.
     if !crate::acl::can_access_agent(state, claims, agent.id).await {
         return Err(A2aDispatchError::AgentNotFound(target.to_string()));
@@ -3130,7 +3150,7 @@ async fn harness_agent_stream(
     request_id: &a2a::JsonRpcId,
 ) -> Result<Response, A2aDispatchError> {
     // Before the session, the transcript and the flow are written: a refused turn leaves none.
-    if let Some(refusal) = refuse_session(state, turn.user_id, &target.harness_id).await {
+    if let Some(refusal) = refuse_turn(state) {
         return Err(A2aDispatchError::SessionRefused {
             refusal,
             id: serde_json::to_value(request_id).unwrap_or(serde_json::Value::Null),

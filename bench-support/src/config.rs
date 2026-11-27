@@ -53,6 +53,8 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
 
     Config {
         bind: "127.0.0.1:0".into(),
+        shutdown_drain_delay_secs: 0,
+        shutdown_grace_secs: 0,
         domain: None,
         delegation_audience: "nasiko-cp-test".to_string(),
         delegation_enabled: true,
@@ -98,6 +100,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
         database_max_connections: 10,
+        dashboard_max_concurrent: 10,
         build_concurrency: 1,
         build_push_rate_limit_per_minute: 600,
         // Same reasoning: no MAF runs compete with the benchmarked request path.

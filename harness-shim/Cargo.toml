@@ -29,11 +29,6 @@ tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
-# The supervisor's per-session confinement is Linux kernel machinery; other targets build without it.
-[target.'cfg(target_os = "linux")'.dependencies]
-landlock = { workspace = true }
-seccompiler = { workspace = true }
-
 [dev-dependencies]
 futures = { workspace = true }
 tempfile = { workspace = true }

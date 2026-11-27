@@ -145,6 +145,9 @@ pub async fn seed_agents_if_configured(state: &AppState) {
         };
 
         if !needs_deploy {
+            if let Some(agent) = &existing {
+                repair_stale_status(&state.db, agent, &agent_name).await;
+            }
             info!(agent = %agent_name, "seed agent already running, skipping");
             continue;
         }
@@ -429,7 +432,15 @@ pub struct InternalAgentSeed {
 ///
 /// Designed to run as a background task — does not block server startup, and
 /// returns quietly when the agent is already running on the same image.
+///
+/// One replica seeds at a time; one that starts while another is seeding skips it.
 pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
+    const LOCK: nasiko_leader::LockKey =
+        nasiko_leader::LockKey::named("server.seed_internal_agent");
+    nasiko_leader::single_flight(&state.db, LOCK, || seed_internal_agent_now(state, seed)).await;
+}
+
+async fn seed_internal_agent_now(state: &AppState, seed: InternalAgentSeed) {
     let InternalAgentSeed {
         name: agent_name,
         image,
@@ -501,6 +512,9 @@ pub async fn seed_internal_agent(state: &AppState, seed: InternalAgentSeed) {
         }
     };
     if !needs_deploy {
+        if let Some(agent) = &existing {
+            repair_stale_status(&state.db, agent, &agent_name).await;
+        }
         info!(agent = %agent_name, "internal agent already running, skipping");
         return;
     }
@@ -643,6 +657,44 @@ async fn deploy_internal_agent(
     Ok(())
 }
 
+/// Statuses a seed leaves behind when its deploy failed or was cut short. The resolver routes only
+/// `running` and `parked` agents, so a row left at one of these refuses every call (503) however
+/// healthy its workload is.
+const STALE_SEED_STATUSES: [&str; 2] = ["failed", "deploying"];
+
+fn is_stale_seed_status(status: &str) -> bool {
+    STALE_SEED_STATUSES.contains(&status)
+}
+
+/// Marks a platform agent whose workload the runtime reports running `running` again when an
+/// earlier seed left its row `failed` or `deploying`. A deploy judged failed mid-rollout (the old
+/// pod still showing a pull error) leaves the row `failed` after the rollout completes; the seed
+/// then skips the unchanged, running agent on every boot, so nothing else would repair it. Guarded
+/// on the status, so a row that moved on meanwhile is not overwritten.
+async fn repair_stale_status(db: &sqlx::PgPool, agent: &Agent, agent_name: &str) {
+    if !is_stale_seed_status(&agent.status) {
+        return;
+    }
+    match sqlx::query(
+        "UPDATE agents SET status = 'running', updated_at = now() \
+         WHERE id = $1 AND status = ANY($2)",
+    )
+    .bind(agent.id)
+    .bind(&STALE_SEED_STATUSES[..])
+    .execute(db)
+    .await
+    {
+        Ok(done) if done.rows_affected() > 0 => {
+            warn!(agent = %agent_name, stale = %agent.status,
+                "seed agent's workload is running but its row was not; marked running")
+        }
+        Ok(_) => {}
+        Err(e) => {
+            warn!(agent = %agent_name, error = %e, "repairing a stale seed agent status failed")
+        }
+    }
+}
+
 /// Keeps a platform agent (a seed or an internal agent) `resident`: it always runs. Written on
 /// every seed, so a row created while new agents defaulted to `auto` is resident too. A failed
 /// write is logged and the seed goes on; the agent's next seed tries again.
@@ -734,17 +786,20 @@ async fn stored_writable(
 
 const INTERNAL_AGENT_WATCH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The internal-agent watch runs on one replica, so two never redeploy the same dead agent.
+const INTERNAL_AGENT_WATCH_LOCK: nasiko_leader::LockKey =
+    nasiko_leader::LockKey::named("server.internal_agent_watch");
+
 pub fn spawn_internal_agent_watch(state: AppState) {
     tokio::spawn(async move {
-        let mut tick = tokio::time::interval_at(
-            tokio::time::Instant::now() + INTERNAL_AGENT_WATCH_INTERVAL,
+        tokio::time::sleep(INTERNAL_AGENT_WATCH_INTERVAL).await;
+        nasiko_leader::every(
+            state.db.clone(),
+            INTERNAL_AGENT_WATCH_LOCK,
             INTERNAL_AGENT_WATCH_INTERVAL,
-        );
-        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            tick.tick().await;
-            redeploy_dead_internal_agents(&state).await;
-        }
+            || redeploy_dead_internal_agents(&state),
+        )
+        .await;
     });
 }
 
@@ -1190,6 +1245,23 @@ mod unmatched_settings_tests {
 }
 
 #[cfg(test)]
+mod stale_status_tests {
+    use super::is_stale_seed_status;
+
+    #[test]
+    fn only_a_failed_or_unfinished_deploy_is_repaired_once_the_workload_runs() {
+        for status in ["failed", "deploying"] {
+            assert!(is_stale_seed_status(status), "{status}");
+        }
+        // `parked` is never woken by a seed; `stopped` and `crashed` belong to the operator
+        // and the crash guardian; `running` needs nothing.
+        for status in ["running", "parked", "stopped", "crashed", "registered"] {
+            assert!(!is_stale_seed_status(status), "{status}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod extract_name_tests {
     use super::extract_name;
 
@@ -1242,216 +1314,5 @@ mod extract_name_tests {
             extract_name("myregistry.example.com:5000/team/project/agent:v3"),
             "agent"
         );
-    }
-}
-
-/// Why harness agents must not be seeded, if they must not: sessions could not run anyway.
-///
-/// A harness sandbox's credentials are signed with `AGENT_JWT_SECRET`, so without it every turn
-/// fails; and a server whose sandbox provider is not available (a backend that is not built in or
-/// not reachable) cannot start one. Seeding the agents would only advertise harnesses that cannot
-/// work. The reason is `(level_is_error, message)`.
-fn harness_seeding_blocked(
-    jwt_secret_set: bool,
-    provider_available: bool,
-    provider_kind: &str,
-) -> Option<(bool, String)> {
-    if !jwt_secret_set {
-        return Some((
-            true,
-            "harness sessions disabled: AGENT_JWT_SECRET unset".into(),
-        ));
-    }
-    if !provider_available {
-        return Some((
-            false,
-            format!("harness sessions disabled: sandbox provider {provider_kind} unavailable"),
-        ));
-    }
-    None
-}
-
-/// Boot-time harness seeding: [`seed_harness_agents`], unless coding sessions are switched off
-/// (`HARNESS_SESSIONS_ENABLED`, then [`hide_harness_agents`]) or [`harness_seeding_blocked`].
-/// When blocked, logs the reason once (error for a missing secret, warn for an unavailable
-/// provider) with the harness agents already seeded, which stay listed but cannot run.
-pub async fn seed_harness_agents_if_enabled(state: &AppState) {
-    if !state.config.harness_sessions_enabled {
-        hide_harness_agents(&state.db).await;
-        return;
-    }
-    let session_key = nasiko_runtime::SandboxKey::Session {
-        session_id: uuid::Uuid::nil(),
-    };
-    let blocked = harness_seeding_blocked(
-        !state.config.agent_jwt_secret.is_empty(),
-        state.sandbox.is_available_for(&session_key),
-        &state.sandbox.kind().to_string(),
-    );
-    if let Some((is_error, reason)) = blocked {
-        let advertised: Vec<String> = sqlx::query_scalar(&format!(
-            "SELECT name FROM agents WHERE {} AND deleted_at IS NULL",
-            crate::sessions::PLATFORM_HARNESS_AGENT
-        ))
-        .fetch_all(&state.db)
-        .await
-        .unwrap_or_default();
-        if is_error {
-            tracing::error!(
-                ?advertised,
-                "{reason} (agents already seeded stay listed but cannot run)"
-            );
-        } else {
-            tracing::warn!(
-                ?advertised,
-                "{reason} (agents already seeded stay listed but cannot run)"
-            );
-        }
-        return;
-    }
-    seed_harness_agents(state).await;
-}
-
-/// With coding sessions switched off, soft-delete the platform harness agents an earlier boot
-/// created, so no agent list, chat picker or registry offers them and no turn reaches them.
-/// [`seed_harness_agents`] restores them when the switch is turned back on. A user's own
-/// harness agent is left alone: none is created while sessions are refused.
-pub async fn hide_harness_agents(db: &sqlx::PgPool) {
-    let hidden = sqlx::query(&format!(
-        "UPDATE agents SET deleted_at = now() WHERE {} AND deleted_at IS NULL",
-        crate::sessions::PLATFORM_HARNESS_AGENT
-    ))
-    .execute(db)
-    .await;
-    match hidden {
-        Ok(done) => info!(
-            hidden = done.rows_affected(),
-            "coding sessions are off (HARNESS_SESSIONS_ENABLED); no harness agents are offered"
-        ),
-        Err(e) => {
-            warn!(error = %e, "coding sessions are off, but the harness agents could not be hidden")
-        }
-    }
-}
-
-/// Bring back the platform harness agents [`hide_harness_agents`] hid, keeping their ids so the
-/// sessions opened on them still resolve: per harness, the most recently hidden row of `owner_id`,
-/// unless that owner already has a live one.
-async fn restore_hidden_harness_agents(
-    db: &sqlx::PgPool,
-    owner_id: Uuid,
-    harness_ids: &[String],
-) -> sqlx::Result<u64> {
-    sqlx::query(&format!(
-        "UPDATE agents SET deleted_at = NULL \
-          WHERE id IN (SELECT DISTINCT ON (name) id FROM agents \
-                        WHERE {platform} AND owner_id = $1 AND name = ANY($2) \
-                          AND deleted_at IS NOT NULL \
-                        ORDER BY name, deleted_at DESC) \
-            AND NOT EXISTS (SELECT 1 FROM agents live \
-                             WHERE live.owner_id = $1 AND live.name = agents.name \
-                               AND live.deleted_at IS NULL)",
-        platform = crate::sessions::PLATFORM_HARNESS_AGENT
-    ))
-    .bind(owner_id)
-    .bind(harness_ids)
-    .execute(db)
-    .await
-    .map(|done| done.rows_affected())
-}
-
-/// Ensure every enabled harness has the `agents` row sessions attach to, restoring a row
-/// [`hide_harness_agents`] hid before creating one.
-///
-/// A harness agent is a routable identity, not a deployment: `status = 'running'` with no
-/// container, because each session brings up its own sandbox. Idempotent. The upsert only
-/// ever updates a row that is already a harness, so an unrelated agent that happens to share
-/// the name is left alone and reported instead of being repurposed. It re-asserts `is_public`
-/// every time: a platform row is the catalog entry everyone starts sessions from, and the only
-/// public kind of harness agent (`nasiko_auth::sharing`).
-pub async fn seed_harness_agents(state: &AppState) {
-    let owner_id: Uuid = match sqlx::query_scalar(
-        "SELECT id FROM users WHERE is_superuser = true AND deleted_at IS NULL ORDER BY created_at LIMIT 1",
-    )
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(id)) => id,
-        _ => {
-            warn!("no admin user found, cannot seed harness agents (run bootstrap first)");
-            return;
-        }
-    };
-    let harnesses = match crate::sessions::HarnessCatalog::new(state.db.clone())
-        .list_enabled()
-        .await
-    {
-        Ok(h) => h,
-        Err(e) => {
-            warn!(error = %e, "harness catalog unreadable, skipping harness agent seeding");
-            return;
-        }
-    };
-    let ids: Vec<String> = harnesses.iter().map(|h| h.id.clone()).collect();
-    match restore_hidden_harness_agents(&state.db, owner_id, &ids).await {
-        Ok(0) => {}
-        Ok(n) => info!(
-            restored = n,
-            "restored the harness agents hidden while coding sessions were off"
-        ),
-        Err(e) => warn!(error = %e, "could not restore hidden harness agents; creating new ones"),
-    }
-    for harness in harnesses {
-        match upsert_harness_agent(&state.db, owner_id, &harness).await {
-            Ok(1) => info!(harness = %harness.id, "harness agent ready"),
-            Ok(_) => warn!(
-                harness = %harness.id,
-                "an agent named '{}' already exists and is not a harness; not seeding it", harness.id
-            ),
-            Err(e) => warn!(harness = %harness.id, error = %e, "failed to seed harness agent"),
-        }
-    }
-}
-
-async fn upsert_harness_agent(
-    db: &sqlx::PgPool,
-    owner_id: Uuid,
-    harness: &crate::sessions::Harness,
-) -> sqlx::Result<u64> {
-    sqlx::query(
-        r#"INSERT INTO agents (name, display_name, owner_id, image, status, is_public, is_internal,
-                               workload_kind, harness_id)
-           VALUES ($1, $2, $3, $4, 'running', true, false, 'harness', $1)
-           ON CONFLICT (owner_id, name) WHERE deleted_at IS NULL DO UPDATE
-               SET display_name = EXCLUDED.display_name, image = EXCLUDED.image,
-                   is_public = true, updated_at = now()
-               WHERE agents.workload_kind = 'harness'"#,
-    )
-    .bind(&harness.id)
-    .bind(&harness.name)
-    .bind(owner_id)
-    .bind(&harness.image)
-    .execute(db)
-    .await
-    .map(|done| done.rows_affected())
-}
-
-#[cfg(test)]
-mod harness_seeding_tests {
-    use super::harness_seeding_blocked;
-
-    #[test]
-    fn seeding_needs_a_secret_and_a_live_provider() {
-        assert_eq!(harness_seeding_blocked(true, true, "docker"), None);
-        let (error, msg) = harness_seeding_blocked(false, true, "docker").unwrap();
-        assert!(error && msg.contains("AGENT_JWT_SECRET unset"), "{msg}");
-        let (error, msg) = harness_seeding_blocked(true, false, "pod").unwrap();
-        assert!(!error, "an unavailable provider is a warning");
-        assert_eq!(
-            msg,
-            "harness sessions disabled: sandbox provider pod unavailable"
-        );
-        // The secret is reported first when both are missing.
-        assert!(harness_seeding_blocked(false, false, "pod").unwrap().0);
     }
 }

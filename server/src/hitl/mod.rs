@@ -242,7 +242,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
     // fired, cannot yet distinguish "still in flight" from "never dispatched at all" purely from
     // the buffer's own existence — `reconnect_stream` rejects a still-`pending` row before ever
     // calling `watch()`, so that ambiguity never actually reaches a client.
-    let continuation = ContinuationGuard::new(state.continuation_events.clone(), row.id);
+    let continuation = ContinuationGuard::open(&state.continuation_events, row.id).await;
 
     // If this row mirrors a real `mcp_tool` pause (`question.metadata.hitl_request_id` — set
     // when an agent maps an MCP-gateway-detected auth_required/tool_approval onto its own A2A
@@ -273,7 +273,7 @@ async fn deliver(state: AppState, row: HitlRequest) {
             linked,
             Ok(Some(ref mirror)) if nasiko_hitl::is_valid_mcp_mirror_link(mirror, row.owner_user_id, row.agent_id)
         ) {
-            state.continuation_events.alias(mcp_row_id, row.id);
+            state.continuation_events.alias(mcp_row_id, row.id).await;
         }
     }
 
@@ -408,16 +408,26 @@ async fn deliver(state: AppState, row: HitlRequest) {
 
     // Woken, then resolved by kind, so resuming a pause on a parked agent wakes it first. After
     // the flow guard, so a resume it rejects never wakes anything.
-    if let Err(msg) = state
+    if let Err(refusal) = state
         .agent_wake
-        .before_forward(row.agent_id, Some(&flow_ctx.flow_id))
+        .before_forward_or_decline(row.agent_id, Some(&flow_ctx.flow_id))
         .await
     {
+        // A declined start is not a failed delivery: the human's answer waits for it to pass
+        // instead of running down the attempts.
+        let failure = if refusal.declined {
+            FailureKind::Declined
+        } else {
+            RETRYABLE
+        };
         fail_resume(
             &state,
             &row,
-            &format!("agent '{agent_name}' cannot be reached: {msg}"),
-            RETRYABLE,
+            &format!(
+                "agent '{agent_name}' cannot be reached: {}",
+                refusal.message
+            ),
+            failure,
         )
         .await;
         return;
@@ -644,7 +654,8 @@ async fn deliver(state: AppState, row: HitlRequest) {
             // Unlike direct_chat/agent_proxy, the sub-agent's reply isn't the final answer here —
             // it needs to go back through the ReAct loop for the LLM to reason over, not be shown
             // to the user directly.
-            trigger_new_orchestrator_turn(&state, &row, &agent_name, reply_text).await;
+            trigger_new_orchestrator_turn(&state, &row, &agent_name, reply_text, &continuation)
+                .await;
         } else {
             // A follow-up pause (below) gets its own row and its own future resolution instead —
             // nothing final to show in chat history yet.
@@ -1379,6 +1390,7 @@ async fn trigger_new_orchestrator_turn(
     row: &HitlRequest,
     agent_name: &str,
     reply_text: Option<String>,
+    replay: &ContinuationGuard,
 ) {
     let Some(chat_session_id) = row.chat_session_id.clone() else {
         // Guaranteed by construction (`NewHitlRequest::orchestrator` always sets it) —
@@ -1496,7 +1508,7 @@ async fn trigger_new_orchestrator_turn(
                     if let Some(data) = line.strip_prefix("data:") {
                         let data = data.trim();
                         if !data.is_empty() {
-                            state.continuation_events.append(row.id, data.to_string());
+                            replay.push(data.to_string());
                         }
                     }
                 }

@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::error::StateError;
-use crate::rate_limit::RateLimiter;
+use crate::rate_limit::{RateLimitStore, RateLimiter};
 use crate::telemetry::agent_replicas::ReadyReplicas;
 
 /// Length of the fixed window the per-agent request budget is counted over, and so also the
@@ -54,13 +54,19 @@ impl AgentAuth {
     /// state traffic, grows with the replica count.
     pub(super) fn new(
         db: PgPool,
+        rate_limits: &RateLimitStore,
         requests_per_replica_per_minute: u32,
         ready_replicas: ReadyReplicas,
     ) -> Self {
         Self {
             db,
             // The limiter's own limit is unused: every check passes the agent's current budget.
-            limiter: RateLimiter::new(requests_per_replica_per_minute, RATE_WINDOW),
+            limiter: RateLimiter::new(
+                rate_limits,
+                "agent-state",
+                requests_per_replica_per_minute,
+                RATE_WINDOW,
+            ),
             requests_per_replica_per_minute,
             ready_replicas,
         }
@@ -71,11 +77,12 @@ impl AgentAuth {
     /// The replica count is read from the cache only, never from the runtime, so this stays off
     /// the slow path; an agent not in the cache yet, or reporting no ready replica, counts as one.
     /// Noting the request also keeps the agent's count refreshed while it is calling.
-    fn charge(&self, agent_id: Uuid) -> Result<(), Duration> {
+    async fn charge(&self, agent_id: Uuid) -> Result<(), Duration> {
         let key = agent_id.to_string();
         let replicas = self.ready_replicas.note_request(&key, Instant::now());
         self.limiter
             .check_with_limit(&key, self.budget_for(replicas))
+            .await
     }
 
     fn budget_for(&self, ready_replicas: u64) -> u32 {
@@ -110,7 +117,9 @@ async fn identify(auth: &AgentAuth, headers: &HeaderMap) -> Result<Authenticated
         .await
         .map_err(|e| StateError::Internal(format!("agent token lookup failed: {e}")))?
         .ok_or(StateError::Unauthorized)?;
-    auth.charge(agent_id).map_err(StateError::rate_limited)?;
+    auth.charge(agent_id)
+        .await
+        .map_err(StateError::rate_limited)?;
     Ok(AuthenticatedAgent(agent_id))
 }
 
@@ -181,21 +190,23 @@ mod tests {
 
     fn auth_with(per_replica: u32, ready_replicas: ReadyReplicas) -> AgentAuth {
         let db = PgPool::connect_lazy("postgres://hermetic.invalid/none").unwrap();
-        AgentAuth::new(db, per_replica, ready_replicas)
+        AgentAuth::new(db, &RateLimitStore::Local, per_replica, ready_replicas)
     }
 
-    fn requests_admitted(auth: &AgentAuth, agent: Uuid, attempts: u32) -> u32 {
-        (0..attempts)
-            .filter(|_| auth.charge(agent).is_ok())
-            .count()
-            .try_into()
-            .unwrap()
+    async fn requests_admitted(auth: &AgentAuth, agent: Uuid, attempts: u32) -> u32 {
+        let mut admitted = 0;
+        for _ in 0..attempts {
+            if auth.charge(agent).await.is_ok() {
+                admitted += 1;
+            }
+        }
+        admitted
     }
 
     #[tokio::test]
     async fn an_agent_with_one_replica_gets_the_per_replica_budget() {
         let auth = auth_with(5, ReadyReplicas::default());
-        assert_eq!(requests_admitted(&auth, Uuid::new_v4(), 50), 5);
+        assert_eq!(requests_admitted(&auth, Uuid::new_v4(), 50).await, 5);
     }
 
     #[tokio::test]
@@ -205,7 +216,7 @@ mod tests {
         replicas.note_request(&agent.to_string(), Instant::now());
         replicas.set_ready(&agent.to_string(), 2);
         let auth = auth_with(5, replicas);
-        assert_eq!(requests_admitted(&auth, agent, 50), 10);
+        assert_eq!(requests_admitted(&auth, agent, 50).await, 10);
     }
 
     #[tokio::test]

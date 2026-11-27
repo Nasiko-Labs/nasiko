@@ -24,7 +24,7 @@ use tokio::sync::watch;
 use tokio::task::JoinSet;
 use tokio::time::Instant;
 
-use super::{Entry, SESSION_HOME, Supervisor, TOKEN_ENV, confine};
+use super::{Entry, SESSION_HOME, Supervisor, TOKEN_ENV};
 use crate::child::TERMINATE_GRACE;
 use crate::procstats::{self, Sampler};
 use crate::reaper::TREE_STOP_GRACE;
@@ -355,10 +355,8 @@ fn claim(sup: &Supervisor, id: &str, request: &EnsureRequest) -> Result<Claim, S
     Ok(claim)
 }
 
-/// Creates the session's directory with `home/` and its scratch directory, and spawns its shim,
-/// confined to those directories as configured. A confinement that cannot be applied fails the
-/// spawn: never run unconfined. A session with a scratch directory takes its `TMPDIR` there
-/// (`<scratch>/tmp`, created here), over the private one filesystem confinement makes in `HOME`:
+/// Creates the session's directory with `home/` and its scratch directory, and spawns its shim.
+/// A session with a scratch directory takes its `TMPDIR` there (`<scratch>/tmp`, created here):
 /// node-local, and writable on a pod whose root filesystem is read-only.
 fn start_shim(sup: &Supervisor, id: &str, request: &EnsureRequest) -> Result<Entry, SessionError> {
     let dir = sup.session_dir(id);
@@ -368,24 +366,13 @@ fn start_shim(sup: &Supervisor, id: &str, request: &EnsureRequest) -> Result<Ent
         create_dir(&scratch.join(SCRATCH_TMP))?;
     }
     let binary = &sup.config.shim_binary;
-    let confinement = sup.config.confinement;
     let mut command = shim_command(binary, &dir, request);
-    let dirs = confine::SessionDirs {
-        dir: &dir,
-        scratch: scratch.as_deref(),
-    };
-    confine::apply_to(&mut command, confinement, dirs).map_err(|err| {
-        SessionError::Failed(format!("confining session {id} ({confinement}): {err:#}"))
-    })?;
     if let Some(scratch) = &scratch {
         command.env("TMPDIR", scratch.join(SCRATCH_TMP));
     }
-    let child = command.spawn().map_err(|err| {
-        SessionError::Failed(format!(
-            "spawning {} (confinement: {confinement}): {err}",
-            binary.display()
-        ))
-    })?;
+    let child = command
+        .spawn()
+        .map_err(|err| SessionError::Failed(format!("spawning {}: {err}", binary.display())))?;
     let pid = child
         .id()
         .ok_or_else(|| SessionError::Failed("the shim exited before it was watched".into()))?;
@@ -575,9 +562,8 @@ fn remove_tree(dir: &Path) -> std::io::Result<()> {
 ///
 /// Known limitation: the walk goes by path, so a directory swapped for a link between the type
 /// check and the `chmod` would have the link's target changed. The session is stopped before a
-/// purge and runs as the same uid, so this gains it nothing it could not already do; a walk over
-/// directory descriptors would close the window, and is not worth it while shared runtime pods
-/// are being retired.
+/// purge and runs as the same uid, so this gains it nothing it could not already do, and every
+/// session in the pod belongs to the same user.
 fn make_writable(dir: &Path) -> std::io::Result<()> {
     let mut permissions = std::fs::symlink_metadata(dir)?.permissions();
     permissions.set_mode(permissions.mode() | OWNER_ALL);

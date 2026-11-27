@@ -34,9 +34,13 @@ use crate::state::AppState;
 use load::Windows;
 use rules::{Decision, Problem};
 
-pub fn router() -> Router<AppState> {
+pub fn router(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/overview/estate", get(get_estate))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state,
+            crate::dashboard_limit::limit,
+        ))
         .route("/overview/problems/{id}", patch(patch_problem))
 }
 

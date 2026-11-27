@@ -23,7 +23,6 @@ use uuid::Uuid;
 use nasiko_mcp_gateway::protocol;
 use nasiko_mcp_gateway::types::codes;
 
-use crate::mcp::identity::deny;
 use crate::state::AppState;
 
 /// Agent-facing MCP JSON-RPC gateway. Generic `tools/list` / `tools/call`
@@ -243,7 +242,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
         Uuid,
         Option<String>,
         Option<String>,
-    ) = match try_session_identity(state, token, header_traceparent).await {
+    ) = match session_identity(state, token, header_traceparent).await {
         SessionResolution::Session {
             agent_id,
             user_id,
@@ -525,110 +524,7 @@ async fn dispatch(state: &AppState, token: &str, headers: &HeaderMap, body: Valu
 // `verified_flow_id`, the only form `protocol::handle_request` may sign into
 // the identity header sent to system backends — never a raw, unverified
 // `traceparent`.
-use crate::mcp::identity::{bearer_token, flow_user};
-
-/// Outcome of trying to read a coding-agent session token off the credential.
-enum SessionResolution {
-    /// A valid, non-revoked session token: use its signed identity directly.
-    Session {
-        agent_id: Uuid,
-        user_id: Uuid,
-        flow_id: String,
-    },
-    /// Not a session token (the ngt_ gateway token, or anything else) — the
-    /// caller should fall back to the deploy-time-token + traceparent path.
-    NotSession,
-    /// A session token that must be rejected (revoked, malformed claims, or the
-    /// store could not be reached).
-    Deny(Response),
-}
-
-/// Try to authenticate the credential as a coding-agent session token.
-///
-/// The signature proves `{agent_id, user_id}`, so — unlike the A2A path — this needs no
-/// live-flow freshness window (a long turn is never rejected for age). The DB touches are the
-/// `jti` revocation check, so a token can still be killed before its `exp`, and the flow
-/// attribution: a later turn's flow (the traceparent's, else the session's newest) is used only
-/// when that user owns it and the agent is a recorded participant, else the claim.
-async fn try_session_identity(
-    state: &AppState,
-    token: &str,
-    traceparent: Option<&str>,
-) -> SessionResolution {
-    let secret = &state.config.agent_jwt_secret;
-    // Unconfigured secret ⇒ this deployment doesn't issue session tokens; leave
-    // the legacy path untouched.
-    if secret.is_empty() {
-        return SessionResolution::NotSession;
-    }
-    let algorithm = nasiko_session_token::parse_algorithm(&state.config.agent_jwt_algorithm);
-
-    let claims = match nasiko_session_token::verify_session_token(token, secret, algorithm) {
-        Ok(claims) => claims,
-        Err(nasiko_session_token::SessionTokenError::NotSessionToken) => {
-            return SessionResolution::NotSession;
-        }
-        // Expired or otherwise unusable session token: reject rather than fall
-        // back (a fallback would just 401 on the ngt_ lookup anyway).
-        Err(e) => {
-            return SessionResolution::Deny(
-                (
-                    StatusCode::UNAUTHORIZED,
-                    format!("session token rejected: {e}"),
-                )
-                    .into_response(),
-            );
-        }
-    };
-
-    let agent_id = match Uuid::parse_str(&claims.agent_id) {
-        Ok(id) => id,
-        Err(_) => {
-            return SessionResolution::Deny(deny("session token agent_id is not a UUID".into()));
-        }
-    };
-    let user_id = match Uuid::parse_str(&claims.user_id) {
-        Ok(id) => id,
-        Err(_) => {
-            return SessionResolution::Deny(deny("session token user_id is not a UUID".into()));
-        }
-    };
-
-    match is_session_token_revoked(&state.db, &claims.jti).await {
-        Ok(false) => {
-            let trace_flow = traceparent
-                .and_then(nasiko_flow::FlowContext::from_traceparent)
-                .map(|ctx| ctx.flow_id);
-            let attributed = nasiko_session_token::attribution::attributed_flow(
-                &state.db,
-                trace_flow.as_deref(),
-                &claims,
-            )
-            .await;
-            SessionResolution::Session {
-                agent_id,
-                user_id,
-                flow_id: attributed.flow_id,
-            }
-        }
-        Ok(true) => SessionResolution::Deny(deny("session token revoked".into())),
-        Err(e) => {
-            // Rule 5: fail closed on identity-store failure.
-            tracing::error!(error = %e, "mcp gateway: revocation check failed — failing closed");
-            SessionResolution::Deny(deny("identity store unavailable".into()))
-        }
-    }
-}
-
-/// True if this `jti` has been revoked.
-async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> sqlx::Result<bool> {
-    let found: Option<i32> =
-        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
-            .bind(jti)
-            .fetch_optional(db)
-            .await?;
-    Ok(found.is_some())
-}
+use crate::mcp::identity::{SessionResolution, bearer_token, flow_user, session_identity};
 
 /// Build a well-formed `traceparent` for a flow id from a session token, so the
 /// rest of the gateway (flow events, tool-approval context) sees the same W3C

@@ -36,7 +36,6 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use nasiko_runtime::{ContainerRuntime, InstanceInfo, SandboxProvider};
 use sqlx::PgPool;
-use tokio::time::MissedTickBehavior;
 use uuid::Uuid;
 
 pub mod sandbox;
@@ -44,7 +43,8 @@ pub mod sandbox;
 /// Background loop: reconcile once per `poll` interval, forever.
 ///
 /// Spawned from `AppState::from_config_with_db` (both editions); a failed tick
-/// is logged and skipped — the loop itself never exits.
+/// is logged and skipped — the loop itself never exits. Runs on one replica (the leader for
+/// [`LOCK`]): every replica lists the same runtime, so one pass a period is enough.
 pub async fn run(
     db: PgPool,
     runtime: Arc<dyn ContainerRuntime>,
@@ -52,19 +52,19 @@ pub async fn run(
     agent_runtime: String,
     poll: Duration,
 ) {
+    const LOCK: nasiko_leader::LockKey = nasiko_leader::LockKey::named("server.hours_meter");
     let kind = runtime_kind(&agent_runtime);
-    let mut interval = tokio::time::interval(poll);
-    interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     tracing::info!(
         poll_secs = poll.as_secs(),
         runtime = kind,
         "hours meter started (container-hours and sandbox-minutes)"
     );
-    let mut sandbox_failing = false;
-    loop {
-        interval.tick().await;
+    let sandbox_failing = std::sync::atomic::AtomicBool::new(false);
+    nasiko_leader::every(db.clone(), LOCK, poll, || async {
         if sandbox.is_available() {
-            reconcile_sandboxes_logged(&db, sandbox.as_ref(), &mut sandbox_failing).await;
+            let mut failing = sandbox_failing.load(std::sync::atomic::Ordering::Relaxed);
+            reconcile_sandboxes_logged(&db, sandbox.as_ref(), &mut failing).await;
+            sandbox_failing.store(failing, std::sync::atomic::Ordering::Relaxed);
         }
         match reconcile_once(&db, runtime.as_ref(), kind).await {
             Ok(stats) => tracing::debug!(
@@ -75,7 +75,8 @@ pub async fn run(
             ),
             Err(e) => tracing::warn!(error = %e, "hours meter tick skipped"),
         }
-    }
+    })
+    .await;
 }
 
 /// One sandbox pass; a failure is logged once per streak, and the tick carries on.
@@ -392,11 +393,15 @@ pub struct AgentHoursAgg {
 /// Open sessions end at `last_seen_at` (never `now()`), so settled windows are
 /// immutable on re-query and a dead poller can't inflate hours. Negative
 /// overlaps from clock skew clamp to zero.
+///
+/// `agents` narrows the read to those agents (`None`: every agent, deleted ones included). A
+/// caller that will keep only some agents' rows passes them here: the whole fleet is one row per
+/// agent ever run.
 pub async fn windowed_agent_hours(
     db: &PgPool,
     start: DateTime<Utc>,
     end: DateTime<Utc>,
-    agent_id: Option<Uuid>,
+    agents: Option<&[Uuid]>,
 ) -> sqlx::Result<Vec<AgentHoursAgg>> {
     sqlx::query_as(
         r#"SELECT
@@ -413,13 +418,15 @@ pub async fn windowed_agent_hours(
            WHERE s.kind = 'container'
              AND s.started_at < $2
              AND COALESCE(s.ended_at, s.last_seen_at) > $1
-             AND ($3::uuid IS NULL OR s.agent_id = $3)
+             AND ($3::uuid[] IS NULL OR s.agent_id = ANY($3))
            GROUP BY s.agent_id, a.id, a.display_name, a.name, a.deleted_at
            ORDER BY hours DESC"#,
     )
+    // Unprepared, so `$3` is planned as the list it is (see `overview/load.rs::bind_usage`).
+    .persistent(false)
     .bind(start)
     .bind(end)
-    .bind(agent_id)
+    .bind(agents)
     .fetch_all(db)
     .await
 }

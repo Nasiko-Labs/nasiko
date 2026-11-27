@@ -21,6 +21,7 @@ use tabled::settings::{Alignment, Style};
 use tabled::{Table, Tabled};
 
 use crate::api::{Client, unwrap_data};
+use crate::commands::coding_agent_mcp::{self, McpClient, McpSource, McpSummary};
 use crate::commands::coding_agent_router::{
     self, AgentLookup, ConfigChange, ConfigNotRestored, RoutingOptions, RoutingSummary,
 };
@@ -41,12 +42,12 @@ pub struct ConnectOptions {
     /// Don't route the agent's LLM calls through Nasiko
     #[arg(long, help_heading = HELP_HEADING)]
     pub no_routing: bool,
-    /// Give the agent your MCP connectors through the Nasiko gateway (the default for a new
-    /// connection; a reconnect keeps the agent's current setting)
-    #[arg(long, conflicts_with_all = ["no_mcp", "no_routing"], help_heading = HELP_HEADING)]
+    /// Give the agent your Nasiko tools through the MCP gateway, with or without LLM routing
+    /// (the default when LLM routing is connected for the first time)
+    #[arg(long, conflicts_with = "no_mcp", help_heading = HELP_HEADING)]
     pub mcp: bool,
-    /// Don't give the agent your MCP connectors through the Nasiko gateway
-    #[arg(long, conflicts_with = "no_routing", help_heading = HELP_HEADING)]
+    /// Don't give the agent your Nasiko tools through the MCP gateway (removes it if it's on)
+    #[arg(long, help_heading = HELP_HEADING)]
     pub no_mcp: bool,
     /// A2A agents: the LLM providers whose calls to route (asked on a terminal; otherwise the
     /// ones its env file already uses, else openai)
@@ -99,7 +100,11 @@ impl ConnectOptions {
 
     /// Whether a flag only LLM routing can honour was given.
     fn mentions_routing(&self) -> bool {
-        self.agent.is_some() || self.config.is_some() || self.mcp || self.no_mcp
+        self.agent.is_some() || self.config.is_some()
+    }
+
+    fn mentions_mcp(&self) -> bool {
+        self.mcp || self.no_mcp
     }
 
     /// The MCP setting the flags ask for, if any.
@@ -129,9 +134,11 @@ impl ConnectOptions {
 /// Flags for `disconnect <agent>`.
 #[derive(Args, Debug, Clone, Default)]
 pub struct DisconnectOptions {
-    /// Remove LLM routing and the MCP gateway
+    /// Remove LLM routing
     #[arg(long)]
     pub routing: bool,
+    #[arg(long, help = "Remove the MCP gateway")]
+    pub mcp: bool,
     /// Remove session reporting
     #[arg(long)]
     pub reporting: bool,
@@ -234,9 +241,8 @@ struct Router {
     /// MCP credential valid through its rotation grace window. Agents without this are
     /// disconnected first, which needs them stopped (or `--force`).
     reconnects_in_place: bool,
-    /// What routing writes, and where the MCP gateway is registered — shown before applying.
+    /// What routing writes — shown before applying.
     routing_target: fn() -> String,
-    mcp_target: &'static str,
     /// For agents disconnected before a reconnect: asks the control plane everything the
     /// connect would, changing nothing, so the working connection is only removed once the new
     /// one is known to be accepted.
@@ -258,7 +264,6 @@ fn router(id: &str) -> Option<Router> {
                     integration::tildify(&claude::settings_path())
                 )
             },
-            mcp_target: "`claude mcp add nasiko` (user scope)",
             check: Some(claude::check),
         }),
         "codex" => Some(Router {
@@ -274,7 +279,6 @@ fn router(id: &str) -> Option<Router> {
                     integration::tildify(&codex::config_path())
                 )
             },
-            mcp_target: "[mcp_servers.nasiko] in the same config.toml",
             check: Some(codex::check),
         }),
         "opencode" => Some(Router {
@@ -285,7 +289,6 @@ fn router(id: &str) -> Option<Router> {
             processes: &["opencode"],
             reconnects_in_place: true,
             routing_target: || integration::tildify(&opencode::plugin_path()),
-            mcp_target: "inside the same plugin",
             check: None,
         }),
         _ => None,
@@ -300,11 +303,27 @@ struct AgentView {
     routing: Option<RoutingSummary>,
     /// Why this agent's routing state couldn't be read; its routing is then left alone.
     routing_error: Option<String>,
+    mcp: Option<McpSummary>,
+    mcp_error: Option<String>,
 }
 
 impl AgentView {
     fn is_connected(&self) -> bool {
-        self.routing.is_some() || self.routing_error.is_some() || self.local.reporting_installed
+        self.routing.is_some()
+            || self.routing_error.is_some()
+            || self.mcp.is_some()
+            || self.mcp_error.is_some()
+            || self.local.reporting_installed
+    }
+
+    fn mcp_client(&self) -> Option<McpClient> {
+        McpClient::for_id(self.local.id)
+    }
+
+    fn removable_mcp(&self) -> bool {
+        self.mcp
+            .as_ref()
+            .is_some_and(|mcp| mcp.source != McpSource::DesktopApp)
     }
 }
 
@@ -320,11 +339,20 @@ fn load_views() -> Result<Vec<AgentView>> {
                 Some(Err(error)) => (None, Some(format!("{error:#}"))),
                 None => (None, None),
             };
+            let (mcp, mcp_error) = match McpClient::for_id(local.id)
+                .map(|client| coding_agent_mcp::summary(client, routing.as_ref()))
+            {
+                Some(Ok(mcp)) => (mcp, None),
+                Some(Err(error)) => (None, Some(format!("{error:#}"))),
+                None => (None, None),
+            };
             AgentView {
                 local,
                 router,
                 routing,
                 routing_error,
+                mcp,
+                mcp_error,
             }
         })
         .collect())
@@ -455,6 +483,22 @@ enum ReportingStep {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum McpStep {
+    Unsupported,
+    Skip,
+    Keep,
+    Install,
+    Replace,
+    Remove,
+}
+
+impl McpStep {
+    fn changes(&self) -> bool {
+        matches!(self, Self::Install | Self::Replace | Self::Remove)
+    }
+}
+
 /// Answers shared by every agent connected in one run.
 #[derive(Debug, Clone, Default, PartialEq)]
 struct RoutingChoices {
@@ -464,7 +508,7 @@ struct RoutingChoices {
     llm_config: Option<String>,
     llm_config_label: Option<String>,
     /// The MCP answer for every agent (`--mcp`/`--no-mcp` or the terminal); `None` keeps each
-    /// reconnected agent's current setting and gives new connections the gateway.
+    /// agent's current setting and gives new LLM routing connections the gateway.
     mcp: Option<bool>,
 }
 
@@ -477,13 +521,11 @@ struct RoutingRequest<'a> {
     /// The current connection's agent when it is kept, for the plan's wording.
     reused_agent_name: Option<&'a str>,
     llm_config: Option<&'a str>,
-    mcp: bool,
 }
 
 /// The routing request for `plan`, or `None` when its routing isn't being (re)connected.
 /// Replacing a connection keeps its agent unless `--agent` names another — but only when
-/// [`verify_plan`] confirmed that agent is still the active login's. A refresh also keeps the
-/// connection's MCP setting rather than adding a gateway it was set up without.
+/// [`verify_plan`] confirmed that agent is still the active login's.
 fn routing_request<'a>(
     plan: &'a AgentPlan,
     choices: &'a RoutingChoices,
@@ -495,8 +537,11 @@ fn routing_request<'a>(
         RoutingStep::Refresh => true,
         _ => return None,
     };
-    let current = plan.view.routing.as_ref();
-    let reused = current.filter(|_| choices.agent.is_none() && plan.current_agent_usable);
+    let reused = plan
+        .view
+        .routing
+        .as_ref()
+        .filter(|_| choices.agent.is_none() && plan.current_agent_usable);
     Some(RoutingRequest {
         router,
         reconnect,
@@ -506,10 +551,6 @@ fn routing_request<'a>(
             .or(reused.map(|current| current.agent_id.as_str())),
         reused_agent_name: reused.map(|current| current.agent_name.as_str()),
         llm_config: choices.llm_config.as_deref().filter(|_| !refresh),
-        mcp: choices.mcp.unwrap_or(match current {
-            Some(current) if reconnect => current.mcp_installed,
-            _ => true,
-        }),
     })
 }
 
@@ -528,6 +569,7 @@ fn owned_by(routing: &RoutingSummary, destination: Option<&ReportingDestination>
 struct AgentPlan {
     view: AgentView,
     routing: RoutingStep,
+    mcp: McpStep,
     reporting: ReportingStep,
     /// Whether the current routing connection is the active login's and its agent still
     /// exists — set by [`verify_plan`]. Only then is that agent reused (by a reconnect, by
@@ -544,9 +586,15 @@ struct AgentPlan {
 
 impl AgentPlan {
     fn new(view: AgentView, routing: RoutingStep) -> Self {
+        let mcp = if McpClient::for_id(view.local.id).is_some() {
+            McpStep::Skip
+        } else {
+            McpStep::Unsupported
+        };
         Self {
             view,
             routing,
+            mcp,
             reporting: ReportingStep::Skip,
             current_agent_usable: false,
             note: None,
@@ -566,12 +614,25 @@ impl AgentPlan {
         }
     }
 
+    fn add_note(&mut self, note: String) {
+        self.note = Some(match self.note.take() {
+            Some(existing) => format!("{existing}; {note}"),
+            None => note,
+        });
+    }
+
+    fn changes_routing(&self) -> bool {
+        matches!(
+            self.routing,
+            RoutingStep::Connect { .. } | RoutingStep::Refresh
+        )
+    }
+
     fn changes_anything(&self) -> bool {
         self.blocked.is_none()
-            && (matches!(
-                self.routing,
-                RoutingStep::Connect { .. } | RoutingStep::Refresh
-            ) || matches!(self.reporting, ReportingStep::Install { .. }))
+            && (self.changes_routing()
+                || self.mcp.changes()
+                || matches!(self.reporting, ReportingStep::Install { .. }))
     }
 }
 
@@ -618,6 +679,7 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
         bail!("--agent names one routing agent, so it can be used with one coding agent at a time");
     }
     refuse_routing_flags_without_routing(&targets, options)?;
+    forget_stale_mcp(&targets)?;
     ensure_logged_in(prompter.as_ref())?;
     let destination = integration::ReportingDestination::current().ok();
 
@@ -685,18 +747,20 @@ pub fn connect(target: Option<&str>, options: &ConnectOptions) -> Result<()> {
     Ok(())
 }
 
-/// `--agent`, `--config` and `--no-mcp` only mean something for LLM routing; given for agents
-/// that have none (Cursor), they would be silently ignored.
+/// `--agent`, `--config`, `--mcp` and `--no-mcp` only mean something for LLM routing and the
+/// MCP gateway; given for agents that have neither (Cursor), they would be silently ignored.
 fn refuse_routing_flags_without_routing(
     targets: &[AgentView],
     options: &ConnectOptions,
 ) -> Result<()> {
-    if options.mentions_routing() && targets.iter().all(|view| view.router.is_none()) {
+    if (options.mentions_routing() || options.mentions_mcp())
+        && targets.iter().all(|view| view.router.is_none())
+    {
         let names: Vec<&str> = targets.iter().map(|view| view.local.display_name).collect();
         bail!(
             "Sorry, the LLM router doesn't support {0}: {0} supports session reporting only, so \
-             --agent, --config and --no-mcp don't apply. You can try Claude Code, Codex or OpenCode \
-             instead (nasiko connect claude|codex|opencode).",
+             --agent, --config, --mcp and --no-mcp don't apply. You can try Claude Code, Codex or \
+             OpenCode instead (nasiko connect claude|codex|opencode).",
             names.join(" and ")
         );
     }
@@ -1297,26 +1361,8 @@ fn build_plan(
             }
         }
     }
-    let routed: Vec<usize> = (0..agents.len())
-        .filter(|&i| matches!(agents[i].routing, RoutingStep::Connect { .. }))
-        .collect();
-    if !routed.is_empty() && choices.mcp.is_none() && prompter.interactive() {
-        // The suggested answer keeps what is there: on, unless every agent being reconnected
-        // was set up without the gateway.
-        let suggested = routed.iter().any(|&i| match &agents[i].view.routing {
-            Some(current) if agents[i].routing == (RoutingStep::Connect { reconnect: true }) => {
-                current.mcp_installed
-            }
-            _ => true,
-        });
-        let who = names(&agents, &routed);
-        term::print_note(&format!(
-            "MCP gateway: adds one MCP server, `nasiko`, to {who}. It offers the tools of the MCP \
-             connectors you can use on Nasiko; nothing else in their MCP setup changes."
-        ));
-        choices.mcp =
-            Some(prompter.confirm(&format!("Add the Nasiko MCP server to {who}?"), suggested)?);
-    }
+    let ask_mcp = !(options.no_routing && options.mentions_reporting());
+    plan_mcp(&mut agents, choices.mcp, ask_mcp, destination, prompter)?;
 
     // Reporting already installed — working or not — is checked on its own, so its saved
     // settings are kept; the rest get one shared yes/no.
@@ -1361,6 +1407,123 @@ fn build_plan(
         choices,
         destination: destination.cloned(),
     })
+}
+
+fn plan_mcp(
+    agents: &mut [AgentPlan],
+    flag: Option<bool>,
+    ask: bool,
+    destination: Option<&ReportingDestination>,
+    prompter: &dyn Prompter,
+) -> Result<()> {
+    let supported: Vec<usize> = (0..agents.len())
+        .filter(|&i| agents[i].mcp != McpStep::Unsupported)
+        .collect();
+    let without: Vec<usize> = supported
+        .iter()
+        .copied()
+        .filter(|&i| agents[i].view.mcp.is_none() && agents[i].view.mcp_error.is_none())
+        .collect();
+    let answer = match flag {
+        Some(flag) => Some(flag),
+        None if ask && prompter.interactive() && !without.is_empty() => {
+            let who = names(agents, &without);
+            term::print_note(&format!(
+                "MCP gateway: adds one MCP server, `nasiko`, to {who}. It offers your Nasiko tools \
+                 and the tools of the MCP connectors you can use on Nasiko; nothing else in their \
+                 MCP setup changes."
+            ));
+            Some(prompter.confirm(&format!("Add the Nasiko MCP server to {who}?"), true)?)
+        }
+        None => None,
+    };
+    for &i in &supported {
+        let agent = &mut agents[i];
+        let name = agent.view.local.display_name;
+        if let Some(error) = agent.view.mcp_error.clone() {
+            agent.mcp = McpStep::Keep;
+            if flag.is_some() {
+                agent.add_note(format!(
+                    "its MCP gateway state can't be read ({error}); the MCP gateway was left as it is"
+                ));
+            }
+            continue;
+        }
+        agent.mcp = match agent.view.mcp.clone() {
+            None => {
+                let fresh_routing = agent.routing == RoutingStep::Connect { reconnect: false };
+                if answer.unwrap_or(fresh_routing) {
+                    McpStep::Install
+                } else {
+                    McpStep::Skip
+                }
+            }
+            Some(current) if current.source == McpSource::DesktopApp => {
+                if flag.is_some() {
+                    agent.add_note(
+                        "its MCP gateway is managed by the Nasiko desktop app; change it there"
+                            .to_string(),
+                    );
+                }
+                McpStep::Keep
+            }
+            Some(_) if flag == Some(false) => McpStep::Remove,
+            Some(current) if mcp_is_yours(&current, destination) => McpStep::Keep,
+            Some(current) => {
+                let place = mcp_place(&current, destination);
+                let replace = match flag {
+                    Some(flag) => flag,
+                    None if ask && prompter.interactive() => prompter.confirm(
+                        &format!(
+                            "{name}'s MCP gateway was set up {place}. Reconnect it as you on {}?",
+                            destination.map_or("this cluster", |now| now.cluster_name.as_str())
+                        ),
+                        true,
+                    )?,
+                    None => {
+                        agent.add_note(format!(
+                            "its MCP gateway was set up {place}, so its tools act for that account; reconnect it: {} connect {} --mcp",
+                            cli_name(),
+                            agent.view.local.id
+                        ));
+                        false
+                    }
+                };
+                if replace {
+                    McpStep::Replace
+                } else {
+                    McpStep::Keep
+                }
+            }
+        };
+    }
+    Ok(())
+}
+
+fn forget_stale_mcp(targets: &[AgentView]) -> Result<()> {
+    for client in targets.iter().filter_map(AgentView::mcp_client) {
+        coding_agent_mcp::forget_stale_state(client)?;
+    }
+    Ok(())
+}
+
+fn mcp_is_yours(current: &McpSummary, destination: Option<&ReportingDestination>) -> bool {
+    destination.is_none_or(|now| {
+        now.is(
+            &current.cluster,
+            &current.cluster_url,
+            current.principal_id.as_deref(),
+        )
+    })
+}
+
+fn mcp_place(current: &McpSummary, destination: Option<&ReportingDestination>) -> String {
+    match destination {
+        Some(now) if now.is(&current.cluster, &current.cluster_url, None) => {
+            "as another user".to_string()
+        }
+        _ => format!("on {}", current.cluster),
+    }
 }
 
 /// Whether reporting installed (or moved) to `destination` syncs chat history — prompts,
@@ -1561,21 +1724,20 @@ fn existing_routing_step(
         return Ok(RoutingStep::Keep);
     }
     // A flag that changes the connection answers "keep or reconnect?" the same way for every
-    // agent, on a terminal or not. An MCP flag is a change only when it differs from what is set.
-    let asked_to_change = options.config.is_some()
-        || options.agent.is_some()
-        || options
-            .mcp_choice()
-            .is_some_and(|mcp| mcp != current.mcp_installed);
+    // agent, on a terminal or not.
+    let asked_to_change = options.config.is_some() || options.agent.is_some();
     if asked_to_change {
         return Ok(RoutingStep::Connect { reconnect: true });
     }
     if !prompter.interactive() {
         // Scripts only replace a connection they explicitly asked to change. One that updates
         // in place (OpenCode) is refreshed as `connect` always did — unless the flags are about
-        // reporting, which leaves routing alone.
+        // reporting or the MCP gateway, which leave routing alone.
         return Ok(
-            if router.reconnects_in_place && !options.mentions_reporting() {
+            if router.reconnects_in_place
+                && !options.mentions_reporting()
+                && !options.mentions_mcp()
+            {
                 RoutingStep::Refresh
             } else {
                 RoutingStep::Keep
@@ -1749,6 +1911,7 @@ fn print_plan(plan: &Plan) {
             continue;
         }
         print_routing_line(agent, plan);
+        println!("    • MCP gateway: {}", mcp_line(agent, plan));
         if let Some(note) = &agent.note {
             println!("    • Note: {note}");
         }
@@ -1784,9 +1947,11 @@ fn print_routing_line(agent: &AgentPlan, plan: &Plan) {
         .reused_agent_name
         .map(|name| format!(", keeping agent {name}"))
         .unwrap_or_default();
-    let current = agent.view.routing.as_ref();
     // A connection made as another user or on another cluster is replaced, not kept.
-    let replaced = current
+    let replaced = agent
+        .view
+        .routing
+        .as_ref()
         .filter(|current| !owned_by(current, plan.destination.as_ref()))
         .map(|current| {
             if made_as_another_account(current, plan.destination.as_ref()) {
@@ -1800,11 +1965,35 @@ fn print_routing_line(agent: &AgentPlan, plan: &Plan) {
         "    • LLM routing: {verb}{config}{kept_agent}{replaced} → {}",
         (router.routing_target)()
     );
-    let had_mcp = request.reconnect && current.is_some_and(|current| current.mcp_installed);
-    match (request.mcp, had_mcp) {
-        (true, _) => println!("    • MCP gateway: {}", router.mcp_target),
-        (false, true) => println!("    • MCP gateway: removed"),
-        (false, false) => println!("    • MCP gateway: not added"),
+}
+
+fn mcp_line(agent: &AgentPlan, plan: &Plan) -> String {
+    let target = || {
+        agent
+            .view
+            .mcp_client()
+            .map(McpClient::target)
+            .unwrap_or_default()
+    };
+    match (&agent.mcp, agent.view.mcp.as_ref()) {
+        (McpStep::Unsupported, _) => "not supported".to_string(),
+        (McpStep::Install, _) => format!("add → {}", target()),
+        (McpStep::Replace, _) => format!(
+            "reconnect as you on {} → {}",
+            plan.destination
+                .as_ref()
+                .map_or("this cluster", |now| now.cluster_name.as_str()),
+            target()
+        ),
+        (McpStep::Remove, _) => "remove".to_string(),
+        (McpStep::Keep, Some(current)) if current.source == McpSource::DesktopApp => {
+            "keep (managed by the Nasiko desktop app)".to_string()
+        }
+        (McpStep::Keep, Some(_)) => "keep the current connection".to_string(),
+        (McpStep::Keep, None) if agent.view.mcp_error.is_some() => {
+            "left as it is (state unreadable)".to_string()
+        }
+        (McpStep::Keep | McpStep::Skip, _) => "not set up".to_string(),
     }
 }
 
@@ -1905,6 +2094,12 @@ fn print_nothing_to_do(plan: &Plan) {
                 term::cyan(&format!("{cli} connect {id} --config <name>"))
             ));
         }
+        if agent.mcp == McpStep::Skip && agent.view.mcp.is_none() {
+            term::print_info(&format!(
+                "{name} has no MCP gateway. To give it your Nasiko tools: {}",
+                term::cyan(&format!("{cli} connect {id} --no-routing --mcp"))
+            ));
+        }
         if agent.view.local.reporting_installed
             && (!agent.view.local.reporting_active
                 || reporting_elsewhere(&agent.view.local, plan.destination.as_ref()).is_some())
@@ -1957,26 +2152,96 @@ fn apply_agent(
     prompter: &dyn Prompter,
 ) -> Result<()> {
     let id = agent.view.local.id;
-    // A routing failure stops this agent before its reporting step, so say that step was
-    // skipped and how to run it on its own.
-    let routed = apply_routing(agent, choices, options, prompter).map_err(|error| {
-        if matches!(agent.reporting, ReportingStep::Install { .. }) {
-            error.context(format!(
-                "session reporting was not changed either; set it up on its own with: {} connect {id} --no-routing --reporting",
-                cli_name()
-            ))
-        } else {
-            error
+    if let Some(client) = agent.view.mcp_client()
+        && (agent.changes_routing() || agent.mcp.changes())
+        && coding_agent_mcp::has_legacy(client)?
+    {
+        coding_agent_mcp::adopt_legacy(client)
+            .context("could not separate the MCP gateway from LLM routing")?;
+    }
+    // A routing failure stops this agent before its MCP and reporting steps, so say those steps
+    // were skipped and how to run them on their own.
+    let routed = apply_routing(agent, choices, options, prompter)
+        .map_err(|error| with_skipped_steps(agent, error))?;
+    let mcp_added = match apply_mcp(agent) {
+        Ok(added) => added,
+        Err(error) if routed.is_some() && agent.mcp != McpStep::Remove => {
+            term::print_warning(&format!(
+                "the MCP gateway was not added ({}); LLM routing is connected. Add it later with: {}",
+                coding_agent_router::one_line_warning(&error),
+                term::cyan_stderr(&format!("{} connect {id} --no-routing --mcp", cli_name()))
+            ));
+            false
         }
-    })?;
+        Err(error) => {
+            let error = error.context("MCP gateway");
+            return Err(
+                if matches!(agent.reporting, ReportingStep::Install { .. }) {
+                    error.context(format!(
+                    "session reporting was not changed either; set it up on its own with: {} connect {id} --no-routing --reporting",
+                    cli_name()
+                ))
+                } else {
+                    error
+                },
+            );
+        }
+    };
     match agent.reporting {
         ReportingStep::Install {
             capture_content, ..
-        } => install_reporting(agent, capture_content, routed),
+        } => install_reporting(agent, capture_content, routed, mcp_added),
         ReportingStep::Keep if routed.is_some() && agent.reporting_follows_routing => {
             follow_routing_agent(agent, destination)
         }
         ReportingStep::Keep | ReportingStep::Skip => Ok(()),
+    }
+}
+
+fn with_skipped_steps(agent: &AgentPlan, error: anyhow::Error) -> anyhow::Error {
+    let id = agent.view.local.id;
+    let mcp = agent
+        .mcp
+        .changes()
+        .then_some(if agent.mcp == McpStep::Remove {
+            "--no-mcp"
+        } else {
+            "--mcp"
+        });
+    let reporting = matches!(agent.reporting, ReportingStep::Install { .. });
+    let (what, flags) = match (mcp, reporting) {
+        (None, false) => return error,
+        (None, true) => (
+            "session reporting was not changed either; set it up",
+            "--reporting".to_string(),
+        ),
+        (Some(flag), false) => (
+            "the MCP gateway was not changed either; change it",
+            flag.to_string(),
+        ),
+        (Some(flag), true) => (
+            "the MCP gateway and session reporting were not changed either; change them",
+            format!("{flag} --reporting"),
+        ),
+    };
+    error.context(format!(
+        "{what} on its own with: {} connect {id} --no-routing {flags}",
+        cli_name()
+    ))
+}
+
+fn apply_mcp(agent: &AgentPlan) -> Result<bool> {
+    let Some(client) = agent.view.mcp_client() else {
+        return Ok(false);
+    };
+    match agent.mcp {
+        McpStep::Install => coding_agent_mcp::install(client).map(|()| true),
+        McpStep::Replace => {
+            coding_agent_mcp::uninstall(client)?;
+            coding_agent_mcp::install(client).map(|()| true)
+        }
+        McpStep::Remove => coding_agent_mcp::uninstall(client).map(|_| false),
+        McpStep::Keep | McpStep::Skip | McpStep::Unsupported => Ok(false),
     }
 }
 
@@ -2004,7 +2269,6 @@ fn apply_routing(
     let mut routing = RoutingOptions {
         agent: request.agent,
         llm_config: request.llm_config,
-        mcp: request.mcp,
         checked: false,
     };
     // An in-place reconnect is the agent's own `connect`, which rolls itself back. Others
@@ -2045,6 +2309,7 @@ fn install_reporting(
     agent: &AgentPlan,
     capture_content: bool,
     routed: Option<Routed>,
+    mcp_added: bool,
 ) -> Result<()> {
     let result = reporting_agent_name(agent).and_then(|agent_name| {
         integration::install(InstallOptions {
@@ -2062,6 +2327,11 @@ fn install_reporting(
         );
         if let Err(rollback) = (router.disconnect)(true) {
             term::print_warning(&format!("could not remove LLM routing: {rollback:#}"));
+        }
+        if let (true, Some(client)) = (mcp_added, agent.view.mcp_client())
+            && let Err(rollback) = coding_agent_mcp::uninstall(client)
+        {
+            term::print_warning(&format!("could not remove the MCP gateway: {rollback:#}"));
         }
         if let Err(put_back) = change.undo() {
             term::print_warning(&format!("{put_back:#}"));
@@ -2120,8 +2390,8 @@ fn follow_routing_agent(
 }
 
 /// After a reconnect removed the previous routing and connecting the new one failed: connects
-/// the previous setup again — its agent, that agent's LLM config (a failed connect restores it)
-/// and its MCP setting — so a reconnect doesn't leave the agent without routing. Only possible
+/// the previous setup again — its agent and that agent's LLM config (a failed connect restores
+/// it) — so a reconnect doesn't leave the agent without routing. Only possible
 /// when that connection was the active login's and its agent still exists. The returned error
 /// says how it ended.
 fn restore_previous_routing(
@@ -2148,7 +2418,6 @@ fn restore_previous_routing(
     let previous_setup = RoutingOptions {
         agent: Some(&previous.agent_id),
         llm_config: None,
-        mcp: previous.mcp_installed,
         checked: false,
     };
     let config_changed = error.chain().any(|cause| cause.is::<ConfigNotRestored>());
@@ -2478,10 +2747,11 @@ fn quoted(name: &str) -> String {
 struct Removal {
     view: AgentView,
     routing: bool,
+    mcp: bool,
     reporting: bool,
 }
 
-/// `nasiko disconnect [agent]`: remove LLM routing (with the MCP gateway) and/or reporting.
+/// `nasiko disconnect [agent]`: remove LLM routing, the MCP gateway and/or reporting.
 pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<()> {
     if let Some(name) = target.filter(|name| !is_coding_agent(name))
         && let Some(message) = integration::disconnect_a2a_agent(name)?
@@ -2517,6 +2787,7 @@ pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<(
         ),
     };
 
+    forget_stale_mcp(&targets)?;
     let mut removals = Vec::new();
     for view in targets {
         if let Some(removal) = choose_removal(view, options, prompter.as_ref())? {
@@ -2531,7 +2802,10 @@ pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<(
         for removal in &removals {
             println!("  {}", removal.view.local.display_name);
             if removal.routing {
-                println!("    • LLM routing and the MCP gateway");
+                println!("    • LLM routing");
+            }
+            if removal.mcp {
+                println!("    • MCP gateway");
             }
             if removal.reporting {
                 println!("    • Session reporting (past sessions stay in observability)");
@@ -2563,12 +2837,11 @@ pub fn disconnect(target: Option<&str>, options: &DisconnectOptions) -> Result<(
 
 fn connected_parts(view: &AgentView) -> String {
     let mut parts = Vec::new();
-    if let Some(routing) = &view.routing {
-        parts.push(if routing.mcp_installed {
-            "LLM routing, MCP"
-        } else {
-            "LLM routing"
-        });
+    if view.routing.is_some() {
+        parts.push("LLM routing");
+    }
+    if view.mcp.is_some() {
+        parts.push("MCP gateway");
     }
     if view.local.reporting_installed {
         parts.push("reporting");
@@ -2577,7 +2850,7 @@ fn connected_parts(view: &AgentView) -> String {
 }
 
 /// Which parts of one agent to remove: from flags, from the terminal, or today's default
-/// (routing for agents that have it, reporting for reporting-only agents).
+/// (routing and the MCP gateway for agents that have them, reporting for reporting-only agents).
 fn choose_removal(
     view: AgentView,
     options: &DisconnectOptions,
@@ -2586,75 +2859,133 @@ fn choose_removal(
     let name = view.local.display_name;
     // Routing whose state can't be read is still routing: its own disconnect reports why.
     let has_routing = view.routing.is_some() || view.routing_error.is_some();
+    let has_mcp = view.removable_mcp();
     let has_reporting = view.local.reporting_installed;
-    if !has_routing && !has_reporting {
-        term::print_info(&format!("{name} is not connected to Nasiko."));
+    if !has_routing && !has_mcp && !has_reporting {
+        if view.mcp.is_some() {
+            term::print_info(&format!(
+                "{name}'s MCP gateway is managed by the Nasiko desktop app; remove it there."
+            ));
+        } else {
+            term::print_info(&format!("{name} is not connected to Nasiko."));
+        }
         return Ok(None);
     }
-    let (routing, reporting) = if options.routing || options.reporting {
+    let (routing, mcp, reporting) = if options.routing || options.mcp || options.reporting {
         if options.routing && !has_routing {
             term::print_info(&format!("{name}: LLM routing is not connected."));
+        }
+        if options.mcp && !has_mcp {
+            term::print_info(&format!(
+                "{name}: {}",
+                if view.mcp.is_some() {
+                    "the MCP gateway is managed by the Nasiko desktop app; remove it there."
+                } else {
+                    "the MCP gateway is not set up."
+                }
+            ));
         }
         if options.reporting && !has_reporting {
             term::print_info(&format!("{name}: session reporting is not set up."));
         }
         (
             options.routing && has_routing,
+            options.mcp && has_mcp,
             options.reporting && has_reporting,
         )
-    } else if prompter.interactive() && has_routing && has_reporting {
-        let items = vec![
-            "LLM routing and the Nasiko MCP server — its LLM calls go straight to the model provider again".to_string(),
-            "Session reporting — its sessions stop being sent to Nasiko".to_string(),
-        ];
-        let chosen = prompter.multi_select(
-            &format!("What should be disconnected from {name}? (space selects, enter confirms)"),
-            &items,
-            &[true, true],
-        )?;
-        (chosen.contains(&0), chosen.contains(&1))
     } else if prompter.interactive() {
-        (has_routing, has_reporting)
+        let present: Vec<(usize, &str)> = [
+            (
+                has_routing,
+                "LLM routing — its LLM calls go straight to the model provider again",
+            ),
+            (has_mcp, "The Nasiko MCP server"),
+            (
+                has_reporting,
+                "Session reporting — its sessions stop being sent to Nasiko",
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        .filter(|(_, (present, _))| *present)
+        .map(|(part, (_, label))| (part, label))
+        .collect();
+        let chosen: Vec<usize> = if present.len() > 1 {
+            let items: Vec<String> = present.iter().map(|(_, label)| label.to_string()).collect();
+            prompter
+                .multi_select(
+                    &format!(
+                        "What should be disconnected from {name}? (space selects, enter confirms)"
+                    ),
+                    &items,
+                    &vec![true; items.len()],
+                )?
+                .into_iter()
+                .map(|index| present[index].0)
+                .collect()
+        } else {
+            present.iter().map(|(part, _)| *part).collect()
+        };
+        (
+            chosen.contains(&0),
+            chosen.contains(&1),
+            chosen.contains(&2),
+        )
     } else {
         default_removal(
             view.router.is_some(),
             has_routing,
+            has_mcp,
             has_reporting,
             view.local.id,
         )
     };
-    Ok((routing || reporting).then_some(Removal {
+    Ok((routing || mcp || reporting).then_some(Removal {
         view,
         routing,
+        mcp,
         reporting,
     }))
 }
 
-/// Without flags or a terminal, `disconnect` keeps its original meaning: remove LLM routing.
-/// Reporting-only agents (Cursor) have nothing else to remove, so their reporting goes.
+/// Without flags or a terminal, `disconnect` keeps its original meaning: remove LLM routing and
+/// the MCP gateway. Reporting-only agents (Cursor) have nothing else to remove, so their
+/// reporting goes.
 fn default_removal(
     supports_routing: bool,
     has_routing: bool,
+    has_mcp: bool,
     has_reporting: bool,
     id: &str,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     if !supports_routing {
-        return (false, has_reporting);
+        return (false, false, has_reporting);
     }
-    if !has_routing && has_reporting {
+    if !has_routing && !has_mcp && has_reporting {
         term::print_info(&format!(
-            "LLM routing is not connected. To remove session reporting: {}",
+            "LLM routing and the MCP gateway are not connected. To remove session reporting: {}",
             term::cyan(&format!("{} disconnect {id} --reporting", cli_name()))
         ));
     }
-    (has_routing, false)
+    (has_routing, has_mcp, false)
 }
 
 fn remove(removal: &Removal, force: bool, prompter: &dyn Prompter) -> Result<()> {
     let name = removal.view.local.display_name;
+    let client = removal.view.mcp_client();
+    if let Some(client) = client
+        && removal.routing != removal.mcp
+        && coding_agent_mcp::has_legacy(client)?
+    {
+        coding_agent_mcp::adopt_legacy(client)
+            .context("could not separate the MCP gateway from LLM routing; nothing was removed")?;
+    }
     if let (true, Some(router)) = (removal.routing, removal.view.router) {
         let force = allowed_while_running(name, router, force, "Disconnect", prompter)?;
         (router.disconnect)(force)?;
+    }
+    if let (true, Some(client)) = (removal.mcp, client) {
+        coding_agent_mcp::uninstall(client)?;
     }
     if removal.reporting {
         integration::uninstall(removal.view.local.id)?;
@@ -2688,6 +3019,16 @@ pub fn status(target: Option<&str>) -> Result<()> {
                 }
             }
             print_reporting_details(&view.local);
+            if let Some(client) = view.mcp_client() {
+                match &view.mcp_error {
+                    Some(error) => println!(
+                        "{} MCP gateway:   {} ({error})",
+                        view.local.display_name,
+                        coding_agent_router::status_value("state unreadable")
+                    ),
+                    None => coding_agent_mcp::print_status(client, view.mcp.as_ref())?,
+                }
+            }
             Ok(())
         }
     }
@@ -2760,16 +3101,17 @@ struct AgentRow {
 }
 
 fn agent_row(view: &AgentView) -> AgentRow {
-    let (routing, mcp) = match (&view.router, &view.routing) {
-        (None, _) => ("not supported".to_string(), "not supported".to_string()),
-        (Some(_), None) if view.routing_error.is_some() => {
-            ("state unreadable".to_string(), "?".to_string())
-        }
-        (Some(_), None) => ("off".to_string(), "-".to_string()),
-        (Some(_), Some(summary)) => (
-            format!("on ({})", summary.cluster),
-            if summary.mcp_installed { "on" } else { "off" }.to_string(),
-        ),
+    let routing = match (&view.router, &view.routing) {
+        (None, _) => "not supported".to_string(),
+        (Some(_), None) if view.routing_error.is_some() => "state unreadable".to_string(),
+        (Some(_), None) => "off".to_string(),
+        (Some(_), Some(summary)) => format!("on ({})", summary.cluster),
+    };
+    let mcp = match (&view.mcp, &view.mcp_error) {
+        _ if view.mcp_client().is_none() => "not supported".to_string(),
+        (_, Some(_)) => "state unreadable".to_string(),
+        (Some(summary), None) => summary.label(),
+        (None, None) => "off".to_string(),
     };
     let reporting = if view.local.reporting_active {
         format!(
@@ -2909,7 +3251,37 @@ mod tests {
                 agent_name: format!("me-{id}"),
                 mcp_installed: true,
             }),
+            mcp: (routed && McpClient::for_id(id).is_some()).then(|| McpSummary {
+                source: McpSource::WithRouting,
+                cluster: "prod".into(),
+                cluster_url: "http://localhost:8080".into(),
+                principal_id: Some("me".into()),
+                agent_id: format!("id-{id}"),
+                agent_name: format!("me-{id}"),
+            }),
+            mcp_error: None,
         }
+    }
+
+    fn without_mcp(mut view: AgentView) -> AgentView {
+        if let Some(routing) = view.routing.as_mut() {
+            routing.mcp_installed = false;
+        }
+        view.mcp = None;
+        view
+    }
+
+    fn mcp_only(id: &'static str, principal: &str, cluster: &str) -> AgentView {
+        let mut view = view(id, false, false);
+        view.mcp = Some(McpSummary {
+            source: McpSource::Nasiko,
+            cluster: cluster.into(),
+            cluster_url: "http://localhost:8080".into(),
+            principal_id: Some(principal.into()),
+            agent_id: format!("id-{id}"),
+            agent_name: format!("me-{id}"),
+        });
+        view
     }
 
     /// The active cluster in these tests.
@@ -2961,6 +3333,11 @@ mod tests {
             plan.choices.mcp, None,
             "each agent keeps its own MCP default"
         );
+        assert_eq!(
+            plan.agents[0].mcp,
+            McpStep::Install,
+            "new LLM routing still gets the gateway"
+        );
         assert_eq!(plan.choices.llm_config, None);
     }
 
@@ -2981,6 +3358,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.choices.mcp, Some(false));
+        assert_eq!(plan.agents[0].mcp, McpStep::Skip);
         assert_eq!(plan.choices.llm_config.as_deref(), Some("team"));
         assert_eq!(
             plan.agents[0].reporting,
@@ -3050,9 +3428,9 @@ mod tests {
         .unwrap();
         assert_eq!(plan.choices.llm_config.as_deref(), Some("c1"));
         assert_eq!(plan.choices.llm_config_label.as_deref(), Some("fast"));
-        assert_eq!(plan.choices.mcp, Some(false));
         for agent in &plan.agents {
             assert_eq!(agent.routing, RoutingStep::Connect { reconnect: false });
+            assert_eq!(agent.mcp, McpStep::Skip);
             assert_eq!(
                 agent.reporting,
                 ReportingStep::Install {
@@ -3065,8 +3443,8 @@ mod tests {
 
     #[test]
     fn interactive_can_skip_routing_from_the_config_list() {
-        // route? yes · config: the trailing "don't route" entry · report? no
-        let prompter = Scripted::new(&[true, false], &[2]);
+        // route? yes · config: the trailing "don't route" entry · MCP? no · report? no
+        let prompter = Scripted::new(&[true, false, false], &[2]);
         let plan = plan_for(
             vec![view("claude", false, false)],
             &ConnectOptions::default(),
@@ -3075,6 +3453,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(plan.agents[0].routing, RoutingStep::Skip);
+        assert_eq!(plan.agents[0].mcp, McpStep::Skip);
         assert_eq!(plan.agents[0].reporting, ReportingStep::Skip);
     }
 
@@ -3112,9 +3491,27 @@ mod tests {
 
     #[test]
     fn unattended_disconnect_removes_routing_like_before() {
-        assert_eq!(default_removal(true, true, true, "claude"), (true, false));
-        assert_eq!(default_removal(false, false, true, "cursor"), (false, true));
-        assert_eq!(default_removal(true, false, true, "codex"), (false, false));
+        assert_eq!(
+            default_removal(true, true, true, true, "claude"),
+            (true, true, false)
+        );
+        assert_eq!(
+            default_removal(true, true, false, true, "claude"),
+            (true, false, false)
+        );
+        assert_eq!(
+            default_removal(false, false, false, true, "cursor"),
+            (false, false, true)
+        );
+        assert_eq!(
+            default_removal(true, false, false, true, "codex"),
+            (false, false, false)
+        );
+        assert_eq!(
+            default_removal(true, false, true, true, "codex"),
+            (false, true, false),
+            "an MCP-only agent loses its gateway, as routing and MCP did before"
+        );
     }
 
     #[test]
@@ -3176,7 +3573,7 @@ mod tests {
             accepts_chat_history: Some(true),
             ..here()
         };
-        // Report? yes · sync chat history? yes.
+        // MCP gateway? no · Report? yes · sync chat history? yes.
         let plan = build_plan(
             vec![view("claude", false, false)],
             &ConnectOptions {
@@ -3184,7 +3581,7 @@ mod tests {
                 ..ConnectOptions::default()
             },
             Some(&enterprise),
-            &Scripted::new(&[true, true], &[]),
+            &Scripted::new(&[false, true, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3199,14 +3596,15 @@ mod tests {
 
     #[test]
     fn a_hosted_cluster_is_never_offered_chat_history() {
-        // Asked about reporting only: a chat-history question would be an unexpected confirm.
+        // Asked about the MCP gateway and reporting only: a chat-history question would be an
+        // unexpected confirm.
         let asked = hosted_plan(
             view("claude", false, false),
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[false, true], &[]),
         );
         assert_eq!(asked.agents[0].reporting, TOKENS_ONLY);
 
@@ -3282,7 +3680,8 @@ mod tests {
 
     #[test]
     fn new_reporting_to_a_cluster_that_cant_be_asked_is_usage_only_unasked() {
-        // Report? yes · no chat-history question: it would be an unexpected confirm.
+        // MCP gateway? no · Report? yes · no chat-history question: it would be an unexpected
+        // confirm.
         let plan = build_plan(
             vec![view("claude", false, false)],
             &ConnectOptions {
@@ -3290,7 +3689,7 @@ mod tests {
                 ..ConnectOptions::default()
             },
             Some(&unreachable()),
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[false, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3305,14 +3704,14 @@ mod tests {
         from_hosted.local.capture_content = true;
         from_hosted.local.reporting_destination = Some(hosted());
 
-        // Yes to the move, no to chat history.
+        // No to the MCP gateway, yes to the move, no to chat history.
         let asked = plan_for(
             vec![from_hosted.clone()],
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true, false], &[]),
+            &Scripted::new(&[false, true, false], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3352,7 +3751,7 @@ mod tests {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true, true], &[]),
+            &Scripted::new(&[false, true, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3421,14 +3820,14 @@ mod tests {
         .unwrap();
         assert_eq!(kept.agents[0].reporting, ReportingStep::Keep);
 
-        // On a terminal, it asks: move? yes · chat history? no.
+        // On a terminal, it asks (after the MCP question): move? yes · chat history? no.
         let asked = plan_for(
             vec![reporting_to("claude", Some(elsewhere()))],
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true, false], &[]),
+            &Scripted::new(&[false, true, false], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -3623,14 +4022,12 @@ mod tests {
     }
 
     #[test]
-    fn a_refresh_keeps_the_agent_and_the_mcp_setting() {
-        // A scripted refresh never has an MCP answer: it keeps what is set.
+    fn a_refresh_keeps_the_agent() {
         let choices = RoutingChoices::default();
         let plan = plan_with(RoutingStep::Refresh, connected(Some("me"), false), true);
         let request = routing_request(&plan, &choices).unwrap();
         assert_eq!(request.agent, Some("id-mine"));
         assert_eq!(request.reused_agent_name, Some("my-agent"));
-        assert!(!request.mcp, "a refresh must not add an MCP gateway");
         assert_eq!(request.llm_config, None);
     }
 
@@ -3646,7 +4043,6 @@ mod tests {
         let verified = plan_with(reconnect.clone(), connected(Some("me"), false), true);
         let request = routing_request(&verified, &choices).unwrap();
         assert_eq!(request.agent, Some("id-mine"));
-        assert!(request.mcp, "a reconnect applies the MCP answer");
         assert_eq!(request.llm_config, Some("c2"));
 
         let unverified = plan_with(reconnect.clone(), connected(Some("me"), false), false);
@@ -3867,15 +4263,28 @@ mod tests {
     }
 
     #[test]
-    fn no_mcp_needs_routing() {
+    fn the_mcp_gateway_no_longer_needs_routing() {
         #[derive(clap::Parser)]
         struct Cli {
             #[command(flatten)]
             options: ConnectOptions,
         }
         use clap::Parser as _;
-        assert!(Cli::try_parse_from(["connect", "--no-routing", "--no-mcp"]).is_err());
-        assert!(Cli::try_parse_from(["connect", "--no-mcp"]).is_ok());
+        for args in [
+            &["connect", "--no-routing", "--mcp"][..],
+            &["connect", "--no-routing", "--no-mcp"],
+            &["connect", "--no-mcp"],
+            &["connect", "--mcp", "--reporting"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+        for args in [
+            &["connect", "--mcp", "--no-mcp"][..],
+            &["connect", "--no-routing", "--config", "x"],
+            &["connect", "--no-routing", "--agent", "x"],
+        ] {
+            assert!(Cli::try_parse_from(args).is_err(), "{args:?}");
+        }
     }
 
     // ── R1: one agent's lookup never decides for the others ──
@@ -3999,63 +4408,198 @@ mod tests {
         assert_eq!(plan.agents[0].routing, RoutingStep::Keep);
     }
 
-    // ── R7: MCP on a reconnect keeps what is set ──
+    // ── R7: the MCP gateway is its own part ──
 
-    #[test]
-    fn a_reconnect_keeps_the_current_mcp_setting_unless_told() {
-        let choices = RoutingChoices {
-            llm_config: Some("c2".into()),
-            ..RoutingChoices::default()
-        };
-        let reconnect = RoutingStep::Connect { reconnect: true };
-        let without_mcp = plan_with(reconnect.clone(), connected(Some("me"), false), true);
-        assert!(!routing_request(&without_mcp, &choices).unwrap().mcp);
-        let with_mcp = plan_with(reconnect, connected(Some("me"), true), true);
-        assert!(routing_request(&with_mcp, &choices).unwrap().mcp);
-        let fresh = plan_with(RoutingStep::Connect { reconnect: false }, None, false);
-        assert!(
-            routing_request(&fresh, &choices).unwrap().mcp,
-            "new connections get the gateway"
-        );
-        let told = RoutingChoices {
-            mcp: Some(true),
-            ..choices
-        };
-        assert!(routing_request(&without_mcp, &told).unwrap().mcp);
+    fn unattended(view: AgentView, options: ConnectOptions) -> AgentPlan {
+        plan_for(vec![view], &options, &Unattended, &no_configs_expected)
+            .unwrap()
+            .agents
+            .remove(0)
     }
 
     #[test]
-    fn mcp_flag_on_a_connection_without_mcp_reconnects_it() {
-        let mut without_mcp = view("claude", true, false);
-        if let Some(routing) = without_mcp.routing.as_mut() {
-            routing.mcp_installed = false;
+    fn mcp_only_never_touches_routing() {
+        let options = ConnectOptions {
+            no_routing: true,
+            mcp: true,
+            ..ConnectOptions::default()
+        };
+        for id in ["claude", "codex", "opencode"] {
+            let agent = unattended(view(id, false, false), options.clone());
+            assert_eq!(agent.routing, RoutingStep::Skip, "{id}");
+            assert_eq!(agent.mcp, McpStep::Install, "{id}");
+            assert_eq!(agent.reporting, ReportingStep::Skip, "{id}");
+            assert!(agent.changes_anything(), "{id}");
         }
+    }
+
+    #[test]
+    fn mcp_flags_change_only_the_mcp_gateway_of_a_connected_agent() {
+        let add = ConnectOptions {
+            mcp: true,
+            ..ConnectOptions::default()
+        };
+        let remove = ConnectOptions {
+            no_mcp: true,
+            ..ConnectOptions::default()
+        };
+        for id in ["claude", "codex", "opencode"] {
+            let added = unattended(without_mcp(view(id, true, false)), add.clone());
+            assert_eq!(added.routing, RoutingStep::Keep, "{id}");
+            assert_eq!(added.mcp, McpStep::Install, "{id}");
+
+            let removed = unattended(view(id, true, false), remove.clone());
+            assert_eq!(removed.routing, RoutingStep::Keep, "{id}");
+            assert_eq!(removed.mcp, McpStep::Remove, "{id}");
+
+            let kept = unattended(view(id, true, false), add.clone());
+            assert_eq!(kept.routing, RoutingStep::Keep, "{id}");
+            assert_eq!(kept.mcp, McpStep::Keep, "{id}");
+            assert!(!kept.changes_anything(), "{id}");
+
+            let nothing = unattended(without_mcp(view(id, true, false)), remove.clone());
+            assert_eq!(nothing.mcp, McpStep::Skip, "{id}");
+            assert!(!nothing.changes_anything(), "{id}");
+        }
+    }
+
+    #[test]
+    fn a_reconnect_keeps_the_mcp_gateway_as_it_is() {
+        let options = ConnectOptions {
+            config: Some("team".into()),
+            ..ConnectOptions::default()
+        };
+        let with = unattended(view("claude", true, false), options.clone());
+        assert_eq!(with.routing, RoutingStep::Connect { reconnect: true });
+        assert_eq!(with.mcp, McpStep::Keep);
+        let without = unattended(without_mcp(view("claude", true, false)), options);
+        assert_eq!(without.routing, RoutingStep::Connect { reconnect: true });
+        assert_eq!(without.mcp, McpStep::Skip);
+    }
+
+    #[test]
+    fn reporting_only_scripts_never_add_the_mcp_gateway() {
+        let options = ConnectOptions {
+            no_routing: true,
+            reporting: true,
+            ..ConnectOptions::default()
+        };
+        let agent = unattended(view("claude", false, false), options);
+        assert_eq!(agent.routing, RoutingStep::Skip);
+        assert_eq!(agent.mcp, McpStep::Skip);
+    }
+
+    #[test]
+    fn a_terminal_asks_about_the_mcp_gateway_even_without_routing() {
+        let prompter = Scripted::new(&[false, true, false], &[]);
         let plan = plan_for(
-            vec![without_mcp],
-            &ConnectOptions {
-                mcp: true,
-                ..ConnectOptions::default()
-            },
-            &Unattended,
+            vec![view("claude", false, false)],
+            &ConnectOptions::default(),
+            &prompter,
             &no_configs_expected,
         )
         .unwrap();
-        assert_eq!(
-            plan.agents[0].routing,
-            RoutingStep::Connect { reconnect: true }
-        );
-        // Already on: nothing to change.
+        assert_eq!(plan.agents[0].routing, RoutingStep::Skip);
+        assert_eq!(plan.agents[0].mcp, McpStep::Install);
+        assert_eq!(plan.agents[0].reporting, ReportingStep::Skip);
+    }
+
+    #[test]
+    fn a_terminal_does_not_ask_about_an_mcp_gateway_that_is_already_on() {
+        let prompter = Scripted::new(&[false], &[0]);
         let plan = plan_for(
             vec![view("claude", true, false)],
-            &ConnectOptions {
-                mcp: true,
-                ..ConnectOptions::default()
-            },
-            &Unattended,
+            &ConnectOptions::default(),
+            &prompter,
             &no_configs_expected,
         )
         .unwrap();
-        assert_eq!(plan.agents[0].routing, RoutingStep::Keep);
+        assert_eq!(plan.agents[0].mcp, McpStep::Keep);
+    }
+
+    #[test]
+    fn an_mcp_gateway_set_up_as_someone_else_is_reconnected_only_when_asked() {
+        let theirs = || mcp_only("claude", "someone-else", "prod");
+        let script = unattended(theirs(), ConnectOptions::default());
+        assert_eq!(script.mcp, McpStep::Keep);
+        let note = script.note.unwrap();
+        assert!(note.contains("set up as another user"), "{note}");
+        assert!(note.contains("connect claude --mcp"), "{note}");
+
+        let flagged = unattended(
+            theirs(),
+            ConnectOptions {
+                mcp: true,
+                ..ConnectOptions::default()
+            },
+        );
+        assert_eq!(flagged.mcp, McpStep::Replace);
+
+        let prompter = Scripted::new(&[false, true, false], &[]);
+        let plan = plan_for(
+            vec![theirs()],
+            &ConnectOptions::default(),
+            &prompter,
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(plan.agents[0].mcp, McpStep::Replace);
+
+        let elsewhere = unattended(
+            mcp_only("claude", "me", "staging"),
+            ConnectOptions::default(),
+        );
+        assert!(elsewhere.note.unwrap().contains("set up on staging"));
+        let mine = unattended(mcp_only("claude", "me", "prod"), ConnectOptions::default());
+        assert_eq!(mine.mcp, McpStep::Keep);
+        assert!(mine.note.is_none());
+    }
+
+    #[test]
+    fn the_desktop_apps_mcp_gateway_is_never_changed() {
+        let mut desktop = mcp_only("claude", "me", "prod");
+        if let Some(mcp) = desktop.mcp.as_mut() {
+            mcp.source = McpSource::DesktopApp;
+        }
+        for options in [
+            ConnectOptions {
+                no_mcp: true,
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+            ConnectOptions {
+                mcp: true,
+                no_routing: true,
+                ..ConnectOptions::default()
+            },
+        ] {
+            let agent = unattended(desktop.clone(), options);
+            assert_eq!(agent.mcp, McpStep::Keep);
+            assert!(agent.note.unwrap().contains("desktop app"));
+        }
+    }
+
+    #[test]
+    fn unreadable_mcp_state_is_left_alone() {
+        let mut broken = view("claude", false, false);
+        broken.mcp_error = Some("bad json".into());
+        let agent = unattended(
+            broken,
+            ConnectOptions {
+                no_routing: true,
+                mcp: true,
+                ..ConnectOptions::default()
+            },
+        );
+        assert_eq!(agent.mcp, McpStep::Keep);
+        assert!(!agent.changes_anything());
+        assert!(agent.note.unwrap().contains("can't be read"));
+    }
+
+    #[test]
+    fn cursor_has_no_mcp_step() {
+        let agent = unattended(view("cursor", false, true), ConnectOptions::default());
+        assert_eq!(agent.mcp, McpStep::Unsupported);
     }
 
     // ── R9: routing made as another account isn't kept silently ──
@@ -4177,6 +4721,164 @@ mod tests {
             "{error}"
         );
         assert!(error.contains("--no-routing --reporting"), "{error}");
+    }
+
+    #[test]
+    fn a_routing_failure_names_exactly_the_steps_it_skipped() {
+        let error = || anyhow::anyhow!("routing failed");
+        let text = |agent: &AgentPlan| format!("{:#}", with_skipped_steps(agent, error()));
+
+        let mut agent = fake_plan(false, RoutingStep::Connect { reconnect: true }, false);
+        assert_eq!(text(&agent), "routing failed");
+
+        agent.mcp = McpStep::Install;
+        let only_mcp = text(&agent);
+        assert!(
+            only_mcp.starts_with("the MCP gateway was not changed either"),
+            "{only_mcp}"
+        );
+        assert!(
+            only_mcp.contains("connect fake --no-routing --mcp:"),
+            "{only_mcp}"
+        );
+
+        agent.mcp = McpStep::Remove;
+        assert!(text(&agent).contains("--no-routing --no-mcp:"));
+
+        agent.mcp = McpStep::Replace;
+        agent.reporting = ReportingStep::Install {
+            capture_content: true,
+            moving_from: None,
+        };
+        let both = text(&agent);
+        assert!(
+            both.starts_with("the MCP gateway and session reporting were not changed either"),
+            "{both}"
+        );
+        assert!(both.contains("--no-routing --mcp --reporting:"), "{both}");
+
+        agent.mcp = McpStep::Keep;
+        assert!(
+            text(&agent)
+                .starts_with("session reporting was not changed either; set it up on its own")
+        );
+    }
+
+    #[test]
+    fn the_reporting_offer_after_login_never_asks_about_the_mcp_gateway() {
+        let plan = plan_for(
+            vec![view("claude", false, false)],
+            &offer_options(),
+            &Scripted::new(&[true], &[]),
+            &no_configs_expected,
+        )
+        .unwrap();
+        assert_eq!(plan.agents[0].mcp, McpStep::Skip);
+        assert!(matches!(
+            plan.agents[0].reporting,
+            ReportingStep::Install { .. }
+        ));
+    }
+
+    fn removal(view: AgentView, options: DisconnectOptions) -> Option<(bool, bool, bool)> {
+        choose_removal(view, &options, &Unattended)
+            .unwrap()
+            .map(|removal| (removal.routing, removal.mcp, removal.reporting))
+    }
+
+    #[test]
+    fn disconnect_flags_pick_each_part_on_its_own() {
+        let flags = |routing, mcp, reporting| DisconnectOptions {
+            routing,
+            mcp,
+            reporting,
+            ..DisconnectOptions::default()
+        };
+        let all = || view("claude", true, true);
+        assert_eq!(
+            removal(all(), flags(true, false, false)),
+            Some((true, false, false))
+        );
+        assert_eq!(
+            removal(all(), flags(false, true, false)),
+            Some((false, true, false))
+        );
+        assert_eq!(
+            removal(all(), flags(true, true, true)),
+            Some((true, true, true))
+        );
+        assert_eq!(
+            removal(all(), DisconnectOptions::default()),
+            Some((true, true, false))
+        );
+        assert_eq!(
+            removal(
+                mcp_only("codex", "me", "prod"),
+                DisconnectOptions::default()
+            ),
+            Some((false, true, false))
+        );
+        assert_eq!(removal(without_mcp(all()), flags(false, true, false)), None);
+    }
+
+    #[test]
+    fn disconnect_never_removes_the_desktop_apps_mcp_gateway() {
+        let mut desktop = mcp_only("claude", "me", "prod");
+        if let Some(mcp) = desktop.mcp.as_mut() {
+            mcp.source = McpSource::DesktopApp;
+        }
+        assert_eq!(removal(desktop.clone(), DisconnectOptions::default()), None);
+        assert_eq!(
+            removal(
+                desktop,
+                DisconnectOptions {
+                    mcp: true,
+                    ..DisconnectOptions::default()
+                }
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn the_status_table_shows_the_mcp_gateway_on_its_own() {
+        assert_eq!(
+            agent_row(&view("claude", true, false)).mcp,
+            "on (prod, with LLM routing)"
+        );
+        assert_eq!(agent_row(&mcp_only("codex", "me", "prod")).mcp, "on (prod)");
+        assert_eq!(agent_row(&mcp_only("codex", "me", "prod")).routing, "off");
+        assert_eq!(agent_row(&view("claude", false, false)).mcp, "off");
+        assert_eq!(agent_row(&view("cursor", false, true)).mcp, "not supported");
+        let mut broken = view("opencode", false, false);
+        broken.mcp_error = Some("bad".into());
+        assert_eq!(agent_row(&broken).mcp, "state unreadable");
+        assert_eq!(
+            connected_parts(&view("claude", true, true)),
+            "LLM routing, MCP gateway, reporting"
+        );
+        assert_eq!(
+            connected_parts(&mcp_only("codex", "me", "prod")),
+            "MCP gateway"
+        );
+        assert!(mcp_only("codex", "me", "prod").is_connected());
+    }
+
+    #[test]
+    fn the_plan_says_what_happens_to_the_mcp_gateway() {
+        let plan = plan_of(vec![], None);
+        let mut agent = AgentPlan::new(view("claude", false, false), RoutingStep::Skip);
+        let line = |agent: &AgentPlan| mcp_line(agent, &plan);
+        assert_eq!(line(&agent), "not set up");
+        agent.mcp = McpStep::Install;
+        assert!(line(&agent).starts_with("add → `claude mcp add nasiko` (user scope)"));
+        agent.mcp = McpStep::Remove;
+        assert_eq!(line(&agent), "remove");
+        let mut kept = AgentPlan::new(view("claude", true, false), RoutingStep::Keep);
+        kept.mcp = McpStep::Keep;
+        assert_eq!(line(&kept), "keep the current connection");
+        let cursor = AgentPlan::new(view("cursor", false, true), RoutingStep::Unsupported);
+        assert_eq!(line(&cursor), "not supported");
     }
 
     // ── R11: unreadable routing state ──
@@ -4508,55 +5210,25 @@ mod tests {
     // ── flags behave the same for every agent ──
 
     #[test]
-    fn no_mcp_on_a_connected_agent_reconnects_every_agent_alike() {
+    fn no_mcp_on_a_connected_agent_treats_every_agent_alike() {
         let no_mcp = ConnectOptions {
             no_mcp: true,
             ..ConnectOptions::default()
         };
         for id in ["claude", "codex", "opencode"] {
-            let plan = plan_for(
-                vec![view(id, true, false)],
-                &no_mcp,
-                &Unattended,
-                &no_configs_expected,
-            )
-            .unwrap();
-            assert_eq!(
-                plan.agents[0].routing,
-                RoutingStep::Connect { reconnect: true },
-                "{id}"
-            );
-            assert_eq!(plan.choices.mcp, Some(false), "{id}");
+            let agent = unattended(view(id, true, false), no_mcp.clone());
+            assert_eq!(agent.routing, RoutingStep::Keep, "{id}");
+            assert_eq!(agent.mcp, McpStep::Remove, "{id}");
         }
-        // With --reporting too: still a routing change.
-        let plan = plan_for(
-            vec![view("opencode", true, false)],
-            &ConnectOptions {
+        let agent = unattended(
+            view("opencode", true, false),
+            ConnectOptions {
                 reporting: true,
                 ..no_mcp.clone()
             },
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(
-            plan.agents[0].routing,
-            RoutingStep::Connect { reconnect: true }
         );
-
-        // MCP already off: nothing to change.
-        let mut without_mcp = view("claude", true, false);
-        if let Some(routing) = without_mcp.routing.as_mut() {
-            routing.mcp_installed = false;
-        }
-        let plan = plan_for(
-            vec![without_mcp],
-            &no_mcp,
-            &Unattended,
-            &no_configs_expected,
-        )
-        .unwrap();
-        assert_eq!(plan.agents[0].routing, RoutingStep::Keep);
+        assert_eq!(agent.routing, RoutingStep::Keep);
+        assert_eq!(agent.mcp, McpStep::Remove);
     }
 
     #[test]
@@ -4627,14 +5299,14 @@ mod tests {
             }
         );
 
-        // On a terminal it is asked about, and keeps the setting too.
+        // On a terminal it is asked about (after the MCP question), and keeps the setting too.
         let asked = plan_for(
             vec![stale(false)],
             &ConnectOptions {
                 no_routing: true,
                 ..ConnectOptions::default()
             },
-            &Scripted::new(&[true], &[]),
+            &Scripted::new(&[false, true], &[]),
             &no_configs_expected,
         )
         .unwrap();
@@ -4749,7 +5421,6 @@ mod tests {
             processes: &[],
             reconnects_in_place,
             routing_target: String::new,
-            mcp_target: "",
             check: (!reconnects_in_place)
                 .then_some(fake_check as fn(&RoutingOptions<'_>) -> Result<()>),
         }

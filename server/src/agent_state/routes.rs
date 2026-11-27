@@ -20,6 +20,7 @@ use super::wire::{
     KvStamp, KvView, ListKvQuery, ListTasksQuery, PutKvRequest, PutTaskRequest, RegisterRequest,
     TaskStamp, TaskView,
 };
+use crate::rate_limit::RateLimitStore;
 use crate::state::AppState;
 
 /// Room the transport-level body limit leaves beyond the value cap for the JSON around the value
@@ -33,12 +34,14 @@ const ENVELOPE_ALLOWANCE_BYTES: usize = 16 * 1024;
 /// Mounted outside the session auth, like the MCP gateway: callers are deployed agents holding
 /// their own credential, which the router authenticates and rate-limits itself.
 pub fn router(state: &AppState) -> Router<AppState> {
+    let rate_limits = RateLimitStore::Redis(state.redis.clone());
     let auth = AgentAuth::new(
         state.db.clone(),
+        &rate_limits,
         state.config.agent_state_rate_limit_per_minute,
         state.genai_metrics.agent_ready_replicas(),
     );
-    let peer_limit = PeerLimit::new(state.config.agent_state_rate_limit_per_minute);
+    let peer_limit = PeerLimit::new(&rate_limits, state.config.agent_state_rate_limit_per_minute);
     let transport_limit = state
         .config
         .agent_state_max_body_bytes

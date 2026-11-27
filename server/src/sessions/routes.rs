@@ -1,5 +1,6 @@
-//! `/api/harnesses` and `/api/sessions`: list harnesses, open a session on one, read it back,
-//! list them, suspend a sandbox, and delete a session.
+//! `/api/harnesses` and `/api/sessions`: list harnesses, open a session on one (which creates the
+//! user's harness agent for it if they have none and starts the session's sandbox, `super::start`),
+//! read it back, list them, suspend a sandbox, and delete a session.
 //!
 //! A session is owner-only. Anyone else gets the same 404 as for a session that does not
 //! exist, so ids cannot be probed. Bodies follow `docs/API_CONVENTIONS.md`: `{"data": ...}`
@@ -19,8 +20,9 @@ use serde_json::json;
 use uuid::Uuid;
 
 use super::admission::refuse_session;
-use super::catalog::{Harness, HarnessCatalog, PLATFORM_HARNESS_AGENT};
+use super::catalog::{Harness, HarnessCatalog};
 use super::model::{ListedSession, SessionFilter, SessionRow, SessionRuntimeState, SessionStore};
+use super::own_agent;
 use super::suspend::{ReapError, Suspend, claim_suspend, claim_unaccounted};
 use crate::auth::Claims;
 use crate::state::AppState;
@@ -89,9 +91,12 @@ impl From<Harness> for HarnessView {
     }
 }
 
-/// The harnesses a session can be opened on: none while coding sessions are switched off.
+/// The harnesses a session can be opened on: none while coding sessions are switched off or
+/// cannot run on this server (`sessions::readiness`).
 async fn list_harnesses(State(state): State<AppState>, _claims: Claims) -> ApiResult<Response> {
-    let harnesses = if state.config.harness_sessions_enabled {
+    let harnesses = if state.config.harness_sessions_enabled
+        && super::readiness::unavailable(&state).is_none()
+    {
         HarnessCatalog::new(state.db.clone())
             .list_enabled()
             .await
@@ -150,12 +155,27 @@ async fn create_session(
     if let Some(refusal) = refuse_session(&state, user_id, &harness.id).await {
         return Ok(refusal.into_response());
     }
-    let agent_id = harness_agent(&state, &harness.id).await?;
+    if super::readiness::unavailable(&state).is_some() {
+        return Err(ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "harness_not_ready",
+            "coding sessions are not set up on this server",
+        ));
+    }
+    let agent_id = own_harness_agent(&state, user_id, &harness).await?;
 
-    let row = SessionStore::new(state.db.clone())
+    let store = SessionStore::new(state.db.clone());
+    let mut row = store
         .create(agent_id, user_id, repo)
         .await
         .map_err(|e| ApiError::internal("create harness session", e))?;
+    // The click that opened the session starts its sandbox; the row is answered as the start
+    // left it (`starting`, or `running` if it was quick).
+    if super::start::begin(&state, &row.session_id, agent_id).await
+        && let Ok(Some(started)) = store.get(&row.session_id).await
+    {
+        row = started;
+    }
     Ok((
         StatusCode::CREATED,
         Json(json!({ "data": SessionView::new(row, Some(harness.id)) })),
@@ -211,22 +231,24 @@ async fn enabled_harness(state: &AppState, id: &str) -> ApiResult<Harness> {
     ))
 }
 
-/// The platform's `agents` row for a harness; created by boot seeding. Never a user's own agent
-/// for the harness, which shares its kind and `harness_id`.
-async fn harness_agent(state: &AppState, harness_id: &str) -> ApiResult<Uuid> {
-    sqlx::query_scalar(&format!(
-        "SELECT id FROM agents WHERE {PLATFORM_HARNESS_AGENT} AND harness_id = $1 \
-         AND deleted_at IS NULL ORDER BY created_at LIMIT 1"
-    ))
-    .bind(harness_id)
-    .fetch_optional(&state.db)
+/// The user's own harness agent for `harness` (`own_agent`), created if they have none.
+async fn own_harness_agent(state: &AppState, user_id: Uuid, harness: &Harness) -> ApiResult<Uuid> {
+    own_agent::ensure(
+        &state.db,
+        user_id,
+        harness,
+        &state.config.harness_image_prefix,
+    )
     .await
-    .map_err(|e| ApiError::internal("resolve harness agent", e))?
-    .ok_or(ApiError(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "harness_not_ready",
-        "harness agent is not registered yet",
-    ))
+    .map_err(|e| match e {
+        own_agent::OwnAgentError::NameTaken(_) => ApiError(
+            StatusCode::CONFLICT,
+            "harness_agent_name_taken",
+            "you already have an agent named after this harness's agent \
+                 (harness-<harness id>); rename it to open a session of this harness",
+        ),
+        own_agent::OwnAgentError::Db(e) => ApiError::internal("create the user's harness agent", e),
+    })
 }
 
 /// The caller's own harness session and its harness id, or the not-found response.
@@ -359,6 +381,7 @@ fn decode_cursor(cursor: &str) -> ApiResult<(DateTime<Utc>, String)> {
 /// Delete a session: its sandbox is released, its sandbox token revoked, the row removed. The
 /// owner or a superuser may; anyone else, and an unknown id, gets 404. A session a turn (or a
 /// suspend) holds is 409 `session_busy`: a running turn is not killed, the caller suspends first.
+/// A session whose sandbox is still starting is deleted once the start ends (`start::wait_out`).
 async fn delete_session(
     State(state): State<AppState>,
     claims: Claims,
@@ -371,6 +394,10 @@ async fn delete_session(
         .await
         .map_err(|e| ApiError::internal("get harness session", e))?
         .filter(|row| claims.is_superuser || row.user_id == caller)
+        .ok_or(ApiError::NOT_FOUND)?;
+    let row = super::start::wait_out(&state, row)
+        .await
+        .map_err(|e| ApiError::internal("get harness session", e))?
         .ok_or(ApiError::NOT_FOUND)?;
     let deleted = store
         .delete_idle(&id, row.turn_fence)
@@ -394,13 +421,18 @@ async fn delete_session(
 /// provider agrees is not running, has nothing to do (204), unless a turn is mid-start (409). A session a turn is using is `409`:
 /// the claim is fenced on the turn counter, so a turn that starts meanwhile wins. A session
 /// already being suspended is `202` while that claim's deadline holds; once it has lapsed the
-/// claim is taken over and finished.
+/// claim is taken over and finished. A session whose sandbox is still starting is suspended once
+/// the start ends (`start::wait_out`).
 async fn suspend_session(
     State(state): State<AppState>,
     claims: Claims,
     Path(id): Path<String>,
 ) -> ApiResult<Response> {
     let (row, _) = owned_session(&state, &claims, &id).await?;
+    let row = super::start::wait_out(&state, row)
+        .await
+        .map_err(|e| ApiError::internal("get harness session", e))?
+        .ok_or(ApiError::NOT_FOUND)?;
     if let Some(done) = nothing_to_suspend(&row) {
         return Ok(done);
     }

@@ -367,7 +367,7 @@ async fn create_build(
         tracing::error!(%e, %agent_id, build_id = %build.id, "create_build: failed to queue build job");
         return (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response();
     }
-    let _ = state.build_tx.send(()).await;
+    state.wake_build_worker().await;
 
     (StatusCode::CREATED, Json(build)).into_response()
 }

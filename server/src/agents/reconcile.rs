@@ -43,6 +43,30 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
     };
 
     for agent in agents {
+        // Under the agent's lock, the one a wake and a park take: an agent one of them is
+        // handling, here or on another replica, is skipped rather than redeployed under it. Held
+        // until this agent's redeploy is done.
+        let mut tx = match state.db.begin().await {
+            Ok(tx) => tx,
+            Err(e) => {
+                warn!(error = %e, "agent reconciliation: no database connection, stopping");
+                return;
+            }
+        };
+        match crate::agent_wake::try_lock_agent(&mut tx, agent.id).await {
+            Ok(true) => {}
+            Ok(false) => {
+                info!(agent_id = %agent.id, "agent reconciliation: agent busy (wake or park), skipped");
+                continue;
+            }
+            Err(e) => {
+                warn!(agent_id = %agent.id, error = %e, "agent reconciliation: could not lock agent, skipped");
+                continue;
+            }
+        }
+        if !still_running(&mut tx, agent.id).await {
+            continue;
+        }
         let container_id = ContainerId::from_uuid(agent.id);
         if !agent_needs_redeploy(state.runtime.status(&container_id).await) {
             continue;
@@ -73,7 +97,22 @@ pub async fn reconcile_agents_on_startup(state: &AppState) {
                 warn!(agent_id = %agent.id, error = %e, "agent reconciliation: redeploy failed");
             }
         }
+        let _ = tx.commit().await;
     }
+}
+
+/// Whether the agent is still `running` now that its lock is held: a park that committed after the
+/// list was read leaves it `parked`, and a parked agent is woken by its next call instead.
+async fn still_running(tx: &mut sqlx::PgConnection, agent_id: uuid::Uuid) -> bool {
+    sqlx::query_scalar::<_, bool>(
+        "SELECT status = 'running' AND deleted_at IS NULL FROM agents WHERE id = $1",
+    )
+    .bind(agent_id)
+    .fetch_optional(tx)
+    .await
+    .ok()
+    .flatten()
+    .unwrap_or(false)
 }
 
 /// Pure decision given a `runtime.status()` result: any error (not found,

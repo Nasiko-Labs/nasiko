@@ -141,11 +141,30 @@ async fn settled_session(db: &PgPool, session_id: &str) -> sqlx::postgres::PgRow
     panic!("turn lease was never released");
 }
 
+/// `user`'s own opencode harness agent, created as opening their first session creates it.
+async fn own_opencode_agent(server: &common::TestServer, user: Uuid) -> Uuid {
+    let harness = nasiko_server::sessions::HarnessCatalog::new(server.db.clone())
+        .get("opencode")
+        .await
+        .unwrap()
+        .expect("the catalog lists opencode");
+    nasiko_server::sessions::own_agent::ensure(
+        &server.db,
+        user,
+        &harness,
+        &server.state.config.harness_image_prefix,
+    )
+    .await
+    .expect("the user's harness agent")
+}
+
+/// Alice and Bob, each with their own opencode harness agent: every message of theirs goes to it.
 struct World {
     server: common::TestServer,
-    agent_id: Uuid,
     alice: Uuid,
+    alice_agent: Uuid,
     bob: Uuid,
+    bob_agent: Uuid,
 }
 
 async fn world() -> World {
@@ -159,20 +178,16 @@ async fn world_with(configure: impl FnOnce(&mut nasiko_config::Config)) -> World
     })
     .await;
     init_admin(&server).await;
-    nasiko_server::seed::seed_harness_agents(&server.state).await;
-    let agent_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE workload_kind = 'harness' AND harness_id = 'opencode'",
-    )
-    .fetch_one(&server.db)
-    .await
-    .unwrap();
     let alice = insert_user(&server.db, "alice").await;
     let bob = insert_user(&server.db, "bob").await;
+    let alice_agent = own_opencode_agent(&server, alice).await;
+    let bob_agent = own_opencode_agent(&server, bob).await;
     World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         bob,
+        bob_agent,
     }
 }
 
@@ -187,26 +202,62 @@ async fn session_with_script(server: &common::TestServer, script: &str) -> (Sand
     let key = SandboxKey::Session {
         session_id: context_id,
     };
-    let shim = start_shim(script, Some(shim_token(SECRET, &key).unwrap())).await;
-    server
-        .sandbox
-        .set_transport_url(&key, format!("ws://{shim}/acp"));
+    wire_shim(server, &key, script).await;
     (key, context_id.to_string())
 }
 
+/// Start a shim running `script` that demands `key`'s bearer, and have the fake provider's
+/// `attach` for `key` point at it.
+async fn wire_shim(server: &common::TestServer, key: &SandboxKey, script: &str) {
+    let shim = start_shim(script, Some(shim_token(SECRET, key).unwrap())).await;
+    server
+        .sandbox
+        .set_transport_url(key, format!("ws://{shim}/acp"));
+}
+
+/// Open an opencode session as `user` through the session API, which starts its sandbox; returns
+/// its sandbox key and id.
+async fn open_session(server: &common::TestServer, user: (Uuid, &str)) -> (SandboxKey, String) {
+    let resp = common::as_member(
+        server
+            .client
+            .post(server.url("/api/sessions"))
+            .json(&json!({ "harness": "opencode" })),
+        &user.0.to_string(),
+        user.1,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 201);
+    let body: Value = resp.json().await.unwrap();
+    let sid = body["data"]["session_id"]
+        .as_str()
+        .expect("the new session's id")
+        .to_owned();
+    let key = SandboxKey::Session {
+        session_id: sid.parse().unwrap(),
+    };
+    (key, sid)
+}
+
+/// A message to the sender's own harness agent runs a turn on the session's sandbox and streams
+/// it over SSE; the session, its flow and its sandbox credential are bound to that agent; another
+/// user can neither reuse the contextId nor reach the agent.
 #[tokio::test]
 #[serial]
 async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         bob,
+        bob_agent,
     } = world().await;
     let (key, sid) = session_with_shim(&server).await;
 
     // First turn: acquires the sandbox, streams the activity, the text and a terminal frame.
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 200);
     let text = tokio::time::timeout(Duration::from_secs(30), resp.text())
         .await
@@ -248,8 +299,24 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     .unwrap();
     assert_eq!(reply, 1, "the reply is persisted to the transcript");
 
+    // The session, and the flow it ran under, are bound to the agent the message went to.
+    let bound: Option<Uuid> =
+        sqlx::query_scalar("SELECT agent_id FROM chat_sessions WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(bound, Some(alice_agent));
+    let roots: Vec<Option<Uuid>> =
+        sqlx::query_scalar("SELECT root_agent_id FROM flows WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_all(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(roots, [Some(alice_agent)]);
+
     // Second turn, same contextId: same session row, the provider is asked again (resume).
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 200);
     let text = resp.text().await.unwrap();
     assert!(text.contains("TASK_STATE_COMPLETED"), "{text}");
@@ -262,72 +329,92 @@ async fn harness_turn_runs_on_the_sandbox_and_streams_over_sse() {
     assert_eq!(rows, 1);
     assert_eq!(server.sandbox.acquire_count(&key), 2);
 
-    // The sandbox's credential is the one minted when it was created, and it is still live
-    // on turn 2; the per-turn tokens are revoked as their turns end.
-    assert_sandbox_credentials_live(&server, &key, &sid, agent_id, &first_env).await;
+    // The sandbox's credential is the one minted when it was created, names alice's own agent,
+    // and is still live on turn 2; no turn mints a token of its own.
+    assert_sandbox_credentials_live(&server, &key, &sid, alice_agent, &first_env).await;
 
-    // Someone else's contextId is a 404 (not a 403, which would confirm it exists) and writes
-    // nothing under it: no transcript row, no flow.
-    let flows_before: i64 = sqlx::query_scalar("SELECT count(*) FROM flows")
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    let before: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM chat_messages WHERE session_id = $1")
-            .bind(&sid)
-            .fetch_one(&server.db)
-            .await
-            .unwrap();
-    let resp = turn_over_proxy(&server, agent_id, (bob, "bob"), &sid).await;
+    // Bob sending alice's contextId to his own agent gets a 404 (not a 403, which would confirm
+    // it exists); calling alice's agent directly is the proxy's ACL 404. Neither writes anything:
+    // no session of bob's, no transcript row, no flow, no turn.
+    let before = written_by_others(&server, bob, &sid).await;
+    let resp = turn_over_proxy(&server, bob_agent, (bob, "bob"), &sid).await;
     assert_eq!(resp.status(), 404);
+    let resp = turn_over_proxy(&server, alice_agent, (bob, "bob"), &sid).await;
+    assert_eq!(resp.status(), 404);
+    assert_eq!(written_by_others(&server, bob, &sid).await, before);
     assert_eq!(server.sandbox.acquire_count(&key), 2);
-    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_messages WHERE session_id = $1")
-        .bind(&sid)
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    let flows_after: i64 = sqlx::query_scalar("SELECT count(*) FROM flows")
-        .fetch_one(&server.db)
-        .await
-        .unwrap();
-    assert_eq!(
-        flows_before, flows_after,
-        "a refused turn must not open a flow"
-    );
-    assert_eq!(
-        before, after,
-        "a refused turn must not write to the transcript"
-    );
 
-    // The dispatch path resolves the session first and answers 404 for another user's context.
-    let body = json!({
-        "jsonrpc": "2.0", "id": "1", "method": "message/stream",
-        "params": {
-            "message": {
-                "role": "ROLE_USER", "messageId": Uuid::new_v4().to_string(),
-                "contextId": sid, "parts": [{ "text": "hi" }]
-            },
-            "metadata": { "agent_id": agent_id.to_string() }
-        }
-    });
-    let resp = common::as_member(
-        server
-            .client
-            .post(server.url("/api/orchestrator/a2a"))
-            .json(&body),
-        &bob.to_string(),
-        "bob",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(resp.status(), 404);
+    // The dispatch path answers the same 404s, on either agent.
+    for (which, agent) in [
+        ("bob's own agent", bob_agent),
+        ("alice's agent", alice_agent),
+    ] {
+        let resp = dispatch_message(&server, agent, (bob, "bob"), &sid).await;
+        let status = resp.status();
+        let body = resp.text().await.unwrap();
+        assert_eq!(status, 404, "bob over dispatch to {which}: {body}");
+    }
+    assert_eq!(written_by_others(&server, bob, &sid).await, before);
     assert_eq!(server.sandbox.acquire_count(&key), 2);
     server.cleanup().await;
 }
 
-/// Every acquire is given the same full env, and it is the stored, never-revoked sandbox token;
-/// exactly the two turn tokens are revoked.
+/// What a message of `user`'s about someone else's session `sid` could have written: `user`'s
+/// sessions, `sid`'s transcript rows, and every flow.
+async fn written_by_others(server: &common::TestServer, user: Uuid, sid: &str) -> (i64, i64, i64) {
+    let sessions = sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE user_id = $1")
+        .bind(user)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    let transcript = sqlx::query_scalar("SELECT count(*) FROM chat_messages WHERE session_id = $1")
+        .bind(sid)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    let flows = sqlx::query_scalar("SELECT count(*) FROM flows")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    (sessions, transcript, flows)
+}
+
+/// A `message/stream` under `context_id` to `agent_id` over direct dispatch
+/// (`POST /api/orchestrator/a2a` naming the agent in its metadata).
+async fn dispatch_message(
+    server: &common::TestServer,
+    agent_id: Uuid,
+    user: (Uuid, &str),
+    context_id: &str,
+) -> reqwest::Response {
+    dispatch_message_to(server, &agent_id.to_string(), user, context_id).await
+}
+
+/// As [`dispatch_message`], addressed to `target`: an agent's UUID or its name.
+async fn dispatch_message_to(
+    server: &common::TestServer,
+    target: &str,
+    user: (Uuid, &str),
+    context_id: &str,
+) -> reqwest::Response {
+    let mut body = stream_body(context_id, "hi");
+    body["params"]["message"]["role"] = json!("ROLE_USER");
+    body["params"]["metadata"] = json!({ "agent_id": target });
+    common::as_member(
+        server
+            .client
+            .post(server.url("/api/orchestrator/a2a"))
+            .json(&body),
+        &user.0.to_string(),
+        user.1,
+    )
+    .send()
+    .await
+    .unwrap()
+}
+
+/// Every acquire is given the same full env, and it is the stored, never-revoked sandbox token,
+/// naming `agent_id`; no turn token is minted, so nothing is revoked.
 async fn assert_sandbox_credentials_live(
     server: &common::TestServer,
     key: &SandboxKey,
@@ -359,6 +446,7 @@ async fn assert_sandbox_credentials_live(
         nasiko_session_token::parse_algorithm("HS256"),
     )
     .expect("the sandbox token verifies");
+    assert_eq!(claims.agent_id, agent_id.to_string());
     let stored: Option<String> =
         sqlx::query_scalar("SELECT sandbox_token_jti FROM chat_sessions WHERE session_id = $1")
             .bind(sid)
@@ -376,28 +464,30 @@ async fn assert_sandbox_credentials_live(
         revoked, 0,
         "the sandbox token must outlive the turns that used the sandbox"
     );
-    let turn_tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
+    let revoked: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
         .fetch_one(&server.db)
         .await
         .unwrap();
     assert_eq!(
-        turn_tokens, 2,
-        "exactly the two turn tokens are revoked, never the sandbox's"
+        revoked, 0,
+        "a harness turn mints no token of its own to revoke"
     );
 }
 
+/// A session whose lease another turn holds (not a start) is busy at once: a 409 on both front
+/// doors, `-32608` over dispatch.
 #[tokio::test]
 #[serial]
 async fn a_turn_on_a_busy_session_is_a_409_on_both_front_doors() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         ..
     } = world().await;
     let (_key, sid) = session_with_shim(&server).await;
     nasiko_server::sessions::SessionStore::new(server.db.clone())
-        .find_or_create_for_harness(agent_id, alice, &sid)
+        .find_or_create_for_harness(alice_agent, alice, &sid)
         .await
         .unwrap()
         .expect("own session");
@@ -407,31 +497,13 @@ async fn a_turn_on_a_busy_session_is_a_409_on_both_front_doors() {
         .unwrap()
         .expect("lease");
 
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 409);
 
-    let body = json!({
-        "jsonrpc": "2.0", "id": "1", "method": "message/stream",
-        "params": {
-            "message": {
-                "role": "ROLE_USER", "messageId": Uuid::new_v4().to_string(),
-                "contextId": sid, "parts": [{ "text": "hi" }]
-            },
-            "metadata": { "agent_id": agent_id.to_string() }
-        }
-    });
-    let resp = common::as_member(
-        server
-            .client
-            .post(server.url("/api/orchestrator/a2a"))
-            .json(&body),
-        &alice.to_string(),
-        "alice",
-    )
-    .send()
-    .await
-    .unwrap();
+    let resp = dispatch_message(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 409);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(body["error"]["code"], -32608, "{body}");
     server.cleanup().await;
 }
 
@@ -442,13 +514,13 @@ async fn a_turn_on_a_busy_session_is_a_409_on_both_front_doors() {
 async fn a_busy_409_does_not_move_attribution_off_the_running_turn() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         ..
     } = world().await;
     let (_key, sid) = session_with_shim(&server).await;
     nasiko_server::sessions::SessionStore::new(server.db.clone())
-        .find_or_create_for_harness(agent_id, alice, &sid)
+        .find_or_create_for_harness(alice_agent, alice, &sid)
         .await
         .unwrap()
         .expect("own session");
@@ -462,7 +534,7 @@ async fn a_busy_409_does_not_move_attribution_off_the_running_turn() {
         .unwrap();
     sqlx::query("INSERT INTO flow_participants (flow_id, agent_id) VALUES ($1, $2)")
         .bind(turn_n)
-        .bind(agent_id)
+        .bind(alice_agent)
         .execute(&server.db)
         .await
         .unwrap();
@@ -471,11 +543,11 @@ async fn a_busy_409_does_not_move_attribution_off_the_running_turn() {
         .unwrap()
         .expect("lease");
 
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 409);
 
     let claims = nasiko_session_token::SessionClaims {
-        agent_id: agent_id.to_string(),
+        agent_id: alice_agent.to_string(),
         user_id: alice.to_string(),
         session_id: sid.clone(),
         flow_id: turn_n.into(),
@@ -509,7 +581,7 @@ async fn a_busy_409_does_not_move_attribution_off_the_running_turn() {
 async fn a_failed_acquire_parks_a_fresh_session_and_leaves_a_live_one_running() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -519,7 +591,7 @@ async fn a_failed_acquire_parks_a_fresh_session_and_leaves_a_live_one_running() 
     server
         .sandbox
         .fail_next_acquire(nasiko_runtime::RuntimeError::Internal("boom".into()));
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &fresh).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &fresh).await;
     assert_eq!(resp.status(), 502);
     let (state, sandbox_ref, jti): (String, Option<String>, Option<String>) = sqlx::query_as(
         "SELECT runtime_state, sandbox_ref, sandbox_token_jti FROM chat_sessions WHERE session_id = $1",
@@ -543,7 +615,7 @@ async fn a_failed_acquire_parks_a_fresh_session_and_leaves_a_live_one_running() 
     // A session that already owns a running sandbox keeps its state: parking it would orphan it.
     let (_key, live) = session_with_shim(&server).await;
     nasiko_server::sessions::SessionStore::new(server.db.clone())
-        .find_or_create_for_harness(agent_id, alice, &live)
+        .find_or_create_for_harness(alice_agent, alice, &live)
         .await
         .unwrap()
         .expect("own session");
@@ -558,7 +630,7 @@ async fn a_failed_acquire_parks_a_fresh_session_and_leaves_a_live_one_running() 
     server
         .sandbox
         .fail_next_acquire(nasiko_runtime::RuntimeError::Internal("boom".into()));
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &live).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &live).await;
     assert_eq!(resp.status(), 502);
     let state: String =
         sqlx::query_scalar("SELECT runtime_state FROM chat_sessions WHERE session_id = $1")
@@ -575,7 +647,7 @@ async fn a_failed_acquire_parks_a_fresh_session_and_leaves_a_live_one_running() 
 async fn a_suspend_claim_between_the_lease_and_acquire_stops_the_turn_with_a_409() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -592,7 +664,7 @@ async fn a_suspend_claim_between_the_lease_and_acquire_stops_the_turn_with_a_409
         sqlx::query(statement).execute(&server.db).await.unwrap();
     }
 
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 409);
     assert_eq!(
         server.sandbox.acquire_count(&key),
@@ -607,14 +679,14 @@ async fn a_suspend_claim_between_the_lease_and_acquire_stops_the_turn_with_a_409
 async fn losing_the_lease_mid_turn_fails_the_stream_with_the_suspend_reason() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world_with(|c| c.coding_agent_lease_heartbeat_secs = 1).await;
     let (_key, sid) = session_with_script(&server, SLOW_ACP).await;
 
     // The response arrives once the prompt is in flight.
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 200);
     // A suspend claim takes the lease, bumps the fence and marks the row `stopping`.
     sqlx::query(
@@ -650,7 +722,7 @@ async fn completed_text(resp: reqwest::Response) -> String {
 async fn a_reconciler_tick_during_acquire_leaves_the_turn_alive() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -658,7 +730,7 @@ async fn a_reconciler_tick_during_acquire_leaves_the_turn_alive() {
     let expected_key = key.name();
     server.sandbox.delay_next_acquire(Duration::from_secs(2));
 
-    let turn = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid);
+    let turn = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid);
     // The coding-agent reconciler's tick lands while the provider is still acquiring: the row is
     // `starting` with no `sandbox_ref` yet.
     let tick = async {
@@ -692,7 +764,7 @@ async fn a_reconciler_tick_during_acquire_leaves_the_turn_alive() {
 async fn the_lease_is_kept_alive_while_the_sandbox_is_being_acquired() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world_with(|c| {
@@ -704,7 +776,7 @@ async fn the_lease_is_kept_alive_while_the_sandbox_is_being_acquired() {
     // The provider takes longer than the lease.
     server.sandbox.delay_next_acquire(Duration::from_secs(5));
 
-    let turn = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid);
+    let turn = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid);
     let rival = async {
         tokio::time::sleep(Duration::from_millis(4200)).await;
         nasiko_server::coding::lifecycle::acquire_turn(&server.db, &sid, "rival", "t-rival", 60)
@@ -725,13 +797,13 @@ async fn the_lease_is_kept_alive_while_the_sandbox_is_being_acquired() {
 async fn deleting_a_session_mid_turn_ends_it_as_deleted_and_releases_the_sandbox() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world_with(|c| c.coding_agent_lease_heartbeat_secs = 1).await;
     let (key, sid) = session_with_script(&server, SLOW_ACP).await;
 
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 200);
     let deleted = common::as_member(
         server
@@ -763,19 +835,19 @@ async fn deleting_a_session_mid_turn_ends_it_as_deleted_and_releases_the_sandbox
 async fn a_token_near_expiry_or_already_revoked_is_replaced_and_the_sandbox_rebuilt() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let (key, sid) = session_with_shim(&server).await;
-    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     settled_session(&server.db, &sid).await;
     let first = server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
 
     // Near expiry: store a token that has under a day left.
     let near = nasiko_session_token::mint_session_token(
         &nasiko_session_token::SessionTokenInput {
-            agent_id: agent_id.to_string(),
+            agent_id: alice_agent.to_string(),
             user_id: alice.to_string(),
             session_id: sid.clone(),
             flow_id: "f".into(),
@@ -785,8 +857,8 @@ async fn a_token_near_expiry_or_already_revoked_is_replaced_and_the_sandbox_rebu
         nasiko_session_token::parse_algorithm("HS256"),
     )
     .unwrap();
-    store_raw_token(&server, &sid, agent_id, &near.token, &near.jti).await;
-    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    store_raw_token(&server, &sid, alice_agent, &near.token, &near.jti).await;
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     settled_session(&server.db, &sid).await;
     let second =
         server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
@@ -813,7 +885,7 @@ async fn a_token_near_expiry_or_already_revoked_is_replaced_and_the_sandbox_rebu
         .execute(&server.db)
         .await
         .unwrap();
-    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     settled_session(&server.db, &sid).await;
     let third = server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
     assert_ne!(third, second);
@@ -836,18 +908,18 @@ async fn a_token_near_expiry_or_already_revoked_is_replaced_and_the_sandbox_rebu
 async fn a_token_near_expiry_is_replaced_by_suspending_a_sandbox_that_resumes_on_the_new_env() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     server.sandbox.set_resume_takes_new_env(true);
     let (key, sid) = session_with_shim(&server).await;
-    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     settled_session(&server.db, &sid).await;
 
     let near = nasiko_session_token::mint_session_token(
         &nasiko_session_token::SessionTokenInput {
-            agent_id: agent_id.to_string(),
+            agent_id: alice_agent.to_string(),
             user_id: alice.to_string(),
             session_id: sid.clone(),
             flow_id: "f".into(),
@@ -857,8 +929,8 @@ async fn a_token_near_expiry_is_replaced_by_suspending_a_sandbox_that_resumes_on
         nasiko_session_token::parse_algorithm("HS256"),
     )
     .unwrap();
-    store_raw_token(&server, &sid, agent_id, &near.token, &near.jti).await;
-    completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+    store_raw_token(&server, &sid, alice_agent, &near.token, &near.jti).await;
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     settled_session(&server.db, &sid).await;
 
     let sent = server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
@@ -958,7 +1030,7 @@ async fn a_handshake_mode_shim_is_configured_once_and_restarted_only_when_its_en
     let _stub = StubHarness::install(&format!("env > {}\n{FAKE_ACP}", env_dump.display()));
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -974,7 +1046,7 @@ async fn a_handshake_mode_shim_is_configured_once_and_restarted_only_when_its_en
 
     // Turn 1: the server configures the shim, waits for the harness to start, then connects.
     let text =
-        completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     assert!(text.contains("hello from shim"), "{text}");
     settled_session(&server.db, &sid).await;
     let first = child_generation(shim, &key).await;
@@ -995,7 +1067,7 @@ async fn a_handshake_mode_shim_is_configured_once_and_restarted_only_when_its_en
 
     // Turn 2, same env: connect only; the harness is not restarted.
     let text =
-        completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     assert!(text.contains("hello from shim"), "{text}");
     settled_session(&server.db, &sid).await;
     assert_eq!(child_generation(shim, &key).await, first);
@@ -1003,7 +1075,7 @@ async fn a_handshake_mode_shim_is_configured_once_and_restarted_only_when_its_en
     // Turn 3 after the sandbox token is replaced: the env changed, so the harness restarts once.
     let near = nasiko_session_token::mint_session_token(
         &nasiko_session_token::SessionTokenInput {
-            agent_id: agent_id.to_string(),
+            agent_id: alice_agent.to_string(),
             user_id: alice.to_string(),
             session_id: sid.clone(),
             flow_id: "f".into(),
@@ -1013,9 +1085,9 @@ async fn a_handshake_mode_shim_is_configured_once_and_restarted_only_when_its_en
         nasiko_session_token::parse_algorithm("HS256"),
     )
     .unwrap();
-    store_raw_token(&server, &sid, agent_id, &near.token, &near.jti).await;
+    store_raw_token(&server, &sid, alice_agent, &near.token, &near.jti).await;
     let text =
-        completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
     assert!(text.contains("hello from shim"), "{text}");
     settled_session(&server.db, &sid).await;
     assert_eq!(child_generation(shim, &key).await, first + 1);
@@ -1057,7 +1129,7 @@ async fn store_raw_token(
 async fn the_sessions_repo_reaches_the_sandbox_env_with_the_users_github_token_only_for_github() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -1079,7 +1151,7 @@ async fn the_sessions_repo_reaches_the_sandbox_env_with_the_users_github_token_o
     ] {
         let (key, sid) = session_with_shim(&server).await;
         nasiko_server::sessions::SessionStore::new(server.db.clone())
-            .find_or_create_for_harness(agent_id, alice, &sid)
+            .find_or_create_for_harness(alice_agent, alice, &sid)
             .await
             .unwrap()
             .expect("own session");
@@ -1090,7 +1162,7 @@ async fn the_sessions_repo_reaches_the_sandbox_env_with_the_users_github_token_o
             .await
             .unwrap();
 
-        completed_text(turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await).await;
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
         let env = server.sandbox.last_acquire_spec(&key).unwrap().env;
         assert_eq!(env["WORKSPACE_REPO"], repo);
         assert_eq!(
@@ -1107,7 +1179,7 @@ async fn the_sessions_repo_reaches_the_sandbox_env_with_the_users_github_token_o
 async fn a_claim_after_the_key_is_recorded_stops_the_turn_and_revokes_the_token_it_minted() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -1124,7 +1196,7 @@ async fn a_claim_after_the_key_is_recorded_stops_the_turn_and_revokes_the_token_
         sqlx::query(statement).execute(&server.db).await.unwrap();
     }
 
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(resp.status(), 409);
     assert_eq!(server.sandbox.acquire_count(&key), 0);
     let stored: Option<String> =
@@ -1139,8 +1211,8 @@ async fn a_claim_after_the_key_is_recorded_stops_the_turn_and_revokes_the_token_
         .await
         .unwrap();
     assert_eq!(
-        revoked, 2,
-        "the minted sandbox token and the turn's own token are both revoked"
+        revoked, 1,
+        "the minted sandbox token is revoked; the turn mints no token of its own"
     );
     server.cleanup().await;
 }
@@ -1245,24 +1317,31 @@ async fn dispatch_rpc(
 async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_doors() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         bob,
+        bob_agent,
     } = world().await;
     let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).unwrap();
     let (_key, sid) = session_with_script(&server, &watching_acp(&dir)).await;
 
-    let mut stream = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut stream = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     assert_eq!(stream.status(), 200);
     let (task_id, _) = read_until(&mut stream, "working on it").await;
 
     // tasks/get while the turn runs: working. Over the proxy and over dispatch.
-    let got: Value = proxy_rpc(&server, agent_id, (alice, "alice"), "tasks/get", &task_id)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let got: Value = proxy_rpc(
+        &server,
+        alice_agent,
+        (alice, "alice"),
+        "tasks/get",
+        &task_id,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
     assert_eq!(got["id"], "r1");
     assert_eq!(got["result"]["id"], task_id.as_str());
     assert_eq!(got["result"]["contextId"], sid.as_str());
@@ -1270,32 +1349,42 @@ async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_door
         got["result"]["status"]["state"], "TASK_STATE_WORKING",
         "{got}"
     );
-    let got = dispatch_rpc(&server, agent_id, (alice, "alice"), "tasks/get", &task_id).await;
+    let got = dispatch_rpc(
+        &server,
+        alice_agent,
+        (alice, "alice"),
+        "tasks/get",
+        &task_id,
+    )
+    .await;
     assert_eq!(
         got["result"]["status"]["state"], "TASK_STATE_WORKING",
         "{got}"
     );
 
-    // Someone else's session is "not found", on both doors, like an unknown id.
-    let foreign: Value = proxy_rpc(&server, agent_id, (bob, "bob"), "tasks/get", &task_id)
+    // Someone else's task asked of one's own agent is "not found", on both doors, like an
+    // unknown id; asked of its owner's agent, the proxy's ACL answers 404 before any task lookup.
+    let foreign: Value = proxy_rpc(&server, bob_agent, (bob, "bob"), "tasks/get", &task_id)
         .await
         .json()
         .await
         .unwrap();
     assert_eq!(foreign["error"]["code"], -32001, "{foreign}");
-    let unknown: Value = proxy_rpc(&server, agent_id, (alice, "alice"), "tasks/get", "nope")
+    let unknown: Value = proxy_rpc(&server, alice_agent, (alice, "alice"), "tasks/get", "nope")
         .await
         .json()
         .await
         .unwrap();
     assert_eq!(unknown["error"]["code"], -32001, "{unknown}");
-    let foreign = dispatch_rpc(&server, agent_id, (bob, "bob"), "tasks/cancel", &task_id).await;
+    let foreign = dispatch_rpc(&server, bob_agent, (bob, "bob"), "tasks/cancel", &task_id).await;
     assert_eq!(foreign["error"]["code"], -32001, "{foreign}");
+    let foreign = proxy_rpc(&server, alice_agent, (bob, "bob"), "tasks/cancel", &task_id).await;
+    assert_eq!(foreign.status(), 404);
 
     // tasks/resubscribe: a second stream that receives what is published from now on.
     let mut resub = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         &task_id,
@@ -1312,7 +1401,7 @@ async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_door
     // tasks/cancel (dispatch): the agent sees session/cancel and the Task comes back canceled.
     let cancelled = dispatch_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/cancel",
         &task_id,
@@ -1340,18 +1429,24 @@ async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_door
 
     // After the turn: get says canceled, cancel is not allowed, resubscribe finds no live task.
     settled_session(&server.db, &sid).await;
-    let got: Value = proxy_rpc(&server, agent_id, (alice, "alice"), "tasks/get", &task_id)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let got: Value = proxy_rpc(
+        &server,
+        alice_agent,
+        (alice, "alice"),
+        "tasks/get",
+        &task_id,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
     assert_eq!(
         got["result"]["status"]["state"], "TASK_STATE_CANCELED",
         "{got}"
     );
     let again: Value = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/cancel",
         &task_id,
@@ -1363,7 +1458,7 @@ async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_door
     assert_eq!(again["error"]["code"], -32002, "{again}");
     let late: Value = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         &task_id,
@@ -1381,17 +1476,17 @@ async fn a_live_turn_can_be_read_resubscribed_and_cancelled_over_both_front_door
 async fn a_finished_turn_reads_back_completed() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let (_key, sid) = session_with_shim(&server).await;
-    let mut resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     let (task_id, _) = read_until(&mut resp, "hello from shim").await;
     while resp.chunk().await.unwrap().is_some() {}
     settled_session(&server.db, &sid).await;
 
-    let got: Value = proxy_rpc(&server, agent_id, (alice, "alice"), "GetTask", &task_id)
+    let got: Value = proxy_rpc(&server, alice_agent, (alice, "alice"), "GetTask", &task_id)
         .await
         .json()
         .await
@@ -1408,13 +1503,13 @@ async fn a_finished_turn_reads_back_completed() {
 async fn the_harness_card_advertises_streaming_and_no_push() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let card: Value = common::as_member(
         server.client.get(server.url(&format!(
-            "/api/agents/{agent_id}/.well-known/agent-card.json"
+            "/api/agents/{alice_agent}/.well-known/agent-card.json"
         ))),
         &alice.to_string(),
         "alice",
@@ -1436,14 +1531,14 @@ async fn the_harness_card_advertises_streaming_and_no_push() {
 async fn a_cancel_flag_on_the_row_stops_a_turn_the_request_did_not_reach() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world_with(|c| c.coding_agent_lease_heartbeat_secs = 1).await;
     let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).unwrap();
     let (_key, sid) = session_with_script(&server, &watching_acp(&dir)).await;
-    let mut stream = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut stream = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     read_until(&mut stream, "working on it").await;
 
     // What a cancel served by another replica leaves behind: only the row flag.
@@ -1511,23 +1606,23 @@ async fn get_state(
 async fn a_turn_survives_its_client_walking_away_and_reads_back_completed() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let (_key, sid) = session_with_script(&server, SLOW_COMPLETE_ACP).await;
-    let mut stream = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut stream = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     let (task_id, _) = read_until(&mut stream, "slow reply").await;
     drop(stream);
 
     // Mid-turn it is still working; a second after, it has finished on its own.
     assert_eq!(
-        get_state(&server, agent_id, (alice, "alice"), &task_id).await,
+        get_state(&server, alice_agent, (alice, "alice"), &task_id).await,
         "TASK_STATE_WORKING"
     );
     settled_session(&server.db, &sid).await;
     assert_eq!(
-        get_state(&server, agent_id, (alice, "alice"), &task_id).await,
+        get_state(&server, alice_agent, (alice, "alice"), &task_id).await,
         "TASK_STATE_COMPLETED"
     );
     let reply: i64 = sqlx::query_scalar(
@@ -1542,11 +1637,17 @@ async fn a_turn_survives_its_client_walking_away_and_reads_back_completed() {
         "the reply was persisted though no client was listening"
     );
     // The finished Task carries the reply.
-    let got: Value = proxy_rpc(&server, agent_id, (alice, "alice"), "tasks/get", &task_id)
-        .await
-        .json()
-        .await
-        .unwrap();
+    let got: Value = proxy_rpc(
+        &server,
+        alice_agent,
+        (alice, "alice"),
+        "tasks/get",
+        &task_id,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
     assert!(got.to_string().contains("slow reply"), "{got}");
     server.cleanup().await;
 }
@@ -1556,13 +1657,13 @@ async fn a_turn_survives_its_client_walking_away_and_reads_back_completed() {
 async fn a_turn_whose_lease_lapsed_is_failed_not_working() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let sid = Uuid::new_v4().to_string();
     nasiko_server::sessions::SessionStore::new(server.db.clone())
-        .find_or_create_for_harness(agent_id, alice, &sid)
+        .find_or_create_for_harness(alice_agent, alice, &sid)
         .await
         .unwrap()
         .expect("own session");
@@ -1577,12 +1678,12 @@ async fn a_turn_whose_lease_lapsed_is_failed_not_working() {
     .unwrap();
 
     assert_eq!(
-        get_state(&server, agent_id, (alice, "alice"), "dead-task").await,
+        get_state(&server, alice_agent, (alice, "alice"), "dead-task").await,
         "TASK_STATE_FAILED"
     );
     let cancel: Value = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/cancel",
         "dead-task",
@@ -1594,7 +1695,7 @@ async fn a_turn_whose_lease_lapsed_is_failed_not_working() {
     assert_eq!(cancel["error"]["code"], -32002, "{cancel}");
     let resub: Value = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         "dead-task",
@@ -1612,7 +1713,7 @@ async fn a_turn_whose_lease_lapsed_is_failed_not_working() {
 async fn a_request_dropped_while_provisioning_leaves_nothing_registered() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -1623,7 +1724,7 @@ async fn a_request_dropped_while_provisioning_leaves_nothing_registered() {
     let sent = common::as_member(
         server
             .client
-            .post(server.url(&format!("/api/agents/{agent_id}")))
+            .post(server.url(&format!("/api/agents/{alice_agent}")))
             .timeout(Duration::from_millis(700))
             .json(&stream_body(&sid, "hi")),
         &alice.to_string(),
@@ -1674,31 +1775,102 @@ done
     )
 }
 
+/// Asks for a permission when prompted; once answered, records the answer in `<dir>/answer` and
+/// ends the turn.
+fn asking_acp(dir: &std::path::Path) -> String {
+    let dir = dir.display();
+    format!(
+        r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E 's/^\{{"jsonrpc":"2\.0","id":("[^"]*"|[0-9]+),.*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"protocolVersion\":1,\"agentCapabilities\":{{}}}}}}" ;;
+    *'"method":"session/new"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"sessionId\":\"sh-session\"}}}}" ;;
+    *'"method":"session/prompt"'*)
+      echo "$id" > {dir}/prompt_id
+      echo '{{"jsonrpc":"2.0","id":"perm-1","method":"session/request_permission","params":{{"sessionId":"sh-session","toolCall":{{"toolCallId":"call-1","title":"Edit /workspace/a.txt"}},"options":[{{"optionId":"once","name":"Allow once","kind":"allow_once"}},{{"optionId":"no","name":"Reject","kind":"reject_once"}}]}}}}' ;;
+    *'"perm-1"'*)
+      printf '%s\n' "$line" > {dir}/answer
+      pid=$(cat {dir}/prompt_id)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$pid,\"result\":{{\"stopReason\":\"end_turn\"}}}}" ;;
+  esac
+done
+"#
+    )
+}
+
+/// Turn approvals on for `agent` as its owner does: `hitl_enabled` through `PUT /api/agents/{id}`.
+async fn turn_approvals_on(server: &common::TestServer, agent: Uuid, owner: (Uuid, &str)) {
+    let resp = common::as_member(
+        server
+            .client
+            .put(server.url(&format!("/api/agents/{agent}")))
+            .json(&json!({ "hitl_enabled": true })),
+        &owner.0.to_string(),
+        owner.1,
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 200);
+}
+
+/// Approvals are a setting of the agent a session runs as, the user's own: with alice's turned
+/// on, bob's session on his own agent (approvals off, as it was created) has its harness's
+/// question answered without asking anyone.
+#[tokio::test]
+#[serial]
+async fn a_session_whose_agent_has_approvals_off_runs_without_asking() {
+    let World {
+        server,
+        alice,
+        alice_agent,
+        bob,
+        bob_agent,
+    } = world().await;
+    turn_approvals_on(&server, alice_agent, (alice, "alice")).await;
+    let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (_key, sid) = session_with_script(&server, &asking_acp(&dir)).await;
+
+    let text = completed_text(turn_over_proxy(&server, bob_agent, (bob, "bob"), &sid).await).await;
+    assert!(!text.contains("TASK_STATE_INPUT_REQUIRED"), "{text}");
+    let answer = std::fs::read_to_string(dir.join("answer")).expect("the question was answered");
+    assert!(answer.contains(r#""optionId":"once""#), "{answer}");
+    let asked: i64 = sqlx::query_scalar("SELECT count(*) FROM hitl_requests")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(asked, 0, "nobody was asked to approve");
+    let _ = std::fs::remove_dir_all(&dir);
+    server.cleanup().await;
+}
+
+/// With approvals on for the user's own agent, a turn blocks on the harness's question; cancelling
+/// it there closes the question and ends the task canceled.
 #[tokio::test]
 #[serial]
 async fn cancelling_during_a_permission_wait_closes_the_request_and_ends_canceled() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         ..
     } = world().await;
-    sqlx::query("UPDATE agents SET hitl_enabled = true WHERE id = $1")
-        .bind(agent_id)
-        .execute(&server.db)
-        .await
-        .unwrap();
+    turn_approvals_on(&server, alice_agent, (alice, "alice")).await;
     let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
     std::fs::create_dir_all(&dir).unwrap();
     let (_key, sid) = session_with_script(&server, &permission_acp(&dir)).await;
 
-    let mut stream = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut stream = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     let (task_id, _) = read_until(&mut stream, "TASK_STATE_INPUT_REQUIRED").await;
 
     // The turn is blocked on a human: tasks/get says so, and names the approval.
     let mut state = String::new();
     for _ in 0..40 {
-        state = get_state(&server, agent_id, (alice, "alice"), &task_id).await;
+        state = get_state(&server, alice_agent, (alice, "alice"), &task_id).await;
         if state == "TASK_STATE_INPUT_REQUIRED" {
             break;
         }
@@ -1708,7 +1880,7 @@ async fn cancelling_during_a_permission_wait_closes_the_request_and_ends_cancele
 
     let cancelled = dispatch_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/cancel",
         &task_id,
@@ -1727,10 +1899,11 @@ async fn cancelling_during_a_permission_wait_closes_the_request_and_ends_cancele
         text.push_str(&String::from_utf8_lossy(&chunk));
     }
     assert!(text.contains("TASK_STATE_CANCELED"), "{text}");
+    // The question was asked as alice's own agent, and closed with the task.
     let status: String = sqlx::query_scalar(
         "SELECT status FROM hitl_requests WHERE agent_id = $1 ORDER BY created_at DESC LIMIT 1",
     )
-    .bind(agent_id)
+    .bind(alice_agent)
     .fetch_one(&server.db)
     .await
     .unwrap();
@@ -1768,7 +1941,7 @@ done
 async fn a_cancel_the_agent_ignores_ends_the_turn_and_restarts_the_shims_harness() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
@@ -1776,11 +1949,11 @@ async fn a_cancel_the_agent_ignores_ends_the_turn_and_restarts_the_shims_harness
     std::fs::create_dir_all(&dir).unwrap();
     let (_key, sid) = session_with_script(&server, &deaf_acp(&dir)).await;
 
-    let mut stream = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut stream = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     let (task_id, _) = read_until(&mut stream, "deaf").await;
     let cancelled = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/cancel",
         &task_id,
@@ -1861,15 +2034,15 @@ async fn drain(resub: &mut reqwest::Response, within: Duration) -> String {
 async fn a_task_running_on_another_replica_is_followed_by_polling_the_row() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
-    let sid = session_with_foreign_turn(&server, agent_id, alice).await;
+    let sid = session_with_foreign_turn(&server, alice_agent, alice).await;
 
     let mut resub = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         "elsewhere",
@@ -1899,14 +2072,14 @@ async fn a_task_running_on_another_replica_streams_its_frames_through_redis() {
     };
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
-    let sid = session_with_foreign_turn(&server, agent_id, alice).await;
+    let sid = session_with_foreign_turn(&server, alice_agent, alice).await;
     let mut resub = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         "elsewhere",
@@ -1941,14 +2114,14 @@ async fn a_task_running_on_another_replica_streams_its_frames_through_redis() {
 async fn without_redis_a_foreign_task_still_gets_its_snapshot_and_ends_with_the_row() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world_with(|c| c.redis_url = "redis://127.0.0.1:1".into()).await;
-    let sid = session_with_foreign_turn(&server, agent_id, alice).await;
+    let sid = session_with_foreign_turn(&server, alice_agent, alice).await;
     let mut resub = proxy_rpc(
         &server,
-        agent_id,
+        alice_agent,
         (alice, "alice"),
         "tasks/resubscribe",
         "elsewhere",
@@ -1968,12 +2141,12 @@ async fn without_redis_a_foreign_task_still_gets_its_snapshot_and_ends_with_the_
 async fn polling_a_task_opens_no_flow_and_records_no_participant() {
     let World {
         server,
-        agent_id,
+        alice_agent,
         alice,
         ..
     } = world().await;
     let (_key, sid) = session_with_shim(&server).await;
-    let mut resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &sid).await;
+    let mut resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
     let (task_id, _) = read_until(&mut resp, "hello from shim").await;
     while resp.chunk().await.unwrap().is_some() {}
     settled_session(&server.db, &sid).await;
@@ -1992,7 +2165,7 @@ async fn polling_a_task_opens_no_flow_and_records_no_participant() {
     let before = counts(server.db.clone()).await;
     for _ in 0..3 {
         assert_eq!(
-            get_state(&server, agent_id, (alice, "alice"), &task_id).await,
+            get_state(&server, alice_agent, (alice, "alice"), &task_id).await,
             "TASK_STATE_COMPLETED"
         );
     }
@@ -2004,7 +2177,9 @@ async fn polling_a_task_opens_no_flow_and_records_no_participant() {
     server.cleanup().await;
 }
 
-/// A session admission that refuses every turn, as a distribution at its agent limit does.
+// ---- refusals: the sessions switch on turns, the session admission on opening a session -------
+
+/// A session admission that refuses every session, as a distribution at its agent limit does.
 struct AtTheCap;
 
 #[async_trait::async_trait]
@@ -2032,54 +2207,42 @@ async fn written_for(db: &PgPool, user: Uuid, context_id: &str) -> (i64, i64) {
     (sessions, flows)
 }
 
-fn assert_refused(body: &Value) {
+/// The JSON-RPC answer to request `"1"` refusing a turn because sessions are switched off.
+fn assert_sessions_disabled(body: &Value) {
     assert_eq!(body["jsonrpc"], "2.0", "{body}");
+    assert_eq!(body["id"], "1", "{body}");
     assert_eq!(body["error"]["code"], SESSION_REFUSED, "{body}");
-    assert_eq!(body["error"]["message"], "You've reached 2 cloud agents");
-    assert_eq!(body["error"]["data"]["code"], "plan_agent_limit_reached");
+    assert_eq!(
+        body["error"]["message"],
+        "coding sessions are not enabled on this server"
+    );
+    assert_eq!(body["error"]["data"]["code"], "harness_sessions_disabled");
 }
 
-/// A turn the session admission refuses is answered with a JSON-RPC error carrying the refusal,
-/// over the proxy (on a 200, like its other harness errors) and over dispatch (with the refusal's
-/// status), and writes nothing first: no session row for its contextId, no flow.
+/// While coding sessions are switched off, a message to one's own harness agent is answered with
+/// a JSON-RPC error carrying the refusal, over the proxy (on a 200, like its other harness errors)
+/// and over dispatch (with the refusal's status), and writes nothing first: no session row for its
+/// contextId, no flow, no sandbox.
 #[tokio::test]
 #[serial]
-async fn a_refused_turn_writes_nothing_and_answers_a_json_rpc_error_over_both_front_doors() {
+async fn a_turn_while_sessions_are_switched_off_writes_nothing_and_answers_a_json_rpc_error() {
     let World {
         server,
-        agent_id,
         alice,
+        alice_agent,
         ..
-    } = world().await;
-    server.state.session_admission.install(Arc::new(AtTheCap));
+    } = world_with(|c| c.harness_sessions_enabled = false).await;
 
     let context_id = Uuid::new_v4().to_string();
-    let resp = turn_over_proxy(&server, agent_id, (alice, "alice"), &context_id).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &context_id).await;
     assert_eq!(resp.status(), 200);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["id"], "1");
-    assert_refused(&body);
+    assert_sessions_disabled(&resp.json().await.unwrap());
     assert_eq!(written_for(&server.db, alice, &context_id).await, (0, 0));
 
     let context_id = Uuid::new_v4().to_string();
-    let mut dispatch = stream_body(&context_id, "say hello");
-    dispatch["params"]["message"]["role"] = json!("ROLE_USER");
-    dispatch["params"]["metadata"] = json!({ "agent_id": agent_id.to_string() });
-    let resp = common::as_member(
-        server
-            .client
-            .post(server.url("/api/orchestrator/a2a"))
-            .json(&dispatch),
-        &alice.to_string(),
-        "alice",
-    )
-    .send()
-    .await
-    .unwrap();
-    assert_eq!(resp.status(), 402);
-    let body: Value = resp.json().await.unwrap();
-    assert_eq!(body["id"], "1");
-    assert_refused(&body);
+    let resp = dispatch_message(&server, alice_agent, (alice, "alice"), &context_id).await;
+    assert_eq!(resp.status(), 403);
+    assert_sessions_disabled(&resp.json().await.unwrap());
     assert_eq!(written_for(&server.db, alice, &context_id).await, (0, 0));
     assert_eq!(
         server.sandbox.acquire_count(&SandboxKey::Session {
@@ -2087,5 +2250,399 @@ async fn a_refused_turn_writes_nothing_and_answers_a_json_rpc_error_over_both_fr
         }),
         0
     );
+    server.cleanup().await;
+}
+
+/// Opening a session the session admission refuses is answered with the refusal's status and
+/// body, and writes nothing first: no harness agent for the user, no session, no sandbox.
+#[tokio::test]
+#[serial]
+async fn opening_a_session_the_admission_refuses_answers_its_refusal_and_writes_nothing() {
+    let World { server, .. } = world().await;
+    server.state.session_admission.install(Arc::new(AtTheCap));
+    let carol = insert_user(&server.db, "carol").await;
+
+    let resp = common::as_member(
+        server
+            .client
+            .post(server.url("/api/sessions"))
+            .json(&json!({ "harness": "opencode" })),
+        &carol.to_string(),
+        "carol",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), 402);
+    let body: Value = resp.json().await.unwrap();
+    assert_eq!(
+        body,
+        json!({ "error": "You've reached 2 cloud agents", "code": "plan_agent_limit_reached" })
+    );
+    let agents: i64 = sqlx::query_scalar("SELECT count(*) FROM agents WHERE owner_id = $1")
+        .bind(carol)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    let sessions: i64 = sqlx::query_scalar("SELECT count(*) FROM chat_sessions WHERE user_id = $1")
+        .bind(carol)
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!((agents, sessions), (0, 0));
+    assert!(server.sandbox.list().await.unwrap().is_empty());
+    server.cleanup().await;
+}
+
+/// A turn adds no agent (its session runs as an agent that exists), so it is not asked of the
+/// session admission: with one installed that refuses every session, a message to one's own
+/// harness agent still runs, over both front doors.
+#[tokio::test]
+#[serial]
+async fn a_turn_is_not_asked_of_the_session_admission() {
+    let World {
+        server,
+        alice,
+        alice_agent,
+        ..
+    } = world().await;
+    server.state.session_admission.install(Arc::new(AtTheCap));
+    let (_key, sid) = session_with_shim(&server).await;
+
+    completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
+    settled_session(&server.db, &sid).await;
+    completed_text(dispatch_message(&server, alice_agent, (alice, "alice"), &sid).await).await;
+    server.cleanup().await;
+}
+
+// ---- opening a session starts its sandbox --------------------------------------------------------
+
+/// Opening a session starts its sandbox before any message: the start acquires it, leaves the
+/// session running with no turn stamped, and gives up the lease. The first message then runs on
+/// that sandbox (resumed, never created again) with the sandbox token the start minted.
+#[tokio::test]
+#[serial]
+async fn opening_a_session_starts_its_sandbox_and_the_first_message_runs_on_it() {
+    let World {
+        server,
+        alice,
+        alice_agent,
+        ..
+    } = world().await;
+    let (key, sid) = open_session(&server, (alice, "alice")).await;
+
+    let row = settled_session(&server.db, &sid).await;
+    let state: String = sqlx::Row::get(&row, "runtime_state");
+    let sandbox_ref: Option<String> = sqlx::Row::get(&row, "sandbox_ref");
+    let last_turn: Option<chrono::DateTime<chrono::Utc>> = sqlx::Row::get(&row, "last_turn_at");
+    assert_eq!(state, "running");
+    assert!(sandbox_ref.is_some_and(|r| r.starts_with("fake:")));
+    assert_eq!(last_turn, None, "a start is not a turn");
+    assert_eq!(server.sandbox.acquire_count(&key), 1);
+    assert_eq!(server.sandbox.creations(&key), 1);
+    let started_token = server.sandbox.spec_of(&key).unwrap().env["NASIKO_SESSION_TOKEN"].clone();
+
+    wire_shim(&server, &key, FAKE_ACP).await;
+    let text =
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
+    assert!(text.contains("hello from shim"), "{text}");
+    settled_session(&server.db, &sid).await;
+    assert_eq!(
+        server.sandbox.creations(&key),
+        1,
+        "the turn resumed the started sandbox rather than creating another"
+    );
+    assert_eq!(
+        server.sandbox.last_acquire_spec(&key).unwrap().env["NASIKO_SESSION_TOKEN"],
+        started_token,
+        "the turn kept the sandbox token the start minted"
+    );
+    server.cleanup().await;
+}
+
+/// Deleting or suspending a session whose sandbox is still being started waits for the start
+/// instead of answering 409 `session_busy`, then acts on the session the start left.
+#[tokio::test]
+#[serial]
+async fn deleting_or_suspending_a_session_while_its_sandbox_starts_waits_for_the_start() {
+    let World { server, alice, .. } = world().await;
+    for action in ["delete", "suspend"] {
+        server.sandbox.delay_next_acquire(Duration::from_secs(2));
+        let (key, sid) = open_session(&server, (alice, "alice")).await;
+        let store = nasiko_server::sessions::SessionStore::new(server.db.clone());
+        let row = store.get(&sid).await.unwrap().expect("the session");
+        assert!(
+            nasiko_server::sessions::start::is_starting(&row),
+            "{action}: the start holds the lease"
+        );
+
+        let request = match action {
+            "delete" => server
+                .client
+                .delete(server.url(&format!("/api/sessions/{sid}"))),
+            _ => server
+                .client
+                .post(server.url(&format!("/api/sessions/{sid}/suspend"))),
+        };
+        let resp = common::as_member(request, &alice.to_string(), "alice")
+            .send()
+            .await
+            .unwrap();
+        let status = resp.status();
+        let body = resp.text().await.unwrap();
+        assert!(status.is_success(), "{action}: {status} {body}");
+        assert_eq!(server.sandbox.creations(&key), 1, "{action}");
+        match store.get(&sid).await.unwrap() {
+            None => assert_eq!(action, "delete"),
+            Some(row) => {
+                assert_eq!(action, "suspend");
+                assert!(
+                    matches!(row.runtime_state.as_str(), "parked" | "stopping"),
+                    "suspend: {}",
+                    row.runtime_state
+                );
+            }
+        }
+    }
+    server.cleanup().await;
+}
+
+/// A message sent while the session's sandbox is still being started (the start holds the
+/// session's lease) waits for the start instead of being refused as busy, then completes on the
+/// sandbox the start created.
+#[tokio::test]
+#[serial]
+async fn a_message_sent_while_the_sandbox_is_being_started_waits_for_the_start_and_completes() {
+    let World {
+        server,
+        alice,
+        alice_agent,
+        ..
+    } = world().await;
+    // The provider takes a while, so the start still holds the session when the message arrives.
+    server.sandbox.delay_next_acquire(Duration::from_secs(2));
+    let (key, sid) = open_session(&server, (alice, "alice")).await;
+    wire_shim(&server, &key, FAKE_ACP).await;
+    let row = nasiko_server::sessions::SessionStore::new(server.db.clone())
+        .get(&sid)
+        .await
+        .unwrap()
+        .expect("the session");
+    assert!(
+        nasiko_server::sessions::start::is_starting(&row),
+        "the start holds the lease: {:?}",
+        row.active_turn_id
+    );
+    assert_eq!(row.runtime_state, "starting");
+
+    let text =
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
+    assert!(text.contains("hello from shim"), "{text}");
+    assert_eq!(
+        server.sandbox.creations(&key),
+        1,
+        "the turn ran on the sandbox the start created"
+    );
+    server.cleanup().await;
+}
+
+/// A fake agent that advertises HTTP MCP, so the turn attaches the gateway, and appends every
+/// `session/new` request it gets to `<dir>/new`. Like [`FAKE_ACP`] it does not load sessions, so
+/// every turn opens one.
+fn recording_acp(dir: &std::path::Path) -> String {
+    let dir = dir.display();
+    format!(
+        r#"
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -E 's/^\{{"jsonrpc":"2\.0","id":("[^"]*"|[0-9]+),.*/\1/')
+  case "$line" in
+    *'"method":"initialize"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"protocolVersion\":1,\"agentCapabilities\":{{\"mcpCapabilities\":{{\"http\":true}}}}}}}}" ;;
+    *'"method":"session/new"'*)
+      printf '%s\n' "$line" >> {dir}/new
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"sessionId\":\"sh-session\"}}}}" ;;
+    *'"method":"session/prompt"'*)
+      echo "{{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{{\"stopReason\":\"end_turn\"}}}}" ;;
+  esac
+done
+"#
+    )
+}
+
+/// The harness reaches the MCP gateway with the session's sandbox token on every turn, not with a
+/// token of the turn's own that the turn revokes: the harness keeps its MCP client across turns,
+/// so a revoked one would leave the next turn without tools.
+#[tokio::test]
+#[serial]
+async fn every_turn_attaches_the_gateway_with_the_sandbox_token() {
+    let World {
+        server,
+        alice_agent,
+        alice,
+        ..
+    } = world_with(|c| c.mcp_gateway_public_url = Some("http://gateway.test/api/mcp".into())).await;
+    let dir = std::env::temp_dir().join(format!("harness-e2e-{}", Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (key, sid) = session_with_script(&server, &recording_acp(&dir)).await;
+
+    for _ in 0..2 {
+        completed_text(turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await).await;
+        settled_session(&server.db, &sid).await;
+    }
+
+    let token = server
+        .sandbox
+        .last_acquire_spec(&key)
+        .expect("acquired")
+        .env["NASIKO_SESSION_TOKEN"]
+        .clone();
+    let opened = std::fs::read_to_string(dir.join("new")).unwrap();
+    let headers: Vec<&str> = opened.lines().collect();
+    assert_eq!(headers.len(), 2, "{opened}");
+    for line in headers {
+        assert!(line.contains("http://gateway.test/api/mcp"), "{line}");
+        assert!(line.contains(&format!("Bearer {token}")), "{line}");
+    }
+    let revoked: i64 = sqlx::query_scalar("SELECT count(*) FROM revoked_session_tokens")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    assert_eq!(revoked, 0);
+    let _ = std::fs::remove_dir_all(&dir);
+    server.cleanup().await;
+}
+
+/// Every user's harness agent for a harness has the same name, so a message addressed by that name
+/// reaches the sender's own (here bob's, though alice's is older), and a user without one is
+/// answered as for an unknown agent, with nothing written.
+#[tokio::test]
+#[serial]
+async fn a_message_addressed_by_name_reaches_the_senders_own_harness_agent() {
+    let World {
+        server,
+        bob,
+        bob_agent,
+        ..
+    } = world().await;
+    let name = nasiko_runtime::harness_agent::name("opencode");
+
+    let (_key, sid) = session_with_shim(&server).await;
+    let resp = dispatch_message_to(&server, &name, (bob, "bob"), &sid).await;
+    let status = resp.status();
+    let body = resp.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    let bound: Option<Uuid> =
+        sqlx::query_scalar("SELECT agent_id FROM chat_sessions WHERE session_id = $1")
+            .bind(&sid)
+            .fetch_one(&server.db)
+            .await
+            .unwrap();
+    assert_eq!(bound, Some(bob_agent));
+
+    let carol = insert_user(&server.db, "carol").await;
+    let context_id = Uuid::new_v4().to_string();
+    let resp = dispatch_message_to(&server, &name, (carol, "carol"), &context_id).await;
+    assert_eq!(resp.status(), 404);
+    assert_eq!(written_for(&server.db, carol, &context_id).await, (0, 0));
+    server.cleanup().await;
+}
+
+/// A harness agent is never shared, superusers included. A superuser who messages another user's
+/// harness agent, over the proxy or dispatch, opens no session on it and resumes none of theirs:
+/// each is answered 404, as for a missing session, and nothing is written. They still see that
+/// user's sessions.
+#[tokio::test]
+#[serial]
+async fn a_superuser_sees_another_users_sessions_but_cannot_talk_to_their_harness_agent() {
+    let World {
+        server,
+        alice,
+        alice_agent,
+        ..
+    } = world().await;
+    let admin: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE username = 'admin'")
+        .fetch_one(&server.db)
+        .await
+        .unwrap();
+    let (key, sid) = session_with_shim(&server).await;
+    let resp = turn_over_proxy(&server, alice_agent, (alice, "alice"), &sid).await;
+    assert_eq!(resp.status(), 200);
+    let _ = resp.text().await.unwrap();
+    let acquired = server.sandbox.acquire_count(&key);
+
+    let as_admin = |path: &str, body: &Value| {
+        common::as_superuser(
+            server.client.post(server.url(path)).json(body),
+            &admin.to_string(),
+            "admin",
+        )
+        .send()
+    };
+    for context_id in [Uuid::new_v4().to_string(), sid.clone()] {
+        let before = written_by_others(&server, admin, &context_id).await;
+        let proxied = as_admin(
+            &format!("/api/agents/{alice_agent}"),
+            &stream_body(&context_id, "hi"),
+        )
+        .await
+        .unwrap();
+        assert_eq!(proxied.status(), 404, "proxy, context {context_id}");
+
+        let mut dispatched = stream_body(&context_id, "hi");
+        dispatched["params"]["message"]["role"] = json!("ROLE_USER");
+        dispatched["params"]["metadata"] = json!({ "agent_id": alice_agent.to_string() });
+        let dispatched = as_admin("/api/orchestrator/a2a", &dispatched)
+            .await
+            .unwrap();
+        let status = dispatched.status();
+        let body = dispatched.text().await.unwrap();
+        assert_eq!(status, 404, "dispatch, context {context_id}: {body}");
+
+        assert_eq!(written_by_others(&server, admin, &context_id).await, before);
+    }
+    // Without a contextId the proxy would mint one; the owner is checked before it does.
+    let sessions_on_alices_agent = || async {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM chat_sessions WHERE user_id = $1 AND agent_id = $2",
+        )
+        .bind(admin)
+        .bind(alice_agent)
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+    };
+    let before = sessions_on_alices_agent().await;
+    let mut no_context = stream_body("", "hi");
+    no_context["params"]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("contextId");
+    let proxied = as_admin(&format!("/api/agents/{alice_agent}"), &no_context)
+        .await
+        .unwrap();
+    assert_eq!(proxied.status(), 404, "proxy, no contextId");
+    assert_eq!(sessions_on_alices_agent().await, before);
+    assert_eq!(server.sandbox.acquire_count(&key), acquired);
+
+    let listed: Value = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/sessions?user_id={alice}"))),
+        &admin.to_string(),
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap()
+    .json()
+    .await
+    .unwrap();
+    let listed: Vec<&str> = listed["data"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|session| session["session_id"].as_str())
+        .collect();
+    assert_eq!(listed, vec![sid.as_str()]);
     server.cleanup().await;
 }

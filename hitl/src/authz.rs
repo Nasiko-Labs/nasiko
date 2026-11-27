@@ -1,6 +1,6 @@
 use uuid::Uuid;
 
-use crate::types::HitlRequest;
+use crate::types::{HitlOrigin, HitlRequest};
 
 /// The caller, reduced to exactly what `authorize_hitl_action` needs. Deliberately not
 /// `crate::auth::Claims` or `nasiko_auth::Identity` — this crate has no dependency on either
@@ -12,10 +12,9 @@ pub struct HitlIdentity {
     pub is_superuser: bool,
 }
 
-/// What the caller is trying to do to a `hitl_requests` row. All three variants currently
-/// authorize identically (§10: "one rule for every kind, not two") — kept distinct because a
-/// future, stricter split (e.g. view broader than resolve) is a one-line change here, not a
-/// call-site rewrite.
+/// What the caller is trying to do to a `hitl_requests` row. They authorize identically (§10:
+/// "one rule for every kind, not two") except on a coding agent's question, which a superuser
+/// may view but not answer (see [`authorize_hitl_action`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HitlAction {
     View,
@@ -47,12 +46,17 @@ pub enum HitlAuthzError {
 /// grant-based access to a shared agent must never see or answer a *different* user's paused
 /// question on that same agent, including `tool_approval` rows (connector credentials are always
 /// the delegating user's own, so the exposure is theirs alone).
+///
+/// A coding agent's question (a harness session's, or a local coding agent's) is answered or
+/// cancelled by its owner only: it asks whether to run something in that user's own workspace,
+/// which nobody else acts in, superusers included. A superuser may still view it.
 pub fn authorize_hitl_action(
     identity: &HitlIdentity,
     request: &HitlRequest,
     action: HitlAction,
 ) -> Result<(), HitlAuthzError> {
-    if identity.is_superuser || identity.user_id == request.owner_user_id {
+    let owner_only = request.origin == HitlOrigin::CodingAgent && action != HitlAction::View;
+    if identity.user_id == request.owner_user_id || (identity.is_superuser && !owner_only) {
         Ok(())
     } else {
         Err(HitlAuthzError::Forbidden { action })
@@ -111,13 +115,40 @@ mod tests {
     }
 
     #[test]
-    fn superuser_is_always_authorized() {
+    fn superuser_is_authorized_for_every_action_outside_a_coding_agent() {
         let request = request_owned_by(Uuid::new_v4());
         let identity = HitlIdentity {
             user_id: Uuid::new_v4(),
             is_superuser: true,
         };
-        assert!(authorize_hitl_action(&identity, &request, HitlAction::View).is_ok());
+        for action in [HitlAction::View, HitlAction::Resolve, HitlAction::Cancel] {
+            assert!(authorize_hitl_action(&identity, &request, action).is_ok());
+        }
+    }
+
+    /// A coding agent's question asks whether to run something in its owner's workspace: a
+    /// superuser sees it, only the owner answers or cancels it.
+    #[test]
+    fn a_coding_agents_question_is_answered_by_its_owner_only() {
+        let owner = Uuid::new_v4();
+        let mut request = request_owned_by(owner);
+        request.kind = HitlKind::ToolApproval;
+        request.origin = HitlOrigin::CodingAgent;
+        let superuser = HitlIdentity {
+            user_id: Uuid::new_v4(),
+            is_superuser: true,
+        };
+        assert!(authorize_hitl_action(&superuser, &request, HitlAction::View).is_ok());
+        assert!(authorize_hitl_action(&superuser, &request, HitlAction::Resolve).is_err());
+        assert!(authorize_hitl_action(&superuser, &request, HitlAction::Cancel).is_err());
+
+        let owner = HitlIdentity {
+            user_id: owner,
+            is_superuser: false,
+        };
+        for action in [HitlAction::View, HitlAction::Resolve, HitlAction::Cancel] {
+            assert!(authorize_hitl_action(&owner, &request, action).is_ok());
+        }
     }
 
     /// The direct regression test for §10's rule: a different, non-superuser user — even one

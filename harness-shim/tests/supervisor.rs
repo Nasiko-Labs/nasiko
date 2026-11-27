@@ -2,9 +2,6 @@
 //!
 //! Each test uses its own fixed ports (the platform, not the supervisor, picks a session's port),
 //! in a range of its own so tests running in parallel never collide.
-//!
-//! Session confinement needs Linux, so every test about the supervisor's own behaviour runs with
-//! both layers off; the confinement tests at the end build their own configuration.
 
 mod common;
 
@@ -13,15 +10,10 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use common::{configure_body, http, wait_for_child};
-use harness_shim::supervisor::{Confinement, SupervisorConfig};
+use harness_shim::supervisor::SupervisorConfig;
 use serde_json::{Value, json};
 
 const TOKEN: &str = "sup-token";
-
-const UNCONFINED: Confinement = Confinement {
-    fs: false,
-    syscalls: false,
-};
 
 /// A running supervisor, its workspace root and its scratch root.
 struct Pod {
@@ -39,15 +31,10 @@ fn real_shim() -> PathBuf {
 }
 
 async fn start(max: usize) -> Pod {
-    start_with(max, real_shim(), UNCONFINED).await
+    start_with(max, real_shim()).await
 }
 
-fn config(
-    max: usize,
-    shim_binary: PathBuf,
-    workspace_root: PathBuf,
-    confinement: Confinement,
-) -> SupervisorConfig {
+fn config(max: usize, shim_binary: PathBuf, workspace_root: PathBuf) -> SupervisorConfig {
     SupervisorConfig {
         listen: "127.0.0.1:0".parse().unwrap(),
         token: TOKEN.into(),
@@ -55,11 +42,10 @@ fn config(
         workspace_root,
         scratch_root: None,
         max_sessions: max,
-        confinement,
     }
 }
 
-async fn start_with(max: usize, shim_binary: PathBuf, confinement: Confinement) -> Pod {
+async fn start_with(max: usize, shim_binary: PathBuf) -> Pod {
     let outer = tempfile::tempdir().unwrap();
     let root = outer.path().join("root");
     let scratch = outer.path().join("scratch");
@@ -67,7 +53,7 @@ async fn start_with(max: usize, shim_binary: PathBuf, confinement: Confinement) 
     std::fs::create_dir(&scratch).unwrap();
     let config = SupervisorConfig {
         scratch_root: Some(scratch.clone()),
-        ..config(max, shim_binary, root.clone(), confinement)
+        ..config(max, shim_binary, root.clone())
     };
     let (tx, rx) = tokio::sync::oneshot::channel();
     tokio::spawn(harness_shim::supervisor::run(config, Some(tx)));
@@ -246,7 +232,7 @@ async fn a_scratch_root_that_is_not_a_directory_is_a_startup_error() {
     let outer = tempfile::tempdir().unwrap();
     let config = SupervisorConfig {
         scratch_root: Some(outer.path().join("absent")),
-        ..config(8, real_shim(), outer.path().into(), UNCONFINED)
+        ..config(8, real_shim(), outer.path().into())
     };
     let err = harness_shim::supervisor::run(config, None)
         .await
@@ -310,7 +296,7 @@ async fn a_shim_that_fails_to_start_is_torn_down_and_the_next_put_retries() {
     let bin = tempfile::tempdir().unwrap();
     let shim_binary = bin.path().join("shim");
     repoint(&shim_binary, Path::new("/usr/bin/false"));
-    let pod = start_with(8, shim_binary.clone(), UNCONFINED).await;
+    let pod = start_with(8, shim_binary.clone()).await;
 
     let (code, failed) = put(pod.addr, "s-a", 23361).await;
     assert_eq!(code, 500, "{failed}");
@@ -391,188 +377,4 @@ async fn a_bad_id_port_or_body_is_refused() {
     assert_eq!(code, 400);
     assert!(!answers(23351).await);
     assert_eq!(std::fs::read_dir(&pod.root).unwrap().count(), 0);
-}
-
-#[cfg(not(target_os = "linux"))]
-#[tokio::test]
-async fn confinement_outside_linux_is_a_startup_error() {
-    let root = tempfile::tempdir().unwrap();
-    let fs_only = Confinement {
-        fs: true,
-        syscalls: false,
-    };
-    let syscalls_only = Confinement {
-        fs: false,
-        syscalls: true,
-    };
-    for confinement in [fs_only, syscalls_only] {
-        let config = config(8, real_shim(), root.path().into(), confinement);
-        let err = harness_shim::supervisor::run(config, None)
-            .await
-            .unwrap_err();
-        let err = format!("{err:#}");
-        assert!(err.contains(std::env::consts::OS), "{err}");
-    }
-}
-
-/// The confinement layers, proven through a real session: the supervisor confines the shim, and
-/// the shim's harness (a probe script) reports what it could reach.
-#[cfg(target_os = "linux")]
-mod confined {
-    use common::{assert_echoes, first_line};
-
-    use super::*;
-
-    /// Run as session `s-a`'s harness: one line saying what it could reach, then `cat`, so the
-    /// shim keeps a child. `own`: create, read and run a file in its own directory; `tmp`:
-    /// whether `mktemp` lands in its own directory or the pod's shared `/tmp`; `shared_tmp`:
-    /// writing `/tmp` by name; `sibling`: reading `$SIBLING`, a file in another session's
-    /// directory; `scratch`: create a directory and a file in `$SCRATCH`, its own scratch
-    /// directory; `sibling_scratch`: reading `$SIBLING_SCRATCH`, a file in another session's.
-    const PROBE: &str = r#"own=failed tmp=shared shared_tmp=denied sibling=denied
-scratch=failed sibling_scratch=denied
-dir=$(pwd)
-printf 'x\n' > own.txt && [ "$(cat own.txt)" = x ] \
-  && printf '#!/bin/sh\necho ran\n' > run.sh && chmod +x run.sh && [ "$(./run.sh)" = ran ] \
-  && own=ok
-t=$(mktemp) && echo y > "$t" && case "$t" in "$dir"/*) tmp=private;; esac
-if { echo z > "/tmp/probe-$$"; } 2>/dev/null; then shared_tmp=writable; rm -f "/tmp/probe-$$"; fi
-cat "$SIBLING" >/dev/null 2>&1 && sibling=read
-{ mkdir "$SCRATCH/npm" && echo w > "$SCRATCH/npm/f" && [ "$(cat "$SCRATCH/npm/f")" = w ]; } \
-  2>/dev/null && scratch=ok
-cat "$SIBLING_SCRATCH" >/dev/null 2>&1 && sibling_scratch=read
-echo "own=$own tmp=$tmp shared_tmp=$shared_tmp sibling=$sibling scratch=$scratch sibling_scratch=$sibling_scratch"
-exec cat
-"#;
-
-    /// Whether this kernel can run the filesystem layer (Landlock ABI 2 or later). A kernel that
-    /// cannot would fail the supervisor's startup; the tests that need it say so and skip.
-    fn landlock_available() -> bool {
-        // SAFETY: a version query (`LANDLOCK_CREATE_RULESET_VERSION`): no pointers are read.
-        let abi = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, 0usize, 0usize, 1u32) };
-        if abi < 2 {
-            eprintln!("skipped: this kernel offers no Landlock ABI 2 (got {abi})");
-        }
-        abi >= 2
-    }
-
-    /// Writes a sentinel into session `s-b`'s directory under `root` and returns its path.
-    fn sibling_sentinel(root: &Path) -> PathBuf {
-        let sibling = root.join("s-b");
-        std::fs::create_dir_all(&sibling).unwrap();
-        let sentinel = sibling.join("secret");
-        std::fs::write(&sentinel, "s-b's own").unwrap();
-        sentinel
-    }
-
-    /// Starts `s-a` under `confinement` with [`PROBE`] as its harness, beside a sibling session
-    /// `s-b` holding a sentinel in its directory and in its scratch directory, and returns the
-    /// line the probe reports.
-    async fn probe(confinement: Confinement, port: u16) -> String {
-        let pod = start_with(8, real_shim(), confinement).await;
-        let sentinel = sibling_sentinel(&pod.root);
-        let scratch_sentinel = sibling_sentinel(&pod.scratch);
-
-        let (code, placed) = put(pod.addr, "s-a", port).await;
-        assert_eq!(code, 200, "{placed}");
-        let script = pod.root.join("s-a/probe.sh");
-        std::fs::write(&script, PROBE).unwrap();
-        let env = json!({
-            "HARNESS_CMD": format!("sh {}", script.display()),
-            "SIBLING": sentinel,
-            "SCRATCH": pod.scratch.join("s-a"),
-            "SIBLING_SCRATCH": scratch_sentinel,
-        });
-        let body = configure_body("t1", env, "h1");
-        let (code, _) = http(shim(port), "POST", "/control/configure", None, &body).await;
-        assert_eq!(code, 204);
-        wait_for_child(shim(port), "t1", "running").await;
-        first_line(shim(port), "t1")
-            .await
-            .expect("the probe reported nothing")
-    }
-
-    #[tokio::test]
-    async fn a_confined_session_reaches_its_own_directory_and_nothing_of_its_sibling() {
-        if !landlock_available() {
-            return;
-        }
-        let outcome = probe(Confinement::default(), 23381).await;
-        assert_eq!(
-            outcome,
-            "own=ok tmp=private shared_tmp=denied sibling=denied scratch=ok sibling_scratch=denied"
-        );
-    }
-
-    /// The private tmp must not count as workspace content: the shim clones a session's
-    /// repository only into a directory holding nothing but `home`.
-    #[tokio::test]
-    async fn a_confined_session_still_wants_its_clone() {
-        if !landlock_available() {
-            return;
-        }
-        let pod = start_with(8, real_shim(), Confinement::default()).await;
-        let (code, placed) = put(pod.addr, "s-a", 23397).await;
-        assert_eq!(code, 200, "{placed}");
-        let dir = pod.root.join("s-a");
-        let entries: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .map(|entry| entry.unwrap().file_name())
-            .collect();
-        assert_eq!(entries, ["home"]);
-        assert!(dir.join("home/.tmp").is_dir());
-        assert!(harness_shim::workspace::needs_clone(&dir).unwrap());
-    }
-
-    #[tokio::test]
-    async fn without_the_filesystem_layer_a_session_reads_its_sibling() {
-        let fs_off = Confinement {
-            fs: false,
-            syscalls: true,
-        };
-        let outcome = probe(fs_off, 23391).await;
-        assert_eq!(
-            outcome,
-            "own=ok tmp=shared shared_tmp=writable sibling=read scratch=ok sibling_scratch=read"
-        );
-    }
-
-    /// Run as a harness: reports how many seccomp filters it runs under, then `cat`.
-    const FILTERS: &str = r#"while read -r key value; do
-  [ "$key" = Seccomp_filters: ] && echo "filters=$value"
-done < /proc/self/status
-exec cat
-"#;
-
-    /// The seccomp filters on this process's main thread (the container runtime's own, if any).
-    fn own_seccomp_filters() -> u32 {
-        std::fs::read_to_string("/proc/self/status")
-            .unwrap()
-            .lines()
-            .find_map(|line| line.strip_prefix("Seccomp_filters:"))
-            .map_or(0, |count| count.trim().parse().unwrap())
-    }
-
-    #[tokio::test]
-    async fn the_syscall_layer_installs_one_filter_and_an_ordinary_shell_still_works() {
-        let syscalls_only = Confinement {
-            fs: false,
-            syscalls: true,
-        };
-        let pod = start_with(8, real_shim(), syscalls_only).await;
-        let port = 23395;
-        assert_eq!(put(pod.addr, "s-a", port).await.0, 200);
-        let script = pod.root.join("s-a/filters.sh");
-        std::fs::write(&script, FILTERS).unwrap();
-        let env = json!({"HARNESS_CMD": format!("sh {}", script.display())});
-        let body = configure_body("t1", env, "h1");
-        let (code, _) = http(shim(port), "POST", "/control/configure", None, &body).await;
-        assert_eq!(code, 204);
-        wait_for_child(shim(port), "t1", "running").await;
-
-        let expected = format!("filters={}", own_seccomp_filters() + 1);
-        let reported = first_line(shim(port), "t1").await;
-        assert_eq!(reported.as_deref(), Some(expected.as_str()));
-        assert_echoes(shim(port), "t1", "hello through the filter").await;
-    }
 }

@@ -202,7 +202,11 @@ impl GenericMcpProvider {
         if let Some(sid) = session_id {
             req = req.header("Mcp-Session-Id", sid);
         }
-        for (k, v) in &server.headers {
+        for (k, v) in server
+            .headers
+            .iter()
+            .filter(|(k, _)| crate::net::connector_header_allowed(k))
+        {
             req = req.header(k.as_str(), v.as_str());
         }
 
@@ -277,7 +281,11 @@ impl GenericMcpProvider {
         if let Some(tp) = traceparent {
             req = req.header("traceparent", tp);
         }
-        for (k, v) in &server.headers {
+        for (k, v) in server
+            .headers
+            .iter()
+            .filter(|(k, _)| crate::net::connector_header_allowed(k))
+        {
             req = req.header(k.as_str(), v.as_str());
         }
 
@@ -313,7 +321,11 @@ impl GenericMcpProvider {
             if let Some(tp) = traceparent {
                 n = n.header("traceparent", tp);
             }
-            for (k, v) in &server.headers {
+            for (k, v) in server
+                .headers
+                .iter()
+                .filter(|(k, _)| crate::net::connector_header_allowed(k))
+            {
                 n = n.header(k.as_str(), v.as_str());
             }
             let _ = n.send().await;

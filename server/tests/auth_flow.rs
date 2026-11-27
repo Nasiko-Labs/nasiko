@@ -1289,3 +1289,338 @@ async fn test_logout_revokes_only_the_calling_users_tokens() {
 
     server.cleanup().await;
 }
+
+// ─── every refused password login answers the same ───────────────────────────
+
+const REFUSED_BODY: &str = r#"{"error":"invalid credentials"}"#;
+
+/// What a client sees of one login answer. `date` differs per request, so it is left out.
+#[derive(Debug, PartialEq)]
+struct LoginAnswer {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: String,
+}
+
+async fn try_login(server: &common::TestServer, name: &str, password: &str) -> LoginAnswer {
+    let res = server
+        .client
+        .post(server.url("/api/auth/login"))
+        .json(&json!({"username": name, "password": password}))
+        .send()
+        .await
+        .unwrap();
+    let status = res.status().as_u16();
+    let mut headers: Vec<(String, String)> = res
+        .headers()
+        .iter()
+        .filter(|(name, _)| name.as_str() != "date")
+        .map(|(name, value)| (name.to_string(), value.to_str().unwrap().to_owned()))
+        .collect();
+    headers.sort();
+    let body = res.text().await.unwrap();
+    LoginAnswer {
+        status,
+        headers,
+        body,
+    }
+}
+
+async fn create_user(server: &common::TestServer, admin_id: &str, name: &str) -> Value {
+    as_superuser(
+        server.client.post(server.url("/api/users")),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"username": name, "email": format!("{name}@test.local")}))
+    .send()
+    .await
+    .unwrap()
+    .json::<Value>()
+    .await
+    .unwrap()
+}
+
+async fn deactivate(server: &common::TestServer, admin_id: &str, user: &Value) {
+    let id = user["id"].as_str().unwrap();
+    let res = as_superuser(
+        server.client.put(server.url(&format!("/api/users/{id}"))),
+        admin_id,
+        "admin",
+    )
+    .json(&json!({"is_active": false}))
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+/// Sets the lock columns directly: the way a test moves time, since it never sleeps.
+async fn set_lock(
+    server: &common::TestServer,
+    user: &Value,
+    attempts: i32,
+    locked_for_secs: Option<i64>,
+) {
+    sqlx::query(
+        "UPDATE users SET failed_login_attempts = $2, \
+         locked_until = now() + make_interval(secs => $3) WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+    .bind(attempts)
+    .bind(locked_for_secs.map(|secs| secs as f64))
+    .execute(&server.db)
+    .await
+    .unwrap();
+}
+
+async fn lock_state(
+    server: &common::TestServer,
+    user: &Value,
+) -> (i32, Option<chrono::DateTime<chrono::Utc>>) {
+    sqlx::query_as("SELECT failed_login_attempts, locked_until FROM users WHERE id = $1")
+        .bind(uuid::Uuid::parse_str(user["id"].as_str().unwrap()).unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+/// What the service itself says about a refused login: the private reason and user id the
+/// recorders read.
+async fn refusal_of(
+    server: &common::TestServer,
+    name: &str,
+    password: &str,
+) -> (nasiko_auth::LoginRefusal, Option<String>) {
+    match server.state.auth.authenticate(name, password).await {
+        Err(nasiko_auth::AuthError::InvalidCredentials { reason, user_id }) => (reason, user_id),
+        Err(other) => panic!("expected InvalidCredentials, got: {other}"),
+        Ok(_) => panic!("expected a refusal, but the login succeeded"),
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn an_unknown_name_a_wrong_password_a_deactivated_account_and_a_locked_account_get_the_same_status_and_body()
+ {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+    let wrong = create_user(&server, admin_id, "wrongpw").await;
+    let off = create_user(&server, admin_id, "deactivated").await;
+    let locked = create_user(&server, admin_id, "locked").await;
+    let locking = create_user(&server, admin_id, "locking").await;
+    deactivate(&server, admin_id, &off).await;
+    set_lock(&server, &locked, 3, Some(600)).await;
+    // One wrong password short of the lock: the next one is the attempt that sets it.
+    set_lock(&server, &locking, 2, None).await;
+
+    let unknown = try_login(&server, "no-such-name", "not-the-password").await;
+    // The reference answer: if this is wrong, every comparison below is hollow.
+    assert_eq!(unknown.status, 401);
+    assert_eq!(unknown.body, REFUSED_BODY);
+
+    let answers = [
+        (
+            "wrong password",
+            try_login(&server, "wrongpw", "not-the-password").await,
+        ),
+        (
+            "deactivated, correct password",
+            try_login(
+                &server,
+                "deactivated",
+                off["access_secret"].as_str().unwrap(),
+            )
+            .await,
+        ),
+        (
+            "locked, correct password",
+            try_login(&server, "locked", locked["access_secret"].as_str().unwrap()).await,
+        ),
+        (
+            "locked, wrong password",
+            try_login(&server, "locked", "not-the-password").await,
+        ),
+        (
+            "the wrong password that sets the lock",
+            try_login(&server, "locking", "not-the-password").await,
+        ),
+    ];
+    for (situation, answer) in &answers {
+        assert_eq!(answer, &unknown, "{situation}");
+    }
+    assert!(
+        lock_state(&server, &locking).await.1.is_some(),
+        "the last attempt must really have locked the account, or it proved nothing"
+    );
+
+    // Positive control: the same route still signs a right password in.
+    let ok = try_login(&server, "wrongpw", wrong["access_secret"].as_str().unwrap()).await;
+    assert_eq!(ok.status, 200);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn each_refusal_carries_its_private_reason_and_the_body_never_shows_it() {
+    use nasiko_auth::LoginRefusal::{Deactivated, Locked, UnknownName, WrongPassword};
+
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let admin_id = admin["user_id"].as_str().unwrap();
+    let wrong = create_user(&server, admin_id, "wrongpw").await;
+    let off = create_user(&server, admin_id, "deactivated").await;
+    let locked = create_user(&server, admin_id, "locked").await;
+    let locking = create_user(&server, admin_id, "locking").await;
+    deactivate(&server, admin_id, &off).await;
+    set_lock(&server, &locked, 3, Some(600)).await;
+    set_lock(&server, &locking, 2, None).await;
+
+    let cases = [
+        ("no-such-name", "x", UnknownName, None),
+        ("wrongpw", "not-the-password", WrongPassword, Some(&wrong)),
+        (
+            "deactivated",
+            off["access_secret"].as_str().unwrap(),
+            Deactivated,
+            Some(&off),
+        ),
+        (
+            "locked",
+            locked["access_secret"].as_str().unwrap(),
+            Locked,
+            Some(&locked),
+        ),
+        ("locking", "not-the-password", Locked, Some(&locking)),
+    ];
+    for (name, password, reason, account) in cases {
+        let user_id = account.map(|a| a["id"].as_str().unwrap().to_owned());
+        assert_eq!(
+            refusal_of(&server, name, password).await,
+            (reason, user_id.clone()),
+            "{name}"
+        );
+
+        // The same refusal over HTTP: the exact body, and nothing of the reason or the account.
+        let answer = try_login(&server, name, password).await;
+        assert_eq!(answer.status, 401, "{name}");
+        assert_eq!(answer.body, REFUSED_BODY, "{name}");
+        if let Some(id) = user_id {
+            assert!(!answer.body.contains(&id), "{name}");
+        }
+    }
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn the_third_wrong_password_locks_the_account_and_a_right_password_is_refused_until_it_ends()
+{
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let alice = create_alice(&server, admin["user_id"].as_str().unwrap()).await;
+    let secret = alice["access_secret"].as_str().unwrap();
+
+    for strikes in 1..=2 {
+        assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+        assert_eq!(lock_state(&server, &alice).await, (strikes, None));
+    }
+
+    assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+    let (attempts, locked_until) = lock_state(&server, &alice).await;
+    assert_eq!(attempts, 3);
+    let locked_until = locked_until.expect("the third wrong password sets the lock");
+    // Measured by the database's own clock, which the lock was set with.
+    let remaining_secs: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM locked_until - now())::float8 FROM users WHERE id = $1",
+    )
+    .bind(uuid::Uuid::parse_str(alice["id"].as_str().unwrap()).unwrap())
+    .fetch_one(&server.db)
+    .await
+    .unwrap();
+    assert!(
+        remaining_secs > 14.0 * 60.0 && remaining_secs <= 15.0 * 60.0,
+        "the lock lasts 15 minutes, got {remaining_secs} s"
+    );
+
+    // During the lock a right password is refused and a wrong one is too; neither counts or
+    // moves the end of the lock.
+    for typed in [secret, "nope"] {
+        let answer = try_login(&server, "alice", typed).await;
+        assert_eq!((answer.status, answer.body.as_str()), (401, REFUSED_BODY));
+        assert_eq!(
+            lock_state(&server, &alice).await,
+            (3, Some(locked_until)),
+            "a password typed during the lock must not change it"
+        );
+    }
+
+    // The lock ends: the deadline moves into the past instead of the test sleeping.
+    set_lock(&server, &alice, 3, Some(-1)).await;
+    let answer = try_login(&server, "alice", secret).await;
+    assert_eq!(answer.status, 200);
+    assert!(
+        !serde_json::from_str::<Value>(&answer.body).unwrap()["token"]
+            .as_str()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(lock_state(&server, &alice).await, (0, None));
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_correct_password_still_signs_in_and_clears_the_count() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let alice = create_alice(&server, admin["user_id"].as_str().unwrap()).await;
+    let secret = alice["access_secret"].as_str().unwrap();
+
+    for _ in 0..2 {
+        assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+    }
+    assert_eq!(lock_state(&server, &alice).await, (2, None));
+
+    let answer = try_login(&server, "alice", secret).await;
+    assert_eq!(answer.status, 200);
+    let body: Value = serde_json::from_str(&answer.body).unwrap();
+    assert!(!body["token"].as_str().unwrap().is_empty());
+    assert_eq!(body["username"], "alice");
+    assert_eq!(lock_state(&server, &alice).await, (0, None));
+
+    // The count really restarted: two more wrong passwords do not lock, and a right one signs in.
+    for _ in 0..2 {
+        assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+    }
+    assert_eq!(lock_state(&server, &alice).await, (2, None));
+    assert_eq!(try_login(&server, "alice", secret).await.status, 200);
+
+    server.cleanup().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn a_wrong_password_after_the_lock_ends_counts_as_the_first() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let alice = create_alice(&server, admin["user_id"].as_str().unwrap()).await;
+
+    // A lock that has ended, with the count that set it still stored: the deadline moves into
+    // the past instead of the test sleeping.
+    set_lock(&server, &alice, 3, Some(-1)).await;
+    assert_eq!(lock_state(&server, &alice).await.0, 3);
+
+    assert_eq!(try_login(&server, "alice", "nope").await.status, 401);
+    assert_eq!(
+        lock_state(&server, &alice).await,
+        (1, None),
+        "one typo after the wait is the first failure, not a fourth"
+    );
+
+    server.cleanup().await;
+}

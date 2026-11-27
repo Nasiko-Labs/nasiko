@@ -34,7 +34,7 @@
 //! `CreateConnector` body, or any CLI argument) — see
 //! `provider/generic.rs::GenericMcpProvider`.
 
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
@@ -88,10 +88,17 @@ impl Resolve for GuardedResolver {
 /// backends. Reuses the platform's rustls stack; per-request timeouts are set by
 /// the caller. Honors the `MCP_ALLOW_PRIVATE_URLS` dev/test bypass.
 pub fn guarded_http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .dns_resolver(Arc::new(GuardedResolver))
+    guarded_client_builder()
+        .redirect(guarded_redirect_policy())
         .build()
         .expect("failed to build SSRF-guarded reqwest client")
+}
+
+/// The builder behind [`guarded_http_client`], for callers that set their own timeouts,
+/// pooling and redirect policy. A redirect to an IP literal skips the resolver, so a
+/// caller that follows redirects to user-chosen hosts must turn them off.
+pub fn guarded_client_builder() -> reqwest::ClientBuilder {
+    reqwest::Client::builder().dns_resolver(Arc::new(GuardedResolver))
 }
 
 /// [`guarded_http_client`] that never reuses a connection, for MCP servers a
@@ -102,9 +109,170 @@ pub fn guarded_http_client() -> reqwest::Client {
 pub fn guarded_http_client_no_reuse() -> reqwest::Client {
     reqwest::Client::builder()
         .dns_resolver(Arc::new(GuardedResolver))
+        .redirect(guarded_redirect_policy())
         .pool_max_idle_per_host(0)
         .build()
         .expect("failed to build SSRF-guarded reqwest client")
+}
+
+/// Client for uploaded-build MCP servers (`trusted` connectors). The platform
+/// deployed them and resolved their address, which may be internal, so the
+/// resolver is not guarded. Their code is a member's, though, so a redirect is
+/// followed only within the same origin (`/mcp` to `/mcp/`): a `302` to any
+/// other host, `http://10.0.0.5/` or the metadata server, is refused (NAS-1770).
+pub fn trusted_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(same_origin_redirect_policy())
+        .build()
+        .expect("failed to build the trusted MCP backend client")
+}
+
+/// The most redirects a guarded request follows (reqwest's default is 10).
+const MAX_GUARDED_REDIRECTS: usize = 5;
+
+/// Follow a redirect only to the origin (scheme, host and port) of the hop before it.
+fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_GUARDED_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        let same_origin = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| previous.origin() == attempt.url().origin());
+        if same_origin {
+            attempt.follow()
+        } else {
+            attempt.error("refused a redirect to another origin")
+        }
+    })
+}
+
+/// Every redirect hop of a guarded request is checked before it is followed.
+///
+/// [`GuardedResolver`] only sees hostnames. A hop to an IP literal
+/// (`http://169.254.169.254/...`, the cloud metadata server) needs no DNS, so
+/// before this a public URL that answered `302 Location: http://169.254.169.254/`
+/// took the request straight to the metadata server, with the connector's own
+/// headers, and the gateway returned the body to the member.
+///
+/// A hop is followed only if it is `http(s)`, not `localhost`, not an IP
+/// literal in a blocked range, and not a downgrade from `https` to `http`.
+/// A hop to a hostname is then checked by [`GuardedResolver`] when it connects.
+fn guarded_redirect_policy() -> reqwest::redirect::Policy {
+    reqwest::redirect::Policy::custom(|attempt| {
+        if attempt.previous().len() >= MAX_GUARDED_REDIRECTS {
+            return attempt.error("too many redirects");
+        }
+        let from_https = attempt
+            .previous()
+            .last()
+            .is_some_and(|previous| previous.scheme() == "https");
+        if from_https && attempt.url().scheme() == "http" {
+            return attempt.error("refused a redirect from https to http");
+        }
+        match redirect_hop_refusal(attempt.url()) {
+            Some(why) => attempt.error(why),
+            None => attempt.follow(),
+        }
+    })
+}
+
+/// Why a guarded request may not follow a redirect to `url`, if it may not.
+fn redirect_hop_refusal(url: &reqwest::Url) -> Option<String> {
+    target_refusal(url).map(|why| format!("refused a redirect to {why}"))
+}
+
+/// Why the gateway may not send a request to `url`, if it may not: what
+/// [`GuardedResolver`] can't see. A hostname is resolved, and checked, when the
+/// request connects; an IP literal or `localhost` never is.
+fn target_refusal(url: &reqwest::Url) -> Option<String> {
+    if !matches!(url.scheme(), "http" | "https") {
+        return Some(format!("a '{}' URL", url.scheme()));
+    }
+    if private_urls_allowed() {
+        return None;
+    }
+    let Some(host) = url.host_str() else {
+        return Some("a URL with no host".to_string());
+    };
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return Some("a loopback address".to_string());
+    }
+    // `host_str` keeps an IPv6 literal's brackets.
+    let literal = lower.trim_start_matches('[').trim_end_matches(']');
+    match literal.parse::<IpAddr>() {
+        Ok(ip) if is_blocked_ip(ip) => Some("a private or internal address".to_string()),
+        _ => None,
+    }
+}
+
+/// Refuse a URL that another server handed the gateway (an OAuth server's
+/// metadata names its token and registration endpoints, a `401` names its
+/// resource metadata) when it points at a private or internal IP literal or
+/// `localhost`. Those requests go through the guarded client, whose resolver
+/// checks hostnames but never sees an IP literal (NAS-1770).
+///
+/// The crate's own tests run OAuth servers on `127.0.0.1` with a plain client,
+/// so this check is off in them; [`target_refusal`] has its own tests.
+pub fn check_remote_endpoint(raw: &str) -> std::result::Result<(), String> {
+    if cfg!(test) {
+        return Ok(());
+    }
+    let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid url: {e}"))?;
+    match target_refusal(&url) {
+        Some(why) => Err(format!("refused a request to {why}")),
+        None => Ok(()),
+    }
+}
+
+/// Headers a connector may not set. They select or impersonate infrastructure
+/// rather than authenticate to an MCP server: the cloud metadata servers want
+/// one of the first five, and the rest are hop-by-hop or would let a member
+/// speak for the gateway or a proxy in front of it.
+const BLOCKED_CONNECTOR_HEADERS: [&str; 16] = [
+    "metadata-flavor",
+    "x-google-metadata-request",
+    "metadata",
+    "x-aws-ec2-metadata-token",
+    "x-aws-ec2-metadata-token-ttl-seconds",
+    "host",
+    "forwarded",
+    "x-real-ip",
+    "connection",
+    "keep-alive",
+    "proxy-connection",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+    "content-length",
+];
+/// Prefixes of the same kind (`X-Forwarded-For`, `Proxy-Authorization`, ...).
+const BLOCKED_CONNECTOR_HEADER_PREFIXES: [&str; 2] = ["x-forwarded-", "proxy-"];
+
+/// Whether a connector may send a header with this name to its MCP server.
+pub fn connector_header_allowed(name: &str) -> bool {
+    let lower = name.trim().to_ascii_lowercase();
+    !BLOCKED_CONNECTOR_HEADERS.contains(&lower.as_str())
+        && !BLOCKED_CONNECTOR_HEADER_PREFIXES
+            .iter()
+            .any(|prefix| lower.starts_with(prefix))
+}
+
+/// Refuse a connector whose headers (or credential header name) include one
+/// that [`connector_header_allowed`] rejects. Checked when a connector is
+/// created or changed; the gateway also drops such headers when it sends.
+pub fn validate_connector_headers<'a>(names: impl IntoIterator<Item = &'a str>) -> Result<()> {
+    for name in names {
+        if !connector_header_allowed(name) {
+            return Err(McpError::BadRequest(format!(
+                "header '{name}' can't be set on a connector"
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Restrict an OAuth post-completion redirect to a relative path or a same-origin
@@ -200,7 +368,12 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
                 || v.is_unspecified()
                 || v.is_broadcast()
                 || v.is_documentation()
+                || v.is_multicast()
+                || o[0] == 0 // 0/8 "this network"; Linux connects 0.x to the local host
                 || (o[0] == 100 && (o[1] & 0xc0) == 0x40) // 100.64/10 carrier-grade NAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0/24 IETF protocol assignments
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18/15 benchmarking
+                || o[0] >= 240 // 240/4 reserved
         }
         IpAddr::V6(v) => {
             if v.is_loopback() || v.is_unspecified() || v.is_multicast() {
@@ -210,6 +383,11 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
                 return is_blocked_ip(IpAddr::V4(v4));
             }
             let s = v.segments();
+            // 64:ff9b::/96 NAT64: a NAT64 gateway connects to the IPv4 address in the low 32 bits.
+            if s[..6] == [0x64, 0xff9b, 0, 0, 0, 0] {
+                let [.., a, b, c, d] = v.octets();
+                return is_blocked_ip(IpAddr::V4(Ipv4Addr::new(a, b, c, d)));
+            }
             (s[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
                 || (s[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
         }
@@ -219,7 +397,7 @@ fn is_blocked_ip(ip: IpAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use std::net::Ipv6Addr;
 
     #[test]
     fn blocks_private_and_metadata_ips() {
@@ -230,7 +408,12 @@ mod tests {
             "172.16.0.1",
             "169.254.169.254",
             "0.0.0.0",
+            "0.1.2.3",
             "100.64.0.1",
+            "192.0.0.170",
+            "198.18.0.1",
+            "224.0.0.1",
+            "240.0.0.1",
         ] {
             assert!(
                 is_blocked_ip(ip.parse::<Ipv4Addr>().unwrap().into()),
@@ -242,6 +425,15 @@ mod tests {
         assert!(is_blocked_ip("fc00::1".parse::<Ipv6Addr>().unwrap().into()));
         assert!(is_blocked_ip(
             "::ffff:127.0.0.1".parse::<Ipv6Addr>().unwrap().into()
+        ));
+        assert!(is_blocked_ip(
+            "64:ff9b::a9fe:a9fe".parse::<Ipv6Addr>().unwrap().into()
+        ));
+        assert!(!is_blocked_ip(
+            "64:ff9b::5db8:d822".parse::<Ipv6Addr>().unwrap().into()
+        ));
+        assert!(!is_blocked_ip(
+            "93.184.216.34".parse::<Ipv4Addr>().unwrap().into()
         ));
     }
 
@@ -387,6 +579,151 @@ mod tests {
     #[test]
     fn multicast_v6_is_blocked() {
         assert!(is_blocked_ip("ff02::1".parse::<Ipv6Addr>().unwrap().into()));
+    }
+
+    #[test]
+    fn a_redirect_to_an_internal_ip_literal_is_refused() {
+        let refused = |u: &str| redirect_hop_refusal(&reqwest::Url::parse(u).unwrap());
+        for u in [
+            // The metadata server, by IP literal: no DNS, so GuardedResolver never sees it.
+            "http://169.254.169.254/computeMetadata/v1/project/?recursive=true",
+            "http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token",
+            "http://10.0.0.1/",
+            "http://127.0.0.1:8080/",
+            "http://[::1]/",
+            "http://[::ffff:169.254.169.254]/",
+            "http://[fd00::1]/",
+            "http://localhost/",
+            "http://metadata.localhost/",
+            "file:///etc/passwd",
+            "gopher://example.com/",
+        ] {
+            assert!(refused(u).is_some(), "{u} must be refused");
+        }
+        for u in [
+            "https://example.com/mcp/",
+            "http://example.com/mcp",
+            "https://93.184.216.34/mcp",
+            "https://[2606:4700:4700::1111]/",
+        ] {
+            assert!(refused(u).is_none(), "{u} must be followed");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_guarded_request_does_not_follow_a_redirect_to_the_metadata_server() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // The reporter's redirector: any request gets a 302 to the metadata server. The client
+        // here keeps the guarded redirect policy but resolves normally, so it can reach this
+        // loopback stand-in for a public redirector.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = sock.read(&mut buf).await;
+                    let reply = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/computeMetadata/v1/project/?recursive=true\r\nContent-Length: 0\r\n\r\n";
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        let client = reqwest::Client::builder()
+            .redirect(guarded_redirect_policy())
+            .build()
+            .unwrap();
+        let err = client
+            .get(format!("http://{addr}/r"))
+            .header("Metadata-Flavor", "Google")
+            .send()
+            .await
+            .expect_err("the redirect must not be followed");
+        assert!(err.is_redirect(), "{err}");
+        let source = std::error::Error::source(&err).map(ToString::to_string);
+        assert!(
+            source
+                .as_deref()
+                .is_some_and(|s| s.contains("private or internal")),
+            "{err}: {source:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_trusted_client_follows_a_redirect_only_within_its_origin() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        // An uploaded MCP server runs a member's code: it may send `/mcp` to `/mcp/`, but
+        // not the gateway to another host.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let request = String::from_utf8_lossy(&buf[..n]);
+                    let reply = if request.starts_with("GET /mcp/ ") {
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok".to_string()
+                    } else if request.starts_with("GET /mcp ") {
+                        "HTTP/1.1 307 Temporary Redirect\r\nLocation: /mcp/\r\nContent-Length: 0\r\n\r\n".to_string()
+                    } else {
+                        format!(
+                            "HTTP/1.1 302 Found\r\nLocation: http://localhost:{}/mcp/\r\nContent-Length: 0\r\n\r\n",
+                            addr.port()
+                        )
+                    };
+                    let _ = sock.write_all(reply.as_bytes()).await;
+                });
+            }
+        });
+        let client = trusted_http_client();
+
+        let followed = client
+            .get(format!("http://{addr}/mcp"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(followed.text().await.unwrap(), "ok");
+
+        // Same port, other host: `127.0.0.1` to `localhost` is another origin.
+        let err = client
+            .get(format!("http://{addr}/elsewhere"))
+            .send()
+            .await
+            .expect_err("a redirect to another origin must not be followed");
+        assert!(err.is_redirect(), "{err}");
+    }
+
+    #[test]
+    fn connector_headers_that_reach_infrastructure_are_refused() {
+        for name in [
+            "Metadata-Flavor",
+            "metadata-flavor",
+            " Metadata-Flavor ",
+            "X-Google-Metadata-Request",
+            "Metadata",
+            "X-aws-ec2-metadata-token",
+            "Host",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "Forwarded",
+            "Proxy-Authorization",
+            "Transfer-Encoding",
+        ] {
+            assert!(!connector_header_allowed(name), "{name}");
+        }
+        for name in [
+            "Authorization",
+            "X-Api-Key",
+            "Notion-Version",
+            "Accept-Language",
+        ] {
+            assert!(connector_header_allowed(name), "{name}");
+        }
+        assert!(validate_connector_headers(["X-Api-Key", "Authorization"]).is_ok());
+        assert!(matches!(
+            validate_connector_headers(["X-Api-Key", "Metadata-Flavor"]),
+            Err(McpError::BadRequest(_))
+        ));
     }
 
     #[tokio::test]

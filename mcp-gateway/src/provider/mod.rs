@@ -233,15 +233,19 @@ impl Providers {
         // so it uses an SSRF/DNS-rebinding-guarded client (rejects private/internal
         // targets at resolution time) rather than the platform's shared client,
         // which must still reach internal hosts. The Composio session URL it also
-        // calls is public, so the guard is transparent there. `http` (the
-        // platform's own client, already passed in for the Composio provider
-        // above) is reused as the `plain` client for `trusted == true` backends —
-        // i.e. uploaded-build MCP-server connectors, whose address the platform
-        // itself resolved, not a user. Only Composio keeps a connection pool.
+        // calls is public, so the guard is transparent there. `trusted == true`
+        // backends — uploaded-build MCP-server connectors, whose address the
+        // platform itself resolved, not a user — get `trusted_http_client`, which
+        // may reach internal hosts but follows no redirect off the server's own
+        // origin, since the server's code is a member's. Only Composio keeps a
+        // connection pool.
         Self {
             composio,
-            mcp: GenericMcpProvider::new(crate::net::guarded_http_client_no_reuse(), http)
-                .with_composio_client(crate::net::guarded_http_client()),
+            mcp: GenericMcpProvider::new(
+                crate::net::guarded_http_client_no_reuse(),
+                crate::net::trusted_http_client(),
+            )
+            .with_composio_client(crate::net::guarded_http_client()),
         }
     }
 

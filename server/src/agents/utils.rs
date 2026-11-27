@@ -1,9 +1,20 @@
 use std::sync::Arc;
 
+use nasiko_runtime::RuntimeError;
 use uuid::Uuid;
 
 use crate::agent_lifecycle::SwappableAgentDeletionHook;
 use crate::build::BuildStatus;
+
+/// What a build that failed to deploy tells its user: the message of a deploy the runtime
+/// declined, which the refusing layer worded for the user, and `None` for any other failure,
+/// whose detail stays in the logs.
+pub(crate) fn declined_message(error: &RuntimeError) -> Option<String> {
+    match error {
+        RuntimeError::Declined { message, .. } => Some(message.clone()),
+        _ => None,
+    }
+}
 
 /// How long [`answers_http`] waits for one answer.
 const ANSWER_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);

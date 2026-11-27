@@ -458,7 +458,7 @@ pub(super) async fn snapshot(
         )?;
     let (routers, provider_failures, runs_daily, workflow_runs, steps_range, steps_week) = tokio::try_join!(
         routers(db, scope, &router_ids),
-        provider_failures(db),
+        provider_failures(db, scope.me),
         runs_daily(
             db,
             &maf_ids,
@@ -604,11 +604,15 @@ fn mine(t: &str) -> String {
     format!("($2::uuid[] IS NULL OR {t}user_id = ANY($2))")
 }
 
+/// Binds [`UsageScope`] as [`usage_where`] expects it, on an unprepared statement: a prepared one
+/// gets Postgres's generic plan from its sixth run, which can't tell `$2 IS NULL` from a list of
+/// people, never uses the user index, and reads every caller's rows in the window.
 fn bind_usage<'q, O>(
     query: sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>,
     usage: &'q UsageScope,
 ) -> sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments> {
     query
+        .persistent(false)
         .bind(&usage.agents)
         .bind(&usage.people)
         .bind(&usage.owned)
@@ -727,11 +731,14 @@ async fn routers(db: &PgPool, scope: &Scope, used: &[Uuid]) -> Result<Vec<Router
     .await
 }
 
-async fn provider_failures(db: &PgPool) -> Result<Vec<ProviderFailure>, sqlx::Error> {
-    sqlx::query_as(
+/// Failing custom providers `me` may use: another member's are private to them.
+async fn provider_failures(db: &PgPool, me: Uuid) -> Result<Vec<ProviderFailure>, sqlx::Error> {
+    sqlx::query_as(&format!(
         "SELECT label, display_name, last_sync_error AS error FROM custom_providers \
-         WHERE last_sync_status = 'failed'",
-    )
+         WHERE last_sync_status = 'failed' AND {}",
+        crate::llm_router::custom_providers::usable_by(1)
+    ))
+    .bind(me)
     .fetch_all(db)
     .await
 }

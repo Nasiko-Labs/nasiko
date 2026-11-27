@@ -53,14 +53,3 @@ export function safeRedirect(target: unknown, fallback = '/'): string {
 export function logout(timeout?: number): Promise<unknown> {
   return apiFetch<unknown>('/api/auth/logout', { method: 'POST', timeout })
 }
-
-/**
- * Minutes until a locked account can sign in again, or null when a 429 is the plain rate limit. nasiko-server
- * (auth/service.rs, ea233d20) locks an account for 15 minutes after 3 failed sign-ins: 429 `account_locked`.
- */
-export function lockedFor(body: unknown): number | null {
-  if (!body || typeof body !== 'object' || (body as { code?: unknown }).code !== 'account_locked')
-    return null
-  const secs = Number((body as { retry_after_secs?: unknown }).retry_after_secs)
-  return Number.isFinite(secs) && secs > 0 ? Math.max(1, Math.ceil(secs / 60)) : 15
-}

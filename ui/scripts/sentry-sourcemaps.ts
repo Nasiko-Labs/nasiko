@@ -17,12 +17,15 @@
 // (dist/.vite/sentry-release.txt) or moved out, and every map is deleted. The delete runs even when an earlier step
 // fails. The auth token is read from the environment only (CI's secret store): never pass it as an argument or write
 // it to a file in the repository (no .sentryclirc, no .env.sentry-build-plugin).
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { findEditions } from './editions.ts'
 import { precompress } from './lib/precompress.ts'
+
+// Run as a script, not imported: compare URLs, because `file://${argv[1]}` never matches on Windows (D:\… paths).
+const isMain = () => !!process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href
 
 /** Pinned: this runs with CI's credentials. */
 const SENTRY_CLI = '@sentry/cli@3.8.0'
@@ -40,7 +43,15 @@ const mapsIn = (dist: string) => walk(dist).filter((f) => /\.map(\.br|\.gz)?$/.t
 const releaseOf = (dir: string) => readFileSync(join(dir, RELEASE_FILE), 'utf8').trim()
 
 function sentryCli(args: string[]) {
-  execFileSync('npx', ['--yes', SENTRY_CLI, ...args], { stdio: 'inherit', env: process.env })
+  const argv = ['--yes', SENTRY_CLI, ...args]
+  if (process.platform !== 'win32') {
+    execFileSync('npx', argv, { stdio: 'inherit', env: process.env })
+    return
+  }
+  // On Windows npx is npx.cmd, which Node only starts through a shell (CVE-2024-27980). One quoted command string,
+  // not args + shell: true, so paths with spaces survive and Node doesn't warn (DEP0190).
+  const quoted = argv.map((a) => `"${a.replace(/"/g, '""')}"`).join(' ')
+  execSync(`npx ${quoted}`, { stdio: 'inherit', env: process.env })
 }
 
 /** Debug IDs into every script and its map, then the scripts' .br/.gz again so every variant carries the same ID. */
@@ -140,4 +151,4 @@ function main(argv: string[]): number {
   return failed ? 1 : 0
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) process.exit(main(process.argv.slice(2)))
+if (isMain()) process.exit(main(process.argv.slice(2)))

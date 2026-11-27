@@ -2,8 +2,9 @@
 //! and the settings each harness needs to actually go there.
 //!
 //! The harness images are generic. They carry no model, no provider and no endpoint, because
-//! those are the session user's: the model comes from the user's default LLM config (else the
-//! platform default), and the router and MCP gateway are reached with the sandbox's own
+//! those are the session user's: the model comes from the LLM config the router resolves for
+//! the session's agent, the user's own harness agent (the config attached to it, else the user's
+//! default, else the platform default), and the router and MCP gateway are reached with the sandbox's own
 //! credentials ([`super::identity::session_env`]). What this module adds is the harness-specific
 //! shape of those settings — a config object for OpenCode, a `config.toml` for Codex, env for
 //! Claude Code — rendered per turn so a changed setting reaches a running sandbox on its next
@@ -38,8 +39,9 @@ const ROUTER_DISPLAY_NAME: &str = "Nasiko LLM router";
 /// Where a session's model came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSource {
-    /// The user's default LLM config.
-    UserDefault,
+    /// The LLM config the router resolves for the session's agent: the one attached to it, else
+    /// its owner's default.
+    Configured,
     /// The deployment's `DEFAULT_PROVIDER`/`DEFAULT_MODEL`.
     PlatformDefault,
 }
@@ -62,30 +64,36 @@ impl ModelChoice {
     }
 }
 
-/// The user's default LLM config's provider and model, else the platform default.
+/// The provider and model of the LLM config the router resolves for `agent_id` (the config
+/// attached to the agent, else its owner's default: `nasiko_llm_router`'s registry), else the
+/// platform default. For a session bound to the user's own harness agent that is the user's
+/// choice.
 ///
 /// The model is the config's `model`, else its tier models in the router's own fallback order.
-/// A read failure logs and falls back to the platform default: the user's choice is a
-/// preference, and a turn that cannot read it should still run.
-pub async fn model_choice_for_user(
+/// A read failure logs and falls back to the platform default: the choice is a preference, and a
+/// turn that cannot read it should still run.
+pub async fn model_choice_for_agent(
     db: &PgPool,
-    user_id: Uuid,
+    agent_id: Uuid,
     gateway: &GatewayConfig,
 ) -> ModelChoice {
     let platform = ModelChoice::platform_default(gateway);
     let row: Result<Option<DefaultConfigRow>, sqlx::Error> = sqlx::query_as(
-        "SELECT provider, model, tier1_model, tier2_model, tier3_model \
-         FROM llm_configs \
-         WHERE created_by = $1 AND is_default AND deleted_at IS NULL",
+        "SELECT c.provider, c.model, c.tier1_model, c.tier2_model, c.tier3_model \
+         FROM agents a \
+         JOIN llm_configs c ON c.deleted_at IS NULL \
+          AND (c.id = a.llm_config_id OR (c.created_by = a.owner_id AND c.is_default)) \
+         WHERE a.id = $1 \
+         ORDER BY COALESCE(c.id = a.llm_config_id, false) DESC LIMIT 1",
     )
-    .bind(user_id)
+    .bind(agent_id)
     .fetch_optional(db)
     .await;
     match row {
         Ok(Some(row)) => choice_from_row(row, platform),
         Ok(None) => platform,
         Err(e) => {
-            tracing::warn!(%user_id, error = %e, "harness profile: could not read the user's default LLM config; using the platform default");
+            tracing::warn!(%agent_id, error = %e, "harness profile: could not read the agent's LLM config; using the platform default");
             platform
         }
     }
@@ -112,7 +120,7 @@ fn choice_from_row(row: DefaultConfigRow, platform: ModelChoice) -> ModelChoice 
         Some(model) => ModelChoice {
             provider: row.provider,
             model,
-            source: ModelSource::UserDefault,
+            source: ModelSource::Configured,
         },
         // A default config with a provider but no model at all names nothing to ask for.
         None => platform,
@@ -257,7 +265,7 @@ fn opencode(inputs: ProfileInputs<'_>) -> HarnessProfile {
 /// from `OPENAI_API_KEY`. The HITL approval flags travel on the command line and win over it.
 ///
 /// `CODEX_HOME` is deliberately not set: Codex defaults it to `$HOME/.codex`, and HOME is
-/// per-session under shared runtimes, so the default is right wherever HOME points. The shim
+/// per-session in a harness agent, so the default is right wherever HOME points. The shim
 /// expands a leading `~` in a file path against the session's HOME in both modes, whereas a `~`
 /// in an env value is expanded only in handshake mode and would reach an env-mode harness
 /// literally.
@@ -364,7 +372,7 @@ mod tests {
 
     #[test]
     fn opencode_registers_the_router_and_selects_the_users_model() {
-        let user = choice("openai", "gpt-4o", ModelSource::UserDefault);
+        let user = choice("openai", "gpt-4o", ModelSource::Configured);
         let profile = render(inputs(CodingAgentKind::OpenCode, &user, &platform(), false));
         assert!(profile.files.is_empty());
         let config = opencode_config(&profile);
@@ -384,7 +392,7 @@ mod tests {
 
     #[test]
     fn opencode_hitl_adds_the_ask_permissions_beside_the_model() {
-        let user = choice("openai", "gpt-4o", ModelSource::UserDefault);
+        let user = choice("openai", "gpt-4o", ModelSource::Configured);
         let profile = render(inputs(CodingAgentKind::OpenCode, &user, &platform(), true));
         let config = opencode_config(&profile);
         assert_eq!(config["permission"]["edit"], "ask");
@@ -395,7 +403,7 @@ mod tests {
 
     #[test]
     fn a_model_off_the_harness_dialect_falls_back_to_the_platform_default() {
-        let user = choice("anthropic", "claude-sonnet-4-6", ModelSource::UserDefault);
+        let user = choice("anthropic", "claude-sonnet-4-6", ModelSource::Configured);
         let profile = render(inputs(CodingAgentKind::OpenCode, &user, &platform(), false));
         assert_eq!(
             opencode_config(&profile)["model"],
@@ -413,7 +421,7 @@ mod tests {
 
     #[test]
     fn codex_writes_a_config_toml_under_its_home() {
-        let user = choice("openai", "gpt-5.4", ModelSource::UserDefault);
+        let user = choice("openai", "gpt-5.4", ModelSource::Configured);
         let profile = render(inputs(CodingAgentKind::Codex, &user, &platform(), true));
         assert!(!profile.env.contains_key("CODEX_HOME"));
         assert_eq!(profile.files.len(), 1);
@@ -428,7 +436,7 @@ mod tests {
 
     #[test]
     fn without_a_router_url_no_provider_is_registered() {
-        let user = choice("openai", "gpt-4o", ModelSource::UserDefault);
+        let user = choice("openai", "gpt-4o", ModelSource::Configured);
         let platform = platform();
         let mut inputs = inputs(CodingAgentKind::OpenCode, &user, &platform, true);
         inputs.llm_base_url = " ";
@@ -444,7 +452,7 @@ mod tests {
 
     #[test]
     fn claude_code_is_env_only_and_takes_an_anthropic_model() {
-        let user = choice("anthropic", "claude-sonnet-4-6", ModelSource::UserDefault);
+        let user = choice("anthropic", "claude-sonnet-4-6", ModelSource::Configured);
         let profile = render(inputs(
             CodingAgentKind::ClaudeCode,
             &user,
@@ -455,7 +463,7 @@ mod tests {
         assert_eq!(profile.env["ANTHROPIC_MODEL"], "claude-sonnet-4-6");
         assert_eq!(profile.env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"], "1");
 
-        let openai_user = choice("openai", "gpt-4o", ModelSource::UserDefault);
+        let openai_user = choice("openai", "gpt-4o", ModelSource::Configured);
         let profile = render(inputs(
             CodingAgentKind::ClaudeCode,
             &openai_user,
@@ -467,7 +475,7 @@ mod tests {
 
     #[test]
     fn apply_to_carries_the_files_as_json_env() {
-        let user = choice("openai", "gpt-5.4", ModelSource::UserDefault);
+        let user = choice("openai", "gpt-5.4", ModelSource::Configured);
         let profile = render(inputs(CodingAgentKind::Codex, &user, &platform(), false));
         let mut env = HashMap::from([("A".to_owned(), "b".to_owned())]);
         profile.clone().apply_to(&mut env);
@@ -504,7 +512,7 @@ mod tests {
         let picked = pick(row(Some(" m "), None, None, None));
         assert_eq!(
             (picked.provider.as_str(), picked.source),
-            ("anthropic", ModelSource::UserDefault)
+            ("anthropic", ModelSource::Configured)
         );
         assert_eq!(pick(row(Some("  "), None, None, None)), platform());
     }

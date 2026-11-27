@@ -184,6 +184,15 @@ impl EventStore {
         }
     }
 
+    /// A connection of its own, outside the pool, for the tiering lock: the lock pins its session
+    /// for the whole locked run, while the run's own queries go through the pool. Held on a pooled
+    /// connection, it took one away from requests for that long, and a small pool (one connection
+    /// in tests) left the run waiting on itself and requests timing out behind it.
+    async fn tiering_lock_connection(&self) -> Result<sqlx::PgConnection> {
+        use sqlx::Connection as _;
+        Ok(sqlx::PgConnection::connect_with(&self.db.connect_options()).await?)
+    }
+
     /// Tiering stops at `hold`'s read position as well as the age window.
     pub fn with_hold(mut self, hold: Arc<dyn TieringHold>) -> Self {
         self.hold = hold;
@@ -243,10 +252,10 @@ impl EventStore {
     /// One locked run: recover unfinished batches, then tier everything past the cutoff.
     /// `None` when another replica holds the lock.
     pub async fn run_once(&self, now: DateTime<Utc>) -> Result<Option<TierReport>> {
-        let mut lock_conn = self.db.acquire().await?;
+        let mut lock_conn = self.tiering_lock_connection().await?;
         let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(TIERING_LOCK)
-            .fetch_one(&mut *lock_conn)
+            .fetch_one(&mut lock_conn)
             .await?;
         if !got {
             return Ok(None);
@@ -254,7 +263,7 @@ impl EventStore {
         let res = self.run_locked(now).await;
         sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(TIERING_LOCK)
-            .execute(&mut *lock_conn)
+            .execute(&mut lock_conn)
             .await?;
         res.map(Some)
     }
@@ -265,10 +274,10 @@ impl EventStore {
     /// Settles crashed batches first, as erasure needs. `None` when another replica
     /// holds the lock.
     pub async fn retry_pending_erasures(&self) -> Result<Option<usize>> {
-        let mut lock_conn = self.db.acquire().await?;
+        let mut lock_conn = self.tiering_lock_connection().await?;
         let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(TIERING_LOCK)
-            .fetch_one(&mut *lock_conn)
+            .fetch_one(&mut lock_conn)
             .await?;
         if !got {
             return Ok(None);
@@ -280,7 +289,7 @@ impl EventStore {
         .await;
         sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(TIERING_LOCK)
-            .execute(&mut *lock_conn)
+            .execute(&mut lock_conn)
             .await?;
         res.map(Some)
     }
@@ -312,10 +321,10 @@ impl EventStore {
     /// under the tiering lock, so it never races a tiering append.
     /// `None` when another replica holds the lock.
     pub async fn maintain(&self, grace: TimeDelta) -> Result<Option<()>> {
-        let mut lock_conn = self.db.acquire().await?;
+        let mut lock_conn = self.tiering_lock_connection().await?;
         let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(TIERING_LOCK)
-            .fetch_one(&mut *lock_conn)
+            .fetch_one(&mut lock_conn)
             .await?;
         if !got {
             return Ok(None);
@@ -323,7 +332,7 @@ impl EventStore {
         let res = self.purge(grace).await;
         sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(TIERING_LOCK)
-            .execute(&mut *lock_conn)
+            .execute(&mut lock_conn)
             .await?;
         res.map(Some)
     }
@@ -1937,10 +1946,10 @@ impl EventStore {
     /// (still pending). Idempotent.
     pub async fn erase_user(&self, user_id: Uuid) -> Result<bool> {
         self.request_erasure(user_id).await?;
-        let mut lock_conn = self.db.acquire().await?;
+        let mut lock_conn = self.tiering_lock_connection().await?;
         let got: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
             .bind(TIERING_LOCK)
-            .fetch_one(&mut *lock_conn)
+            .fetch_one(&mut lock_conn)
             .await?;
         if !got {
             return Ok(false);
@@ -1948,7 +1957,7 @@ impl EventStore {
         let res: Result<()> = self.erase_locked(user_id).await;
         sqlx::query("SELECT pg_advisory_unlock($1)")
             .bind(TIERING_LOCK)
-            .execute(&mut *lock_conn)
+            .execute(&mut lock_conn)
             .await?;
         res.map(|()| true)
     }

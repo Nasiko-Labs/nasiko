@@ -48,6 +48,12 @@ pub enum RuntimeError {
     #[error("unsupported operation: {0}")]
     Unsupported(String),
 
+    /// A layer refused the change before it reached the backend, for a reason the caller can act
+    /// on. `message` is safe to show a user; `code` is chosen by the refusing layer and is for
+    /// callers that know its vocabulary, so this crate never interprets it.
+    #[error("declined [{code}]: {message}")]
+    Declined { code: String, message: String },
+
     /// An unexpected error from the backend that does not fit a more specific variant.
     #[error("internal error: {0}")]
     Internal(String),
@@ -55,3 +61,20 @@ pub enum RuntimeError {
 
 /// Convenience alias so callers can write `use agent_runtime::Result`.
 pub type Result<T> = std::result::Result<T, RuntimeError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_declined_change_displays_its_code_and_message() {
+        let declined = RuntimeError::Declined {
+            code: "plan_refused".into(),
+            message: "Ask an admin to change the plan.".into(),
+        };
+        assert_eq!(
+            declined.to_string(),
+            "declined [plan_refused]: Ask an admin to change the plan."
+        );
+    }
+}

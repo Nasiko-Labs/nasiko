@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use nasiko_runtime::{ContainerRuntime, SimulatedRuntime};
 use nasiko_server::sessions::reaper::{ReaperMemory, SweepOutcome, SweepScope, sweep};
-use nasiko_server::sessions::{HarnessCatalog, SessionStore, spec_for_session};
+use nasiko_server::sessions::{HarnessCatalog, SessionStore, own_agent, spec_for_session};
 use nasiko_server::state::AppState;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -214,8 +214,8 @@ pub async fn run(params: Params) -> anyhow::Result<Report> {
 async fn run_on(db: &BenchDb, params: &Params) -> anyhow::Result<Report> {
     let provider = Arc::new(SimulatedSandboxProvider::new(params.latency, params.seed));
     let state = build_state(db, params, provider.clone()).await;
-    let (agent_id, user_ids) = seed_world(&state, params).await?;
-    let sessions = create_sessions(&db.pool, agent_id, &user_ids, params.sessions).await?;
+    let owners = seed_world(&state, params).await?;
+    let sessions = create_sessions(&db.pool, &owners, params.sessions).await?;
     let world = World {
         state,
         provider,
@@ -257,22 +257,14 @@ async fn build_state(
     .await
 }
 
-/// An admin (the harness agent's owner), `params.users` members, and the harness agent.
-async fn seed_world(state: &AppState, params: &Params) -> anyhow::Result<(Uuid, Vec<Uuid>)> {
-    sqlx::query(
-        "INSERT INTO users (username, email, role, is_superuser) \
-         VALUES ('bench_admin', 'bench_admin@bench.local', 'admin', true)",
-    )
-    .execute(&state.db)
-    .await?;
-    nasiko_server::seed::seed_harness_agents(state).await;
-    let agent_id: Uuid = sqlx::query_scalar(
-        "SELECT id FROM agents WHERE workload_kind = 'harness' AND harness_id = $1",
-    )
-    .bind(HARNESS_ID)
-    .fetch_one(&state.db)
-    .await?;
-    let users = sqlx::query_scalar(
+/// `params.users` members, each with their own harness agent, as opening a session gives them:
+/// `(user, agent)` pairs.
+async fn seed_world(state: &AppState, params: &Params) -> anyhow::Result<Vec<(Uuid, Uuid)>> {
+    let harness = HarnessCatalog::new(state.db.clone())
+        .get(HARNESS_ID)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("harness {HARNESS_ID} is not in the catalog"))?;
+    let users: Vec<Uuid> = sqlx::query_scalar(
         "INSERT INTO users (username, email, role) \
          SELECT 'bench_user_' || g, 'bench_user_' || g || '@bench.local', 'member' \
          FROM generate_series(0, $1::int - 1) g RETURNING id",
@@ -280,20 +272,31 @@ async fn seed_world(state: &AppState, params: &Params) -> anyhow::Result<(Uuid, 
     .bind(i32::try_from(params.users)?)
     .fetch_all(&state.db)
     .await?;
-    Ok((agent_id, users))
+    let mut owners = Vec::with_capacity(users.len());
+    for user in users {
+        let agent = own_agent::ensure(
+            &state.db,
+            user,
+            &harness,
+            &state.config.harness_image_prefix,
+        )
+        .await?;
+        owners.push((user, agent));
+    }
+    Ok(owners)
 }
 
-/// `count` parked sessions spread round-robin over `users`.
+/// `count` parked sessions spread round-robin over `owners`, each bound to its user's agent.
 async fn create_sessions(
     pool: &PgPool,
-    agent_id: Uuid,
-    users: &[Uuid],
+    owners: &[(Uuid, Uuid)],
     count: usize,
 ) -> anyhow::Result<Vec<String>> {
     let store = SessionStore::new(pool.clone());
     let mut ids = Vec::with_capacity(count);
     for i in 0..count {
-        let row = store.create(agent_id, users[i % users.len()], None).await?;
+        let (user, agent) = owners[i % owners.len()];
+        let row = store.create(agent, user, None).await?;
         ids.push(row.session_id);
     }
     Ok(ids)

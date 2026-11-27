@@ -39,9 +39,13 @@ specs, not this document; where a protocol dictates a shape, the protocol wins.
 ```
 
 - Always JSON. Never plain text, never an empty body (a 204 is the only bodyless response).
-- `code` is a stable slug clients switch on (`account_locked`, `version_conflict`,
+- `code` is a stable slug clients switch on (`version_conflict`,
   `agent_not_shareable`, `harness_sessions_disabled`);
   the message may be reworded freely, the code may not change once shipped.
+  One exception, for security: `POST /api/auth/login` no longer answers `account_locked`
+  (`429` with `retry_after_secs`) or `remaining_attempts`. Every refusal is one `401`, so a
+  refusal cannot tell whether a name exists or is locked. The lockout is unchanged (3 failures,
+  15 minutes); the account's owner is no longer told about it.
 - 5xx bodies never carry internal error text — raw `e.to_string()` is a log line, not a
   response. The client gets the slug; the operator gets the detail in the logs, joined by
   the trace id.

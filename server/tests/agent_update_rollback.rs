@@ -945,3 +945,274 @@ async fn update_by_different_superuser_queues_job_with_real_owner() {
 
     server.cleanup().await;
 }
+
+// ─── a deploy the runtime declines ───────────────────────────────────────────
+
+/// What a layer that declines to start workloads answers: its own code, and words for the user.
+const DECLINED_CODE: &str = "start_refused";
+const DECLINED_MESSAGE: &str = "This agent cannot be started right now. Try again later.";
+
+/// A source that builds (it has a Dockerfile), so the update reaches its deploy.
+fn buildable_zip() -> Vec<u8> {
+    common::make_zip(&[
+        (
+            "Dockerfile",
+            b"FROM python:3.11-slim\nCMD [\"python\", \"main.py\"]",
+        ),
+        ("main.py", b"print('hello')"),
+    ])
+}
+
+/// A stopped agent at 1.0.0 with an image, as one is that has nothing running; returns its id.
+async fn seed_stopped_agent(server: &common::TestServer, uid: &str, name: &str) -> String {
+    let agent = create_agent(server, uid, name, "1.0.0").await;
+    let agent_id = agent["id"].as_str().unwrap().to_string();
+    sqlx::query(
+        "UPDATE agents SET image = 'nasiko/stopped:1.0.0', status = 'stopped' WHERE id = $1",
+    )
+    .bind(agent_id.parse::<Uuid>().unwrap())
+    .execute(&server.db)
+    .await
+    .unwrap();
+    agent_id
+}
+
+async fn agent_version_image_status(
+    server: &common::TestServer,
+    agent_id: &str,
+) -> (String, Option<String>, String) {
+    sqlx::query_as("SELECT version, image, status FROM agents WHERE id = $1")
+        .bind(agent_id.parse::<Uuid>().unwrap())
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+/// The reasons `GET /api/agents/uploads/{id}` gives for a failed build.
+async fn build_error_details(
+    server: &common::TestServer,
+    uid: &str,
+    build_id: &str,
+) -> Vec<String> {
+    let res = common::as_superuser(
+        server
+            .client
+            .get(server.url(&format!("/api/agents/uploads/{build_id}"))),
+        uid,
+        "admin",
+    )
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    serde_json::from_value(body["error_details"].clone()).unwrap()
+}
+
+/// The runtime declines to start the agent the update built: the agent is no worse for it, so it
+/// is put back as it was (version, image and its status, a stopped agent stays stopped, not
+/// `failed`), and the user is told the declining layer's words.
+#[tokio::test]
+#[serial]
+async fn a_declined_deploy_of_an_update_puts_the_agent_back_as_it_was_and_tells_why() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = seed_stopped_agent(&server, uid, "declined-update-agent").await;
+    server
+        .runtime
+        .set_decline_deploy(Some((DECLINED_CODE, DECLINED_MESSAGE)));
+
+    let queued: Value = do_update(&server, uid, &agent_id, None, Some(buildable_zip()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let build_id = queued["build_id"].as_str().unwrap();
+    assert_eq!(
+        wait_for_terminal_build(&server, uid, build_id).await,
+        "failed"
+    );
+
+    assert_eq!(
+        agent_version_image_status(&server, &agent_id).await,
+        (
+            "1.0.0".to_owned(),
+            Some("nasiko/stopped:1.0.0".to_owned()),
+            "stopped".to_owned()
+        )
+    );
+    assert_eq!(
+        build_error_details(&server, uid, build_id).await,
+        vec![DECLINED_MESSAGE.to_owned()]
+    );
+    server.cleanup().await;
+}
+
+/// An update submitted while another is still queued reads that one's `deploying` placeholder as
+/// the agent's status. Putting that back when the runtime declines would leave the row `deploying`
+/// with no job left to move it: the agent ends `failed`, its version and image rolled back.
+#[tokio::test]
+#[serial]
+async fn a_declined_deploy_of_an_update_that_read_a_deploying_placeholder_ends_failed() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = seed_stopped_agent(&server, uid, "declined-behind-another-update").await;
+    sqlx::query("UPDATE agents SET status = 'deploying' WHERE id = $1")
+        .bind(agent_id.parse::<Uuid>().unwrap())
+        .execute(&server.db)
+        .await
+        .unwrap();
+    server
+        .runtime
+        .set_decline_deploy(Some((DECLINED_CODE, DECLINED_MESSAGE)));
+
+    let queued: Value = do_update(&server, uid, &agent_id, None, Some(buildable_zip()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let build_id = queued["build_id"].as_str().unwrap();
+    assert_eq!(
+        wait_for_terminal_build(&server, uid, build_id).await,
+        "failed"
+    );
+
+    assert_eq!(
+        agent_version_image_status(&server, &agent_id).await,
+        (
+            "1.0.0".to_owned(),
+            Some("nasiko/stopped:1.0.0".to_owned()),
+            "failed".to_owned()
+        )
+    );
+    server.cleanup().await;
+}
+
+/// A stop issued while the update builds is the agent's status now: a declined deploy rolls the
+/// version and image back but does not overwrite the status with the one the update read.
+#[tokio::test]
+#[serial]
+async fn a_declined_deploy_of_an_update_does_not_overwrite_a_status_changed_during_the_build() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = seed_stopped_agent(&server, uid, "stopped-during-update").await;
+    let agent_uuid = agent_id.parse::<Uuid>().unwrap();
+    sqlx::query("UPDATE agents SET status = 'running' WHERE id = $1")
+        .bind(agent_uuid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    server
+        .runtime
+        .set_decline_deploy(Some((DECLINED_CODE, DECLINED_MESSAGE)));
+    let build_gate = server.runtime.hold_builds();
+
+    let queued: Value = do_update(&server, uid, &agent_id, None, Some(buildable_zip()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let build_id = queued["build_id"].as_str().unwrap();
+    for _ in 0..40 {
+        if server.runtime.builds_started() > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert_eq!(server.runtime.builds_started(), 1, "the build is running");
+
+    sqlx::query("UPDATE agents SET status = 'stopped' WHERE id = $1")
+        .bind(agent_uuid)
+        .execute(&server.db)
+        .await
+        .unwrap();
+    build_gate.notify_one();
+    assert_eq!(
+        wait_for_terminal_build(&server, uid, build_id).await,
+        "failed"
+    );
+
+    assert_eq!(
+        agent_version_image_status(&server, &agent_id).await,
+        (
+            "1.0.0".to_owned(),
+            Some("nasiko/stopped:1.0.0".to_owned()),
+            "stopped".to_owned()
+        ),
+        "the stop stays, the version and image are rolled back"
+    );
+    server.cleanup().await;
+}
+
+/// The contrast: a deploy that fails for any other reason still marks the agent `failed`, with the
+/// generic reason.
+#[tokio::test]
+#[serial]
+async fn a_deploy_of_an_update_that_fails_for_another_reason_still_marks_the_agent_failed() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let uid = admin["user_id"].as_str().unwrap();
+    let agent_id = seed_stopped_agent(&server, uid, "failing-update-agent").await;
+    server.runtime.set_fail_deploy(true);
+
+    let queued: Value = do_update(&server, uid, &agent_id, None, Some(buildable_zip()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let build_id = queued["build_id"].as_str().unwrap();
+    assert_eq!(
+        wait_for_terminal_build(&server, uid, build_id).await,
+        "failed"
+    );
+
+    assert_eq!(
+        agent_version_image_status(&server, &agent_id).await,
+        (
+            "1.0.0".to_owned(),
+            Some("nasiko/stopped:1.0.0".to_owned()),
+            "failed".to_owned()
+        ),
+        "version and image are rolled back either way, the status only for a decline"
+    );
+    assert_eq!(
+        build_error_details(&server, uid, build_id).await,
+        vec!["agent update failed".to_owned()]
+    );
+    server.cleanup().await;
+}
+
+/// The same for an update job queued before the status was carried: it reads, with no status to
+/// put back, so a declined deploy of it ends `failed` as it did before.
+#[test]
+fn a_queued_update_job_from_before_the_status_was_carried_still_reads() {
+    let queued = json!({
+        "kind": "Update",
+        "build_id": Uuid::new_v4(),
+        "agent_id": Uuid::new_v4(),
+        "owner_id": Uuid::new_v4(),
+        "agent_owner_id": Uuid::new_v4(),
+        "name": "queued-before",
+        "zip_path": null,
+        "image_tag": "nasiko/queued-before:1.0.1",
+        "new_version": "1.0.1",
+        "prev_version": "1.0.0",
+        "prev_image": null,
+        "changelog": null,
+        "writable": false,
+    });
+
+    let job: nasiko_server::agents::upload::BuildJobPayload =
+        serde_json::from_value(queued).unwrap();
+
+    assert!(matches!(
+        job,
+        nasiko_server::agents::upload::BuildJobPayload::Update {
+            prev_status: None,
+            ..
+        }
+    ));
+}

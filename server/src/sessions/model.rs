@@ -209,8 +209,10 @@ impl SessionStore {
     /// The caller's session for `(agent, context)`, creating it parked if absent (the A2A
     /// path, where the client supplies the contextId).
     ///
-    /// `None` means the contextId already belongs to someone else (or another agent); the
-    /// caller must not learn whose, so it is reported as a conflict, not a row.
+    /// Only the agent's owner has sessions on a harness agent: it is never shared, and a
+    /// superuser, who sees every session, does not talk to someone else's. So `None` means the
+    /// contextId already belongs to someone else (or another agent), or the agent is not the
+    /// caller's; the caller must not learn which, so it is reported as a conflict, not a row.
     pub async fn find_or_create_for_harness(
         &self,
         agent_id: Uuid,
@@ -219,7 +221,10 @@ impl SessionStore {
     ) -> sqlx::Result<Option<SessionRow>> {
         sqlx::query(
             "INSERT INTO chat_sessions (session_id, user_id, agent_id, title, runtime_state) \
-             VALUES ($1, $2, $3, 'Coding session', 'parked') ON CONFLICT (session_id) DO NOTHING",
+             SELECT $1, $2, $3, 'Coding session', 'parked' \
+             WHERE EXISTS (SELECT 1 FROM agents \
+                           WHERE id = $3 AND owner_id = $2 AND deleted_at IS NULL) \
+             ON CONFLICT (session_id) DO NOTHING",
         )
         .bind(context_id)
         .bind(user_id)
@@ -229,7 +234,7 @@ impl SessionStore {
         sqlx::query_as(&format!(
             "SELECT {COLUMNS} FROM {FROM} \
              WHERE s.session_id = $1 AND s.user_id = $2 AND s.agent_id = $3 \
-               AND s.deleted_at IS NULL"
+               AND a.owner_id = $2 AND s.deleted_at IS NULL"
         ))
         .bind(context_id)
         .bind(user_id)
@@ -507,6 +512,22 @@ impl SessionStore {
         .execute(&self.db)
         .await
         .map(|done| done.rows_affected() == 1)
+    }
+
+    /// Give up the lease of a start (`sessions::start`). Unlike `lifecycle::release_turn` it
+    /// leaves `last_turn_at` alone: no turn ran, so the session's idle time still counts from its
+    /// creation. Acts only for the lease's own fence, and never on a row being suspended.
+    pub async fn release_start(&self, lease: &TurnLease) -> sqlx::Result<()> {
+        sqlx::query(
+            "UPDATE chat_sessions \
+             SET turn_owner = NULL, lease_expires_at = NULL, active_turn_id = NULL \
+             WHERE session_id = $1 AND turn_fence = $2 AND runtime_state <> 'stopping'",
+        )
+        .bind(&lease.session_id)
+        .bind(lease.fence)
+        .execute(&self.db)
+        .await?;
+        Ok(())
     }
 
     /// The harness sessions that claim any of `lookups`' sandboxes, in one query. A row is

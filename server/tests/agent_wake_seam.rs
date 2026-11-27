@@ -184,6 +184,11 @@ async fn a_refusing_seam_answers_503_before_the_agent_proxy_forwards() {
     let refused = post_as(&server, owner, &path, &body).await;
 
     assert_eq!(refused.status(), reqwest::StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        refused.text().await.expect("body"),
+        REFUSAL,
+        "the client is told why"
+    );
     assert_eq!(hits.load(Ordering::SeqCst), 0, "nothing reaches the agent");
     assert_eq!(
         wake.asked(),

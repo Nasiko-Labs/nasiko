@@ -30,7 +30,7 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 use tracing::{info, warn};
 use uuid::Uuid;
 
-use super::{AgentWake, lock_agent};
+use super::{AgentWake, WakeRefusal, lock_agent};
 use crate::agents::deployments::record_newest_deployment_status;
 use crate::agents::utils::answers_http;
 
@@ -49,8 +49,9 @@ const NOT_STARTED_IN_TIME: &str = "the agent did not start in time, try again sh
 #[async_trait]
 pub trait WorkloadDeployer: Send + Sync {
     /// Returns once the runtime has accepted the deploy, not once the agent answers. An `Err`
-    /// carries the message the caller is refused with; the cause is logged where it happened.
-    async fn deploy(&self, agent_id: Uuid) -> Result<(), String>;
+    /// carries the message the caller is refused with, and whether the runtime declined the
+    /// deploy; the cause is logged where it happened.
+    async fn deploy(&self, agent_id: Uuid) -> Result<(), WakeRefusal>;
 }
 
 /// What a wake works with, all received from the composition root.
@@ -121,7 +122,7 @@ impl ParkedAgentWake {
 
     /// Wakes the agent, or waits for the wake another caller in this process already started and
     /// then sees what it left.
-    async fn wake_once(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String> {
+    async fn wake_once(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), WakeRefusal> {
         let deadline = Instant::now() + self.budget;
         let gate = self.gate_of(agent_id);
         let _turn = match gate.try_lock() {
@@ -147,7 +148,7 @@ impl ParkedAgentWake {
         agent_id: Uuid,
         flow_id: Option<&str>,
         deadline: Instant,
-    ) -> Result<(), String> {
+    ) -> Result<(), WakeRefusal> {
         let started = Instant::now();
         let _slot = self.wake_slot(agent_id, deadline).await?;
         let mut tx = self
@@ -179,11 +180,21 @@ impl ParkedAgentWake {
                 info!(%agent_id, "agent wake: scaled a parked agent up; waiting until it answers");
             }
             Ok(ScaleUp::NoWorkload) => self.deploy_workload(agent_id, deadline).await?,
-            Err(e) => return Err(unavailable(agent_id, "scale", e)),
+            // The refusing layer worded this for the caller; the rest is internal detail. It
+            // declined before anything started, so there is nothing to scale back down.
+            Err(RuntimeError::Declined { code, message }) => {
+                warn!(%agent_id, %code, "agent wake: the runtime declined to start the agent");
+                undo.disarm();
+                return Err(WakeRefusal {
+                    message,
+                    declined: true,
+                });
+            }
+            Err(e) => return Err(unavailable(agent_id, "scale", e).into()),
         }
         announce_waking(&self.deps.flow_events, agent_id, flow_id).await;
         let Some(address) = self.wait_answering(&container_id, deadline).await else {
-            return Err(not_in_time(agent_id));
+            return Err(not_in_time(agent_id).into());
         };
         mark_running(&mut tx, agent_id, &address)
             .await
@@ -211,12 +222,12 @@ impl ParkedAgentWake {
 
     /// Deploys the workload a parked agent does not have, within the wake's budget. A deploy that
     /// outlasts the budget still finishes, and the next call scales up what it left.
-    async fn deploy_workload(&self, agent_id: Uuid, deadline: Instant) -> Result<(), String> {
+    async fn deploy_workload(&self, agent_id: Uuid, deadline: Instant) -> Result<(), WakeRefusal> {
         info!(%agent_id, "agent wake: a parked agent has no workload; deploying it");
         let deployed = self.deps.deployer.deploy(agent_id);
         match tokio::time::timeout_at(deadline.into(), deployed).await {
             Ok(outcome) => outcome,
-            Err(_) => Err(not_in_time(agent_id)),
+            Err(_) => Err(not_in_time(agent_id).into()),
         }
     }
 
@@ -337,6 +348,16 @@ async fn park_again(
 #[async_trait]
 impl AgentWake for ParkedAgentWake {
     async fn before_forward(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String> {
+        self.before_forward_or_decline(agent_id, flow_id)
+            .await
+            .map_err(|refusal| refusal.message)
+    }
+
+    async fn before_forward_or_decline(
+        &self,
+        agent_id: Uuid,
+        flow_id: Option<&str>,
+    ) -> Result<(), WakeRefusal> {
         if self.is_parked(agent_id).await? {
             return self.wake_once(agent_id, flow_id).await;
         }
@@ -529,7 +550,7 @@ mod tests {
 
     #[async_trait]
     impl WorkloadDeployer for RecordingDeployer {
-        async fn deploy(&self, agent_id: Uuid) -> Result<(), String> {
+        async fn deploy(&self, agent_id: Uuid) -> Result<(), WakeRefusal> {
             tokio::time::sleep(self.delay).await;
             self.deployed.lock().unwrap().push(agent_id);
             Ok(())
@@ -672,7 +693,7 @@ mod tests {
             .deploy_workload(Uuid::new_v4(), started + Duration::from_millis(50))
             .await;
 
-        assert_eq!(outcome, Err(NOT_STARTED_IN_TIME.to_owned()));
+        assert_eq!(outcome, Err(NOT_STARTED_IN_TIME.to_owned().into()));
         assert!(
             started.elapsed() < Duration::from_secs(2),
             "{:?}",

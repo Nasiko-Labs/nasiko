@@ -28,8 +28,9 @@ pub struct CodingAgentTarget {
     pub hitl_enabled: bool,
 }
 
-/// The facts a harness-session turn needs about its platform agent. The agent row is a routable
-/// identity, not a deployment: the sandbox's image and argv come from the harness catalog.
+/// The facts a harness-session turn needs about its agent, the user's own harness agent
+/// (`sessions::own_agent`). The agent row is a routable identity, not a deployment: the sandbox's
+/// image and argv come from the harness catalog.
 #[derive(Debug, Clone)]
 pub struct HarnessTarget {
     pub agent_id: Uuid,

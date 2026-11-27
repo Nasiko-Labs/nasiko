@@ -6,6 +6,7 @@ pub mod chat;
 pub mod claude;
 pub mod cluster;
 pub mod codex;
+pub mod coding_agent_mcp;
 pub mod coding_agent_router;
 pub mod context_selection;
 pub mod deploy;
