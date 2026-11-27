@@ -26,7 +26,7 @@ use nasiko_session_token::SessionClaims;
 
 use super::auth_layer::rejected_body;
 use crate::LlmRouterCtx;
-use crate::auth::{EvalScope, caller_credential, verify_agent_token, verify_session_credential};
+use crate::auth::{caller_credential, verify_agent_token, verify_session_credential};
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
@@ -54,8 +54,6 @@ pub(crate) struct RoutedRequest {
     /// success, failed attempt, streamed — carries the same block, since the model was chosen once.
     pub routing_metadata: Option<serde_json::Value>,
     pub sticky_conv_id: Option<String>,
-    /// The replay-eval attempt every row of this request is filed under (`crate::eval_tag`).
-    pub eval_attempt: Option<String>,
 }
 
 /// Prompt-derived signals `resolve_routed_request` needs beyond the resolved config,
@@ -124,13 +122,8 @@ fn record_span_usage(span: &tracing::Span, usage: Option<&Usage>) {
 #[derive(Clone)]
 pub enum AuthedCaller {
     /// The deploy-time agent-identity token: `{agent_id, owner_id}`. Identity for
-    /// the actual turn is still inferred from the request's `traceparent`. `eval` is set on a
-    /// replay-eval attempt's token (`crate::auth::EvalScope`).
-    Agent {
-        agent_id: String,
-        owner_id: String,
-        eval: Option<EvalScope>,
-    },
+    /// the actual turn is still inferred from the request's `traceparent`.
+    Agent { agent_id: String, owner_id: String },
     /// A coding-agent session token (NAS-839): signed
     /// `{agent_id, user_id, session_id, flow_id}`, so the user and flow are read
     /// straight off the claims with no `traceparent` and no freshness window.
@@ -153,12 +146,8 @@ pub(crate) async fn authenticate_caller(
         return Ok(AuthedCaller::Session(claims));
     }
 
-    let (agent_id, owner_id, eval) = verify_agent_identity_scoped(ctx, store, authz).await?;
-    Ok(AuthedCaller::Agent {
-        agent_id,
-        owner_id,
-        eval,
-    })
+    let (agent_id, owner_id) = verify_agent_identity(ctx, store, authz).await?;
+    Ok(AuthedCaller::Agent { agent_id, owner_id })
 }
 
 /// Verify an agent-identity token and check its `owner_id` claim is still the
@@ -177,18 +166,8 @@ pub(crate) async fn verify_agent_identity(
     store: &dyn RegistryStore,
     authorization: Option<&str>,
 ) -> Result<(String, String), GatewayError> {
-    let (agent_id, owner_id, _) = verify_agent_identity_scoped(ctx, store, authorization).await?;
-    Ok((agent_id, owner_id))
-}
-
-/// [`verify_agent_identity`], also returning what an eval-attempt token is scoped to.
-pub(crate) async fn verify_agent_identity_scoped(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    authorization: Option<&str>,
-) -> Result<(String, String, Option<EvalScope>), GatewayError> {
     let token = verify_agent_token(authorization, &ctx.cfg)?;
-    let (agent_id, owner_id, eval) = (token.agent_id, token.owner_id, token.eval);
+    let (agent_id, owner_id) = (token.agent_id, token.owner_id);
     let id = uuid::Uuid::parse_str(&agent_id)
         .map_err(|_| GatewayError::Forbidden("token agent_id is not a UUID".into()))?;
     let identity = store
@@ -211,7 +190,7 @@ pub(crate) async fn verify_agent_identity_scoped(
                 .into(),
         ));
     }
-    Ok((agent_id, owner_id, eval))
+    Ok((agent_id, owner_id))
 }
 
 /// True when a token issued at `issued_at` (Unix seconds) falls before the agent's last LLM token
@@ -336,9 +315,7 @@ async fn count_tokens_as(
     mut body: Value,
 ) -> Result<Response, GatewayError> {
     let (agent_id, owner_id) = match caller {
-        AuthedCaller::Agent {
-            agent_id, owner_id, ..
-        } => (agent_id, owner_id),
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id),
         AuthedCaller::Session(claims) => {
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
             (claims.agent_id, owner_id)
@@ -440,17 +417,13 @@ async fn chat_core_as(
 ) -> Result<Response, GatewayError> {
     // A coding-agent session token carries the user + flow in signed claims; the
     // agent-identity token does not, and still relies on the request traceparent.
-    let (agent_id, owner_id, session, eval) = match caller {
-        AuthedCaller::Agent {
-            agent_id,
-            owner_id,
-            eval,
-        } => (agent_id, owner_id, None, eval),
+    let (agent_id, owner_id, session) = match caller {
+        AuthedCaller::Agent { agent_id, owner_id } => (agent_id, owner_id, None),
         AuthedCaller::Session(claims) => {
             // Config/secrets resolve on the agent owner, which the token doesn't
             // carry — look it up; the session user is only the billing subject.
             let owner_id = lookup_agent_owner(&ctx.db, &claims.agent_id).await?;
-            (claims.agent_id.clone(), owner_id, Some(claims), None)
+            (claims.agent_id.clone(), owner_id, Some(claims))
         }
     };
     tracing::info!(
@@ -490,16 +463,8 @@ async fn chat_core_as(
     // stamp `session.id` on the gen_ai span so a coding agent's orphan LLM trace is
     // discoverable by session (see the span record further down).
     let session_id_for_span: Option<String> = session.as_ref().map(|s| s.session_id.clone());
-    let routed = resolve_routed_request_scoped(
-        ctx,
-        store,
-        headers,
-        agent_id,
-        owner_id,
-        hint,
-        signals,
-        session,
-        eval.as_ref(),
+    let routed = resolve_routed_request(
+        ctx, store, headers, agent_id, owner_id, hint, signals, session,
     )
     .await?;
     let RoutedRequest {
@@ -511,7 +476,6 @@ async fn chat_core_as(
         compression: _,
         routing_metadata,
         sticky_conv_id,
-        eval_attempt,
     } = routed;
     // A discovered agent's call is also a turn of its conversation (see `crate::turns`). Read
     // the user message before compression can rewrite the request.
@@ -722,7 +686,6 @@ async fn chat_core_as(
         attribution_source,
         request_bytes: Some(sent_bytes),
         routing_metadata: routing_metadata.clone(),
-        eval_attempt: eval_attempt.clone(),
     };
     let mut attempts = crate::providers::attempts::AttemptLog::default();
 
@@ -769,7 +732,6 @@ async fn chat_core_as(
             request_bytes: Some(sent_bytes),
             span: llm_span.clone(),
             turn,
-            eval_attempt,
         });
     }
 
@@ -849,7 +811,6 @@ async fn chat_core_as(
                 request_bytes: Some(sent_bytes),
                 // The provider answered; only the router could not decode the reply.
                 failure: None,
-                eval_attempt: eval_attempt.clone(),
             },
         );
         compact_tools_bytes = None;
@@ -925,15 +886,12 @@ async fn chat_core_as(
             compact_tools_bytes,
             request_bytes: Some(sent_bytes),
             failure: None,
-            eval_attempt,
         },
     );
 
     Ok(Json(inbound.render_chat_response(resp)).into_response())
 }
 
-/// [`resolve_routed_request_scoped`] for a caller with no eval scope (the tests' entry point).
-#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_routed_request(
     ctx: &LlmRouterCtx,
@@ -944,27 +902,6 @@ pub(crate) async fn resolve_routed_request(
     hint: RequestHint<'_>,
     signals: RequestSignals,
     session: Option<SessionClaims>,
-) -> Result<RoutedRequest, GatewayError> {
-    resolve_routed_request_scoped(
-        ctx, store, headers, agent_id, owner_id, hint, signals, session, None,
-    )
-    .await
-}
-
-/// [`resolve_routed_request`] for a caller whose token may be scoped to a replay-eval attempt:
-/// the `eval` identity's attempt runs on the model config its token names
-/// ([`crate::resolver::resolve_eval`]) and is filed under the token's attempt.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn resolve_routed_request_scoped(
-    ctx: &LlmRouterCtx,
-    store: &dyn RegistryStore,
-    headers: &HeaderMap,
-    agent_id: String,
-    owner_id: String,
-    hint: RequestHint<'_>,
-    signals: RequestSignals,
-    session: Option<SessionClaims>,
-    eval: Option<&EvalScope>,
 ) -> Result<RoutedRequest, GatewayError> {
     // Attribution runs before config resolution: the attributed user decides whose config and
     // keys pay (a shared agent runs on its caller's own, or on what the payer says,
@@ -1054,14 +991,7 @@ pub(crate) async fn resolve_routed_request_scoped(
     let (subject, retry_after) =
         payer::subject_for_call(store, ctx.payer.as_ref(), &agent_id, &owner_id, acting_user)
             .await?;
-    let eval_config = eval.and_then(|e| e.llm_config_id);
-    let mut resolved = if let Some(config_id) = eval_config {
-        crate::resolver::resolve_eval(
-            store, &ctx.cache, &ctx.cfg, &agent_id, subject, config_id, hint,
-        )
-        .await
-        .map_err(|e| payer::allowance_error(e, retry_after))?
-    } else {
+    let mut resolved =
         match resolve_for(store, &ctx.cache, &ctx.cfg, &agent_id, subject, hint).await {
             Err(no_key @ GatewayError::NoApiKey { .. })
                 if matches!(subject, ConfigSubject::Owner(_)) =>
@@ -1074,8 +1004,7 @@ pub(crate) async fn resolve_routed_request_scoped(
                 }
             }
             resolved => resolved.map_err(|e| payer::allowance_error(e, retry_after))?,
-        }
-    };
+        };
     // Model routing: the resolver fixed provider/key/params; routing may override only model.
     let decision = routing::route_model_with(
         ctx.classifier.as_ref(),
@@ -1140,13 +1069,7 @@ pub(crate) async fn resolve_routed_request_scoped(
         );
         resolved.fallback_models.clear();
     }
-    let eval_attempt = crate::eval_tag::eval_attempt(
-        headers,
-        resolved.coding_integration.as_deref(),
-        eval.map(|e| e.attempt.as_str()),
-    );
     Ok(RoutedRequest {
-        eval_attempt,
         agent_id,
         owner_id: billed_user_id,
         resolved,
@@ -1283,8 +1206,6 @@ struct StreamChatArgs<'a> {
     /// Set for a discovered agent: its reply is gathered as it streams and recorded as a turn
     /// when the stream ends.
     turn: Option<TurnStart>,
-    /// The replay-eval attempt the stream's row is filed under (`crate::eval_tag`).
-    eval_attempt: Option<String>,
 }
 
 /// Stream provider chunks back as OpenAI SSE: `data: <chunk>\n\n` … `data: [DONE]\n\n`.
@@ -1312,7 +1233,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_bytes,
         request_bytes,
         turn,
-        eval_attempt,
     } = args;
     let state = Arc::new(Mutex::new(StreamState {
         reply: turn.is_some().then(StreamedReply::default),
@@ -1339,7 +1259,6 @@ fn stream_chat(args: StreamChatArgs<'_>) -> Result<Response, GatewayError> {
         compress_bytes,
         request_bytes,
         turn: turn.map(|turn| (ctx.turn_recorder.clone(), turn)),
-        eval_attempt,
     };
 
     let body_stream = async_stream::stream! {
@@ -1435,8 +1354,6 @@ struct UsageGuard {
     request_bytes: Option<usize>,
     /// Taken in `drop`: the recorder and start of a discovered agent's turn.
     turn: Option<(Arc<dyn TurnRecorder>, TurnStart)>,
-    /// Taken in `drop`, like the metadata blocks.
-    eval_attempt: Option<String>,
 }
 
 impl UsageGuard {
@@ -1446,7 +1363,6 @@ impl UsageGuard {
         let brevity_metadata = self.brevity_metadata.take();
         let compact_tools_metadata = self.compact_tools_metadata.take();
         let routing_metadata = self.routing_metadata.take();
-        let eval_attempt = self.eval_attempt.take();
         let st = self.state.lock().unwrap_or_else(|e| e.into_inner());
         record_span_usage(&self.span, st.usage.as_ref());
         record_tool_calls(&self.span, st.tool_call_indexes.len());
@@ -1483,7 +1399,6 @@ impl UsageGuard {
             compact_tools_bytes: None,
             request_bytes: self.request_bytes,
             failure: st.failure,
-            eval_attempt,
         }
     }
 }
@@ -1640,7 +1555,6 @@ mod tests {
                 })),
                 flow_id: None,
                 turn: None,
-                eval_attempt: None,
                 // This test is about the span's lifetime, not the savings ledger: no compression
                 // ran, so there is nothing for the guard to credit.
                 compress_bytes: None,
@@ -1700,7 +1614,6 @@ mod tests {
                 compact_tools_metadata: None,
                 routing_metadata: None,
                 turn: None,
-                eval_attempt: None,
             };
             drop(guard);
         });
@@ -1744,7 +1657,6 @@ mod tests {
             compact_tools_metadata: None,
             routing_metadata: None,
             turn: None,
-            eval_attempt: None,
         };
         let record = guard.usage_record();
         assert_eq!(
@@ -1775,7 +1687,6 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
-                coding_integration: None,
                 is_discovered_agent: self.is_discovered_agent,
                 compress_enabled: self.compress_enabled,
             }))
@@ -2888,7 +2799,6 @@ mod tests {
                 config: self.owner_config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: self.is_coding_agent,
-                coding_integration: None,
                 is_discovered_agent: false,
                 compress_enabled: false,
             }))
@@ -3546,92 +3456,6 @@ mod tests {
         .unwrap()
     }
 
-    /// A coding agent of the given integration (`agents.coding_agent_integration_id`).
-    struct IntegrationStore(Store, &'static str);
-    #[async_trait]
-    impl RegistryStore for IntegrationStore {
-        async fn fetch_llm_config(
-            &self,
-            id: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            Ok(self
-                .0
-                .fetch_llm_config(id)
-                .await?
-                .map(|agent| AgentConfigResult {
-                    is_coding_agent: true,
-                    coding_integration: Some(self.1.into()),
-                    ..agent
-                }))
-        }
-        async fn fetch_agent_owner(&self, id: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            self.0.fetch_agent_owner(id).await
-        }
-        async fn fetch_user_secret(
-            &self,
-            user: Uuid,
-            name: &str,
-        ) -> Result<Option<String>, sqlx::Error> {
-            self.0.fetch_user_secret(user, name).await
-        }
-        async fn fetch_live_flow(
-            &self,
-            trace: &str,
-            agent: Uuid,
-            window: i64,
-        ) -> Result<Option<routing::attribution::LiveFlow>, sqlx::Error> {
-            self.0.fetch_live_flow(trace, agent, window).await
-        }
-        async fn fetch_custom_provider(
-            &self,
-            label: &str,
-            user: Option<Uuid>,
-        ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            self.0.fetch_custom_provider(label, user).await
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<crate::resolver::OrgEmbeddingDefault>, sqlx::Error> {
-            self.0.fetch_org_embedding_default().await
-        }
-    }
-
-    async fn route_tagged(integration: &'static str, tag: &str) -> RoutedRequest {
-        let (ctx, _) = tiered_ctx("http://unused".into());
-        let store = IntegrationStore(tiered_store(Vec::new(), None), integration);
-        let mut headers = HeaderMap::new();
-        headers.insert(crate::eval_tag::EVAL_ATTEMPT_HEADER, tag.parse().unwrap());
-        resolve_routed_request(
-            &ctx,
-            &store,
-            &headers,
-            AGENT.into(),
-            OWNER.into(),
-            RequestHint::default(),
-            RequestSignals {
-                query: Some("fix the bug".into()),
-                turn_ordinal: 1,
-                is_tool_continuation: false,
-            },
-            None,
-        )
-        .await
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn the_eval_identitys_attempt_tag_reaches_every_row_of_the_request() {
-        let routed = route_tagged("eval", "run-1:task-3:2").await;
-        assert_eq!(routed.resolved.coding_integration.as_deref(), Some("eval"));
-        assert_eq!(routed.eval_attempt.as_deref(), Some("run-1:task-3:2"));
-    }
-
-    #[tokio::test]
-    async fn another_coding_agent_cannot_file_its_calls_under_an_eval_attempt() {
-        let routed = route_tagged("opencode", "run-1:task-3:2").await;
-        assert_eq!(routed.eval_attempt, None);
-    }
-
     #[tokio::test]
     async fn a_tier_model_keeps_the_configured_model_as_its_first_fallback() {
         let (ctx, _) = tiered_ctx("http://unused".into());
@@ -4267,7 +4091,6 @@ mod tests {
         AuthedCaller::Agent {
             agent_id: AGENT.into(),
             owner_id: OWNER.into(),
-            eval: None,
         }
     }
 

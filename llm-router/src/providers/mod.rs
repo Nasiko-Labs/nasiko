@@ -634,7 +634,6 @@ mod tests {
                 public_only: false,
             }),
             is_coding_agent: false,
-            coding_integration: None,
             is_discovered_agent: false,
         }
     }

@@ -31,7 +31,6 @@ members = [
     "tool-compact",
     "mcp-gateway",
     "cli",
-    "evals",
     "github",
     "bench",
     "bench-support",
@@ -72,7 +71,6 @@ nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-tool-compact = { path = "tool-compact" }
-nasiko-evals = { path = "evals" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
@@ -98,8 +96,6 @@ serde_json = { version = "1", features = ["raw_value"] }
 
 # ─── Text / patterns ────────────────────────────────────────────────────────
 regex = "1"
-# Unified diffs written and applied in process, for replay evals (the server has no git CLI).
-diffy = "0.4"
 
 # ─── Database & state ───────────────────────────────────────────────────────
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json", "tls-rustls"] }
