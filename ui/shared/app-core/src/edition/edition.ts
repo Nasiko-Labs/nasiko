@@ -134,6 +134,11 @@ export interface PersonalSettingsLink {
    * group to a member for it (MT: the Free plan's admin-only Registry and MCP toolkits, which say so).
    */
   group?: 'workspace' | 'security'
+  /**
+   * The link is a full page load, not an in-app move: for a page the server serves as its own document (MT:
+   * `/security`, which has a stricter Content-Security-Policy than the app's).
+   */
+  reloadDocument?: boolean
   /** The layer's own check that the page exists on this server; the link is listed once it answers true. */
   available?: (userId: string) => SlotQuery<boolean>
 }
@@ -494,6 +499,13 @@ export interface StarterPack<T = unknown> {
   query: SlotQuery<T>
   /** `data` is undefined when the read failed: the layer decides what that means. */
   offered: (data: T | undefined) => boolean
+  /** A note at the top of the tab, such as what the plan includes for these agents; none without it. */
+  note?: string
+  /**
+   * Where the pack is offered, what the Deploy page's model-key notice says in place of its own line, such as what the
+   * plan includes for the agents a user deploys; without it the notice keeps its line.
+   */
+  deployNote?: string
 }
 
 export const starterPack = <T>(s: StarterPack<T>) => s as unknown as StarterPack

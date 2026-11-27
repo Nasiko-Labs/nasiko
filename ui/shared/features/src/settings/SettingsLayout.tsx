@@ -47,6 +47,7 @@ interface Row {
   // core's — same widening `LayerNavItem` uses for the app sidebar (edition.ts).
   to: string
   section?: string
+  reloadDocument?: boolean
 }
 
 /** `rows` with each layer section inserted after the row it names (or appended). */
@@ -89,7 +90,7 @@ export function SettingsLayout({
   const linkRows = (g: 'workspace' | 'security') =>
     links
       .filter((l) => (l.group ?? 'security') === g)
-      .map((l): Row => ({ key: l.key, label: l.label, to: l.to }))
+      .map((l): Row => ({ key: l.key, label: l.label, to: l.to, reloadDocument: l.reloadDocument }))
   // A layer's section with its own `available` check is listed once that answers true (EE: Memory recall, absent
   // while memory is off). Asked only for an admin, who alone sees the sections.
   const sectionChecks = useQueries({
@@ -169,6 +170,7 @@ export function SettingsLayout({
     search: r.to === '/settings' ? { section: r.section } : undefined,
     // Sections of the workspace page replace each other; a move between pages is pushed.
     replace: r.to === '/settings' && !onSubPage,
+    reloadDocument: r.reloadDocument,
     'aria-current': current === r.key ? ('page' as const) : undefined,
   })
   const nav = (framed = false, onNavigate?: () => void) => (
@@ -240,6 +242,7 @@ interface NavProps {
     to: Row['to']
     search: { section?: string } | undefined
     replace: boolean
+    reloadDocument: boolean | undefined
     'aria-current': 'page' | undefined
   }
   /** Closes the sheet after a pick. */
