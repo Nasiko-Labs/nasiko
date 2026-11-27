@@ -128,6 +128,7 @@ import { buildMcpState, mcpHandlers, type McpState } from './mcp'
 import { optimizationHandlers, resetOptimizationMock } from './optimization'
 import { buildWorkflowsState, workflowHandlers, type WorkflowsState } from './workflows'
 import { buildFlowsState, flowHandlers, type FlowsState } from './flows'
+import { evalsHandlers, resetEvalsMock } from './evals'
 import { eventHandlers } from './events'
 import {
   AGENTS_ONBOARDING_VARIANTS,
@@ -321,6 +322,12 @@ export const MOCK_VARIANTS = [
   // Flows (plans/feat-flows.md §2a): no flows yet (first run), or a server without /api/flows (bare 404).
   'flows-empty',
   'flows-absent',
+  // Evals (docs/superpowers/specs/2026-11-23-evals-design.md): a server without /api/evals (bare 404).
+  'evals-absent',
+  // Evals: a viewer whose GitHub is not connected (sessions say so; building a dataset is refused).
+  'evals-github-off',
+  // Evals: a dataset built without a reviewer model, so its kept tasks wait for a person to approve them.
+  'evals-review',
   // Agent hub (plans/feat-agent-centric.md DX mocks): the gate's dashboard read for one agent answers 404 "agent not
   // found" (not visible), 500, or 400 (unknown or deleted); every marker read fails; this agent has no savings row;
   // an agent with more builds in the window than the read returns; a server without the proposed event log.
@@ -720,6 +727,7 @@ export function resetAgentsMock() {
   assessmentBookings = []
   codingAgentsState = null
   resetOptimizationMock()
+  resetEvalsMock()
   resetChatMock()
   resetOverviewMock()
   tryRunAt = {}
@@ -2169,6 +2177,16 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
   // and the `?mock=budgets-*` variants keep working in both editions' harnesses.
   budgets: [],
   'budgets-fill': [],
+  // Evals (mocks/evals.ts): the viewer's harnesses and sessions from the harness seed.
+  evals: evalsHandlers({
+    loggedIn: () => loggedIn,
+    unauthorized: () => unauthorized(),
+    absent: () => hasVariant('evals-absent'),
+    githubOff: () => hasVariant('evals-github-off'),
+    review: () => hasVariant('evals-review'),
+    harnessSeed: () => harnessData(),
+    viewerId: () => viewer().id,
+  }),
   // Set after chatCtx below, like chat: its estate reads the other groups' state.
   overview: [],
   chat: [],

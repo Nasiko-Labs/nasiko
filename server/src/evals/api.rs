@@ -758,6 +758,13 @@ pub async fn put_spec(
                 "toolchain_image, build_cmd, test_cmd and timeout_secs are required",
             ));
         }
+        if !(1024..=65536).contains(&spec.memory_mib) {
+            return Err(ApiError(
+                StatusCode::BAD_REQUEST,
+                "invalid_spec",
+                "memory_mib is 1024 to 65536",
+            ));
+        }
         spec.repo = full.clone();
         spec.local_path = None;
         store::save_spec(&state.db, user_id, &full, &spec)

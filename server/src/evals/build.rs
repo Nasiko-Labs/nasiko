@@ -220,7 +220,7 @@ pub fn test_limits(spec: &EnvSpec) -> BatchLimits {
     BatchLimits {
         wall: Duration::from_secs(spec.timeout_secs),
         cpus: 4.0,
-        memory_mib: 6144,
+        memory_mib: spec.memory_mib.into(),
         pids: 4096,
         disk_mib: GRADE_DISK_MIB,
     }

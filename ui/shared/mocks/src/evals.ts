@@ -29,6 +29,8 @@ export interface EvalsCtx {
   absent: () => boolean
   /** `?mock=evals-github-off`. */
   githubOff: () => boolean
+  /** `?mock=evals-review`: the dataset had no reviewer model, so the gate's kept tasks wait for a person. */
+  review: () => boolean
   harnessSeed: () => HarnessSeed
   viewerId: () => string
 }
@@ -261,11 +263,24 @@ interface RunState {
 }
 let datasets = new Map<string, DatasetState>()
 let runs = new Map<string, RunState>()
+/** A person's verdicts under `evals-review`, by task id: true approved. */
+let reviews = new Map<string, boolean>()
 
-/** Drop datasets and runs (tests call this between cases, through the shared reset). */
+/** Drop datasets, runs and reviews (tests call this between cases, through the shared reset). */
 export function resetEvalsMock() {
   datasets = new Map()
   runs = new Map()
+  reviews = new Map()
+}
+
+/** Under `evals-review`, a kept task is verified or rejected only once a person says so. */
+function reviewed(ctx: EvalsCtx, t: EvalTask): EvalTask {
+  if (!ctx.review() || t.status !== 'verified') return t
+  const verdict = reviews.get(t.id)
+  if (verdict === undefined) return { ...t, status: 'reproducible', stage: 'review' }
+  return verdict
+    ? t
+    : { ...t, status: 'rejected', reject_reason: 'screen: flagged: rejected by a person' }
 }
 
 const idOf = (prefix: string, seed: string) =>
@@ -288,7 +303,9 @@ function datasetView(ctx: EvalsCtx, d: DatasetState): EvalDataset {
   const picked = sessionsOf(ctx, d.harness).filter((s) => d.sessionIds.includes(s.session_id))
   const used = [...new Set(picked.map((s) => s.model))]
   const ready = d.reads > 0
-  const tasks = ready ? picked.flatMap((s) => tasksOf(s.session_id, s.model)) : []
+  const tasks = ready
+    ? picked.flatMap((s) => tasksOf(s.session_id, s.model)).map((t) => reviewed(ctx, t))
+    : []
   return {
     id: d.id,
     status: ready ? 'ready' : 'harvesting',
@@ -430,6 +447,23 @@ export function evalsHandlers(ctx: EvalsCtx): HttpHandler[] {
       const view = datasetView(ctx, d)
       d.reads += 1
       return HttpResponse.json({ data: view })
+    }),
+    http.post('/api/evals/tasks/:id/review', async ({ params, request }) => {
+      const stop = gate()
+      if (stop) return stop
+      const id = String(params.id)
+      const task = [...datasets.values()]
+        .flatMap((d) => datasetView(ctx, d).tasks)
+        .find((t) => t.id === id)
+      if (!task) return notFound('no such task', 'not_found')
+      if (task.status !== 'reproducible')
+        return HttpResponse.json(
+          { error: 'only a reproducible task is reviewed', code: 'not_reviewable' },
+          { status: 409 },
+        )
+      const body = (await request.json().catch(() => ({}))) as { other_problems?: string[] }
+      reviews.set(id, !body.other_problems?.length)
+      return HttpResponse.json({ data: { id } })
     }),
     http.post('/api/evals/datasets/:id/runs', async ({ params, request }) => {
       const stop = gate()

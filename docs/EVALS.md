@@ -22,7 +22,7 @@ own machine, for repositories that are not on GitHub (see the end of this page).
 | Dataset | You pick sessions. For each, the server lists the commits made during it (and up to two hours after) on every branch it worked on and the default branch, through your connected GitHub account, and links the session to the commit (or unbroken run of commits) that is its work. A long session whose matching commits are not one short run gives one task per commit, each from the request that led to it. The commit is split into the fix (gold patch) and its tests (test patch), Rust inline `#[cfg(test)]` modules included. A commit that changes no test, or only shared test helpers (`tests/common/mod.rs`), gives no task (`no_tests`): nothing could show the work was done. |
 | Rewrite (P1) | A model rewrites the session's request as an issue. |
 | Build and gate | The server builds an image per task (the repository at the commit before the fix, as a fresh one-commit repository, with opencode at the OpenCode harness image's version) and runs the tests several times: old code, old code + new tests, fix + new tests. This fills `FAIL_TO_PASS` and `PASS_TO_PASS` and drops flaky tests. Only the packages the task changes are built, and only the integration tests it changes when they are all one package's; a task no Cargo package owns is rejected rather than built as the whole workspace. |
-| Screen (P3) | Reviewer models judge each task the way SWE-bench Verified did: is the request clear, would the tests accept any correct fix, how long would it take. A task is kept only if every score is 0 or 1 and nothing is flagged; a task no reviewer could judge waits for a person. |
+| Screen (P3) | Reviewer models judge each task the way SWE-bench Verified did: is the request clear, would the tests accept any correct fix, how long would it take. A task is kept only if every score is 0 or 1 and nothing is flagged; a task no reviewer could judge waits for a person (Approve or Reject beside it on the Evals page, or `nasiko eval review`). |
 | Run | You pick verified tasks and models. Each model is one of your LLM configs. A preflight call per model must come back priced. Then opencode replays every task per model in the task image, and each attempt is graded in a fresh container with no network: resolved only if every `FAIL_TO_PASS` and `PASS_TO_PASS` test passes (SWE-bench's rule). |
 | Report | Resolved rate, match rate, cost, saving against the original sessions (and against the original model re-run, when you picked it), results by difficulty, and why attempts failed, each rate with a 95% range. Saved with the run. |
 
@@ -116,8 +116,14 @@ Every object is its owner's: another user's id reads as `404`.
   (test files and its edits to inline Rust tests removed), apply the hidden test patch, build and
   run the tests.
 * Every container runs with all Linux capabilities dropped, `no-new-privileges`, CPU, memory,
-  process and disk limits (agent 2 GiB, grader 8 GiB) and a wall-clock limit (45 minutes per
-  attempt). When an attempt is stopped for a limit, its changes are saved first and graded.
+  process and disk limits and a wall-clock limit (45 minutes per attempt). When an attempt is
+  stopped for a limit, its changes are saved first and graded.
+* Memory is the repository's build setting `memory_mib` (default 6144, editable with
+  `PUT /api/evals/specs/{owner}/{repo}`), the same for the gate, the agent and the grader. A large
+  workspace can need more: cargo links two test binaries at once, and with a big dependency tree
+  each link can take 4-5 GiB; a linker killed for memory makes the gate reject the task as
+  `gold_does_not_build`. On Kubernetes the pod requests the whole limit, so raise it only for the
+  repositories that need it.
 
 ## On your own machine: `nasiko eval local`
 

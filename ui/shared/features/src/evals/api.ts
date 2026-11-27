@@ -114,6 +114,26 @@ export function useGenerateDataset() {
   })
 }
 
+/**
+ * A person's verdict on a task the gate kept but no reviewer model judged (the dataset had none): approving verifies
+ * it, so it can run; rejecting takes it out. The server answers with the task; the dataset is read again.
+ */
+export function useReviewTask(datasetId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ taskId, approve }: { taskId: string; approve: boolean }) =>
+      apiData<unknown>(`/api/evals/tasks/${encodeURIComponent(taskId)}/review`, {
+        ...post({
+          clarity: 0,
+          test_validity: 0,
+          other_problems: approve ? [] : ['rejected by a person'],
+          effort: '15 min - 1 hour',
+        }),
+      }),
+    onSettled: () => qc.invalidateQueries({ queryKey: evalsKeys.dataset(datasetId) }),
+  })
+}
+
 const runBusy = (r: EvalRun | undefined) =>
   r?.status === 'queued' || r?.status === 'running' || r?.status === 'finalizing'
 

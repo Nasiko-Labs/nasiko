@@ -86,7 +86,13 @@ export const copy = {
       'None of these sessions could be linked to a single commit, so there is nothing to run.',
     tasks: 'Tasks',
     tasksHint:
-      'Each task is a request from a session, its real fix and the tests that prove it. Only verified tasks run.',
+      'Each task is a request from a session, its real fix and the tests that prove it. Only verified tasks run; approve the ones that need review.',
+    approveShort: 'Approve',
+    rejectShort: 'Reject',
+    approve: (task: string) => `Approve ${task}`,
+    reject: (task: string) => `Reject ${task}`,
+    noModels: 'You have no LLM configs to run the tasks on.',
+    addModel: 'Add one in the LLM router',
     benchmarkTasksHint: 'From the benchmarks you picked.',
     models: 'Models',
     modelsHint:

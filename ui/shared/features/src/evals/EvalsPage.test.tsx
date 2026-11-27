@@ -77,6 +77,24 @@ describe('Evals (docs/superpowers/specs/2026-11-23-evals-design.md)', () => {
     expect(saved.getAttribute('href')).toMatch(/^\/evals\?dataset=.+&run=.+/)
   })
 
+  it('with no reviewer model, a person approves a kept task and it can run', async () => {
+    configureMocks({ variant: 'evals-review' })
+    renderApp('/evals')
+    const open = usable(await sessionBoxes()).slice(0, 3)
+    for (const box of open) await userEvent.click(box)
+    await userEvent.click(screen.getByRole('button', { name: copy.generate(open.length) }))
+
+    const dataset = await screen.findByRole('region', { name: copy.steps.dataset }, T)
+    const approve = (await within(dataset).findAllByRole('button', { name: /^Approve / }, T))[0]!
+    const title = approve.getAttribute('aria-label')!.replace(/^Approve /, '')
+    const box = within(dataset).getByRole('checkbox', { name: new RegExp(`^${title}`) })
+    // Waiting for review: it can't be ticked yet.
+    expect(box).toHaveAttribute('data-disabled')
+    await userEvent.click(approve)
+    await waitFor(() => expect(box).not.toHaveAttribute('data-disabled'), T)
+    expect(within(dataset).queryByRole('button', { name: `Approve ${title}` })).toBeNull()
+  })
+
   it('asks to connect GitHub when it is not, and offers no session', async () => {
     configureMocks({ variant: 'evals-github-off' })
     renderApp('/evals')

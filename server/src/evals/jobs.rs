@@ -3,8 +3,9 @@
 //! Any server with evals enabled claims jobs (`FOR UPDATE SKIP LOCKED`), at most
 //! `EVAL_WORKER_CONCURRENCY` at once. A running job's heartbeat is refreshed every
 //! [`HEARTBEAT`]; a job whose heartbeat is older than [`STALE_AFTER`] (its server died) is put
-//! back and claimed again, up to its `max_tries`, after which it is given up. A step that fails
-//! is retried after [`RETRY_AFTER`] until it is out of tries.
+//! back and claimed again, up to its `max_tries` ([`MAX_TRIES`]), after which it is given up. A
+//! step that fails is retried until it is out of tries, each wait four times the last
+//! ([`retry_delay_secs`]), so a network outage of a few minutes does not use every try up.
 //!
 //! The heartbeat runs as its own task, so a step busy on the CPU cannot starve it. Every write a
 //! worker makes to its job names the claim it holds (`tries`, raised by each claim): once the job
@@ -22,7 +23,10 @@ use crate::state::AppState;
 
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const STALE_AFTER_SECS: i64 = 180;
-const RETRY_AFTER_SECS: i64 = 30;
+/// Claims a job gets: the first and two retries, 30 s and 2 min later (a step's network calls
+/// to GitHub and the image builder fail together while the host's network is down).
+const MAX_TRIES: i32 = 3;
+const FIRST_RETRY_AFTER_SECS: i64 = 30;
 const IDLE_POLL: Duration = Duration::from_secs(5);
 const RECOVER_EVERY: Duration = Duration::from_secs(60);
 
@@ -116,8 +120,9 @@ impl Job {
 /// Adds a job; `run_finalize` is added at most once per run.
 pub async fn enqueue(db: impl PgExecutor<'_>, job: &NewJob) -> sqlx::Result<()> {
     sqlx::query(
-        r#"INSERT INTO eval_jobs (kind, user_id, dataset_id, task_id, run_id, attempt_id, model_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+        r#"INSERT INTO eval_jobs
+               (kind, user_id, dataset_id, task_id, run_id, attempt_id, model_id, max_tries)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
            ON CONFLICT DO NOTHING"#,
     )
     .bind(job.kind.as_str())
@@ -127,9 +132,15 @@ pub async fn enqueue(db: impl PgExecutor<'_>, job: &NewJob) -> sqlx::Result<()> 
     .bind(job.run_id)
     .bind(job.attempt_id)
     .bind(job.model_id)
+    .bind(MAX_TRIES)
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// How long a job waits before its next try, after its `tries`-th failed: 30 s, then 2 min.
+fn retry_delay_secs(tries: i32) -> i64 {
+    FIRST_RETRY_AFTER_SECS * 4_i64.pow(tries.clamp(1, 4) as u32 - 1)
 }
 
 async fn claim(db: &sqlx::PgPool) -> sqlx::Result<Option<Job>> {
@@ -209,7 +220,7 @@ async fn retry_later(db: &sqlx::PgPool, job: &Job, error: &str) -> sqlx::Result<
     .bind(job.id)
     .bind(job.tries)
     .bind(error)
-    .bind(RETRY_AFTER_SECS as f64)
+    .bind(retry_delay_secs(job.tries) as f64)
     .execute(db)
     .await?;
     Ok(())
@@ -345,4 +356,19 @@ pub async fn open_count(
     .bind(run_id)
     .fetch_one(db)
     .await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn retries_wait_longer_each_time() {
+        assert_eq!(retry_delay_secs(1), 30);
+        assert_eq!(retry_delay_secs(2), 120);
+        // Every retry a job can get waits a bounded time.
+        assert_eq!(retry_delay_secs(MAX_TRIES - 1), 120);
+        assert_eq!(retry_delay_secs(0), 30);
+        assert_eq!(retry_delay_secs(99), 30 * 64);
+    }
 }

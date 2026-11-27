@@ -92,6 +92,9 @@ export function comparison(
 /** The tasks a run can take: only verified ones. */
 export const runnable = (tasks: readonly EvalTask[]) => tasks.filter((t) => t.status === 'verified')
 
+/** The gate kept the task and no reviewer model judged it: a person approves or rejects it. */
+export const needsReview = (t: EvalTask) => t.status === 'reproducible' && t.stage === 'review'
+
 /** What a dataset starts with ticked: every runnable task, and the models the sessions used. */
 export function defaultPicks(dataset: EvalDataset): { tasks: string[]; models: string[] } {
   return {

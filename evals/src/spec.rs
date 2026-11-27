@@ -26,6 +26,12 @@ pub struct EnvSpec {
     pub log_parser: LogParserKind,
     /// Wall-clock limit for one test run.
     pub timeout_secs: u64,
+    /// Memory limit of each container that builds the repo (gate, agent, grader), in MiB. A big
+    /// workspace needs more than the default: linking two of its test binaries at once can take
+    /// 10 GiB or more, and a linker killed for memory reads as code that does not compile. On
+    /// Kubernetes the pod also requests this much, so raise it only for the repos that need it.
+    #[serde(default = "default_memory_mib")]
+    pub memory_mib: u32,
     /// Where the repository is checked out on this machine (images are built from it).
     #[serde(default)]
     pub local_path: Option<String>,
@@ -75,8 +81,16 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
         ],
         log_parser: LogParserKind::Cargo,
         timeout_secs: 1800,
+        memory_mib: DEFAULT_MEMORY_MIB,
         local_path: None,
     })
+}
+
+/// A build container's memory limit unless the spec says otherwise.
+pub const DEFAULT_MEMORY_MIB: u32 = 6144;
+
+fn default_memory_mib() -> u32 {
+    DEFAULT_MEMORY_MIB
 }
 
 /// The pinned version from `rust-toolchain(.toml)`: `channel = "1.92"` or a bare `1.92.0`.
@@ -309,6 +323,14 @@ mod tests {
             propose("o/r", &["Cargo.toml".into()], Some("channel = \"1.92\"")).expect("rust");
         assert_eq!(spec.toolchain_image, "rust:1.92-trixie");
         assert!(propose("o/r", &["package.json".into()], None).is_none());
+    }
+
+    #[test]
+    fn a_spec_saved_before_memory_mib_reads_the_default() {
+        let mut saved = serde_json::to_value(propose("o/r", &["Cargo.toml".into()], None)).unwrap();
+        saved.as_object_mut().unwrap().remove("memory_mib");
+        let spec: EnvSpec = serde_json::from_value(saved).expect("old spec");
+        assert_eq!(spec.memory_mib, DEFAULT_MEMORY_MIB);
     }
 
     #[test]

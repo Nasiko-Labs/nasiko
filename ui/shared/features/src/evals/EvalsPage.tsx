@@ -52,10 +52,18 @@ import {
   useEvalSessions,
   useEvalSetup,
   useGenerateDataset,
+  useReviewTask,
   useRunEvals,
 } from './api'
 import { copy } from './copy'
-import { building, comparison, defaultPicks, type Cell, type ModelTotals } from './logic'
+import {
+  building,
+  comparison,
+  defaultPicks,
+  needsReview,
+  type Cell,
+  type ModelTotals,
+} from './logic'
 import type { EvalsSearch } from './search'
 import { evalSteps, STEP, type Source, type Step } from './steps'
 import type { EvalBenchmark, EvalDataset, EvalRun, EvalSession } from './types'
@@ -200,12 +208,15 @@ function CheckRow({
   disabled,
   onChange,
   children,
+  actions,
 }: {
   id: string
   checked: boolean
   disabled?: boolean
   onChange: (on: boolean) => void
   children: ReactNode
+  /** Buttons after the label, outside it, so pressing one never toggles the box. */
+  actions?: ReactNode
 }) {
   return (
     <li className="flex min-h-9 items-center gap-2.5 rounded-md px-2 py-1 hover:bg-muted/50">
@@ -219,6 +230,7 @@ function CheckRow({
       >
         {children}
       </Label>
+      {actions}
     </li>
   )
 }
@@ -645,6 +657,7 @@ function DatasetStep({
   picks: Picks
   setPicks: (f: (p: Picks) => Picks) => void
 }) {
+  const review = useReviewTask(dataset.id)
   if (building(dataset))
     return <Status>{copy.dataset.building(dataset.progress.done, dataset.progress.total)}</Status>
   if (dataset.status === 'failed') return <Failed>{copy.dataset.failed(dataset.error)}</Failed>
@@ -663,6 +676,7 @@ function DatasetStep({
           <ul className="flex max-h-80 flex-col overflow-y-auto">
             {dataset.tasks.map((t) => {
               const runnable = t.status === 'verified'
+              const reviewing = review.isPending && review.variables.taskId === t.id
               return (
                 <CheckRow
                   key={t.id}
@@ -670,6 +684,30 @@ function DatasetStep({
                   checked={runnable && picks.tasks.includes(t.id)}
                   disabled={!runnable}
                   onChange={(on) => setPicks((p) => ({ ...p, tasks: toggle(p.tasks, t.id, on) }))}
+                  actions={
+                    needsReview(t) ? (
+                      <span className="flex shrink-0 gap-1">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={reviewing}
+                          aria-label={copy.dataset.approve(t.title)}
+                          onClick={() => review.mutate({ taskId: t.id, approve: true })}
+                        >
+                          {copy.dataset.approveShort}
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          disabled={reviewing}
+                          aria-label={copy.dataset.reject(t.title)}
+                          onClick={() => review.mutate({ taskId: t.id, approve: false })}
+                        >
+                          {copy.dataset.rejectShort}
+                        </Button>
+                      </span>
+                    ) : null
+                  }
                 >
                   <span className="min-w-0 truncate">{t.title}</span>
                   <span className="ml-auto shrink-0 text-xs text-muted-foreground">
@@ -686,6 +724,14 @@ function DatasetStep({
           title={copy.dataset.models}
           hint={fromBenchmarks ? copy.dataset.benchmarkModelsHint : copy.dataset.modelsHint}
         >
+          {dataset.models.length ? null : (
+            <p className="px-2 text-sm text-muted-foreground">
+              {copy.dataset.noModels}{' '}
+              <Link to="/router" className="underline underline-offset-2">
+                {copy.dataset.addModel}
+              </Link>
+            </p>
+          )}
           <ul className="flex flex-col">
             {dataset.models.map((m) => (
               <CheckRow

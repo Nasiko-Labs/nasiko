@@ -389,7 +389,7 @@ impl ModelRun<'_> {
             limits: JobLimits {
                 wall: Duration::from_secs(wall),
                 cpus: 4.0,
-                memory_mib: 6144,
+                memory_mib: spec.memory_mib,
                 pids: 4096,
                 disk_mib: self.config.storage_mib,
             },

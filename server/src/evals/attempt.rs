@@ -162,7 +162,7 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
             limits: BatchLimits {
                 wall: Duration::from_secs(wall),
                 cpus: 4.0,
-                memory_mib: 6144,
+                memory_mib: spec.memory_mib.into(),
                 pids: 4096,
                 disk_mib: AGENT_DISK_MIB,
             },
