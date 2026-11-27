@@ -252,7 +252,8 @@ async fn github_token(State(state): State<AppState>, claims: Claims) -> impl Int
 /// GitHub redirects the browser here after the user grants access.
 /// Verifies the HMAC-signed state (extracts `user_id` without needing
 /// the auth header), exchanges the code, encrypts the token, and upserts
-/// it into `user_identities`.  Redirects to the import-agent view on success.
+/// it into `user_identities`.  On success, answers a page that closes the
+/// consent window (`connected_page`).
 #[derive(Deserialize)]
 struct CallbackQuery {
     code: String,
@@ -370,9 +371,7 @@ async fn github_callback(
     .execute(&state.db)
     .await
     {
-        Ok(r) if r.rows_affected() > 0 => {
-            Redirect::temporary("/agents.html?view=import&github_connected=true").into_response()
-        }
+        Ok(r) if r.rows_affected() > 0 => connected_page(),
         Ok(_) => {
             warn!(
                 user_id = %user_id,
@@ -971,9 +970,56 @@ async fn github_clone(
         .into_response()
 }
 
+/// Closes the window the connect flow opened. The page that started it (Deploy's GitHub tab,
+/// Evals) stays where it was and polls `/api/github/user` until the connection shows up.
+const CONNECTED_SCRIPT: &str = "window.close();";
+
+/// What the browser sees once GitHub is connected: the consent ran in a popup or a new tab,
+/// so close it, or, where the browser refuses to (a tab it did not open by script), say so.
+fn connected_page() -> axum::response::Response {
+    let hash = base64::engine::general_purpose::STANDARD.encode(Sha256::digest(CONNECTED_SCRIPT));
+    let csp = format!("default-src 'none'; script-src 'sha256-{hash}'; style-src 'unsafe-inline'");
+    let body = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>GitHub connected</title></head>\
+         <body style=\"font-family:system-ui,sans-serif;margin:3rem;text-align:center\">\
+         <p>GitHub is connected. You can close this tab and go back to Nasiko.</p>\
+         <p><a href=\"/\">Open Nasiko</a></p>\
+         <script>{CONNECTED_SCRIPT}</script></body></html>"
+    );
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+            (header::CONTENT_SECURITY_POLICY, csp),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        body,
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn connected_page_closes_itself_under_its_own_policy() {
+        let response = connected_page();
+        assert_eq!(response.status(), StatusCode::OK);
+        let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains(&format!("<script>{CONNECTED_SCRIPT}</script>")));
+        // The hash the policy allows is the hash of the script the page runs.
+        let hash =
+            base64::engine::general_purpose::STANDARD.encode(Sha256::digest(CONNECTED_SCRIPT));
+        assert!(csp.contains(&format!("'sha256-{hash}'")), "{csp}");
+        assert!(!body.contains("agents.html"));
+    }
 
     /// Requires a live Redis (see module-level test infra requirements in
     /// oss/server/tests/*). Verifies the OAuth `state` single-use marker
