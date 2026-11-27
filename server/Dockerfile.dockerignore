@@ -17,6 +17,9 @@
 # Agent images and the registry build from their own contexts.
 agents/
 registry/
+# Except the one file the server compiles in: replay evals build their agent
+# image from it (`include_str!` in evals/src/images.rs).
+!agents/harnesses/opencode/Dockerfile
 
 docs/
 *.zip
