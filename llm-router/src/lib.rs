@@ -37,6 +37,7 @@ mod compact_tools;
 mod compress;
 pub mod config;
 pub mod error;
+mod eval_tag;
 pub mod handlers;
 pub mod inbound;
 pub mod inject;

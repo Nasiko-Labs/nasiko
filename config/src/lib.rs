@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
+mod evals;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
+pub use evals::EvalsConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// Model for a platform task call (selector, titles, capability generation, MCP
@@ -226,6 +228,8 @@ pub struct Config {
     pub coding_agent_otlp_endpoint: Option<String>,
     /// Rate, concurrency and Tempo-age limits on coding-agent telemetry ingest.
     pub coding_agent_ingest: CodingAgentIngestConfig,
+    /// Replay evals run by this server (`EVAL_*`).
+    pub evals: EvalsConfig,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -926,6 +930,7 @@ impl Config {
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             coding_agent_ingest: CodingAgentIngestConfig::from_env(),
+            evals: EvalsConfig::from_env(),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a

@@ -96,6 +96,10 @@ struct AgentClaims {
     owner_id: Option<String>,
     #[serde(default)]
     iat: Option<i64>,
+    #[serde(default)]
+    eval_attempt: Option<String>,
+    #[serde(default)]
+    eval_llm_config_id: Option<String>,
 }
 
 /// A verified agent token's identity: who it speaks for, and when it was issued (`iat`, Unix
@@ -106,6 +110,18 @@ pub struct AgentToken {
     pub agent_id: String,
     pub owner_id: String,
     pub issued_at: Option<i64>,
+    /// What an eval-attempt token is scoped to; `None` on every other token.
+    pub eval: Option<EvalScope>,
+}
+
+/// One replay-eval attempt, as the server minted its token: the attempt its calls are filed
+/// under, and the owner's model config they run on. Honoured only for the `eval` coding-agent
+/// identity (`crate::eval_tag`), and the config only when the token's owner owns it, so the
+/// server can run several models for one user at once without re-pinning the identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvalScope {
+    pub attempt: String,
+    pub llm_config_id: Option<uuid::Uuid>,
 }
 
 /// Verify an `Authorization` header value and extract `(agent_id, owner_id)`.
@@ -153,10 +169,21 @@ pub fn verify_agent_token(
         .filter(|s| !s.is_empty())
         .ok_or(GatewayError::MissingAgentId)?;
     let owner_id = data.claims.owner_id.unwrap_or_default();
+    let llm_config_id =
+        match data.claims.eval_llm_config_id.as_deref() {
+            None => None,
+            Some(id) => Some(uuid::Uuid::parse_str(id).map_err(|_| {
+                GatewayError::InvalidToken("eval_llm_config_id is not a UUID".into())
+            })?),
+        };
     Ok(AgentToken {
         agent_id,
         owner_id,
         issued_at: data.claims.iat,
+        eval: data.claims.eval_attempt.map(|attempt| EvalScope {
+            attempt,
+            llm_config_id,
+        }),
     })
 }
 
@@ -187,6 +214,36 @@ struct MintClaims {
     owner_id: String,
     iat: usize,
     exp: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eval_attempt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    eval_llm_config_id: Option<String>,
+}
+
+/// Mint a token for one replay-eval attempt of the `eval` identity `agent_id`: its calls are
+/// filed under `scope.attempt` and run on `scope.llm_config_id` (one of `owner_id`'s configs).
+pub fn mint_eval_token(
+    agent_id: &str,
+    owner_id: &str,
+    secret: &str,
+    ttl_seconds: u64,
+    algorithm: Algorithm,
+    scope: &EvalScope,
+) -> Result<String, jsonwebtoken::errors::Error> {
+    let now = now_unix();
+    let claims = MintClaims {
+        agent_id: agent_id.to_string(),
+        owner_id: owner_id.to_string(),
+        iat: now,
+        exp: now + ttl_seconds as usize,
+        eval_attempt: Some(scope.attempt.clone()),
+        eval_llm_config_id: scope.llm_config_id.map(|id| id.to_string()),
+    };
+    encode(
+        &Header::new(algorithm),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
 }
 
 /// Mint an agent-identity JWT valid for `ttl_seconds` from now. Dev/test only — the
@@ -223,6 +280,8 @@ fn mint_with_times(
         owner_id: owner_id.to_string(),
         iat,
         exp,
+        eval_attempt: None,
+        eval_llm_config_id: None,
     };
     encode(
         &Header::new(algorithm),
@@ -251,6 +310,24 @@ mod tests {
             agent_jwt_secret: secret.to_string(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_eval_token_carries_its_attempt_and_config() {
+        let config = uuid::Uuid::new_v4();
+        let scope = EvalScope {
+            attempt: "run:task:1".into(),
+            llm_config_id: Some(config),
+        };
+        let token =
+            mint_eval_token("agent", "owner", SECRET, 60, Algorithm::HS256, &scope).unwrap();
+        let verified = verify_agent_token(Some(&format!("Bearer {token}")), &cfg(SECRET)).unwrap();
+        assert_eq!(verified.eval, Some(scope));
+        assert_eq!(verified.owner_id, "owner");
+
+        let plain = mint_agent_token("agent", "owner", SECRET, 60, Algorithm::HS256).unwrap();
+        let verified = verify_agent_token(Some(&plain), &cfg(SECRET)).unwrap();
+        assert_eq!(verified.eval, None);
     }
 
     fn bearer(token: &str) -> String {

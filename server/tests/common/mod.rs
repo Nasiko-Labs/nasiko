@@ -1015,6 +1015,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
             tempo_max_age_secs: u64::MAX / 4,
             ..Default::default()
         },
+        evals: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,

@@ -37,6 +37,7 @@ pub mod current_time;
 pub mod dashboard_limit;
 pub mod embedding_change;
 pub mod error_reporting;
+pub mod evals;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -401,6 +402,7 @@ where
         .merge(coding_agent_onboarding::router())
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
+        .merge(evals::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())

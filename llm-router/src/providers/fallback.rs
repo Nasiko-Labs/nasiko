@@ -612,6 +612,7 @@ pub(crate) fn build_attempts(primary: &ResolvedConfig, cfg: &GatewayConfig) -> V
             platform_paid,
             custom_endpoint,
             is_coding_agent: primary.is_coding_agent,
+            coding_integration: primary.coding_integration.clone(),
             is_discovered_agent: primary.is_discovered_agent,
             compress_enabled: primary.compress_enabled,
             agent_id: primary.agent_id.clone(),
@@ -658,6 +659,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
             is_discovered_agent: false,
             compress_enabled: false,
         }
@@ -968,6 +970,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
             is_discovered_agent: false,
             compress_enabled: false,
         };
@@ -1049,6 +1052,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
             is_discovered_agent: false,
             compress_enabled: false,
         };
@@ -1441,6 +1445,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
             is_discovered_agent: false,
             compress_enabled: false,
         };
@@ -1493,6 +1498,7 @@ mod tests {
             platform_paid: true,
             custom_endpoint: None,
             is_coding_agent: false,
+            coding_integration: None,
             is_discovered_agent: false,
             compress_enabled: false,
         };

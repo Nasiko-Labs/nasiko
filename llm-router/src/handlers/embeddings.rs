@@ -126,6 +126,8 @@ async fn embeddings_core(
         // `/v1/embeddings` picks its model in the resolver, not through the precedence chain, so
         // there is no routing decision to record (`embeddings::select_model`).
         routing_metadata: None,
+        // Only a coding agent's chat calls are eval-tagged.
+        eval_attempt: None,
     };
     usage::spawn_log_failed(
         &ctx.db,
@@ -169,6 +171,7 @@ async fn embeddings_core(
             request_bytes: None,
             platform_paid: resolved.platform_paid,
             failure: None,
+            eval_attempt: None,
         },
     );
 
@@ -234,6 +237,7 @@ mod tests {
                 config: self.config.clone(),
                 agent_pinned_model: None,
                 is_coding_agent: false,
+                coding_integration: None,
                 is_discovered_agent: false,
                 compress_enabled: false,
             }))
