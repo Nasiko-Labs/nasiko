@@ -50,10 +50,11 @@ pub fn classify(bytes: &[u8], declared: &str, filename: &str) -> (MediaClass, St
         return (class, mime);
     }
     let claims_image_or_pdf = declared.starts_with("image/") || declared == "application/pdf";
-    if !claims_image_or_pdf
-        && std::str::from_utf8(bytes).is_ok()
-        && let Some(mime) = text_mime(&declared, filename)
-    {
+    // Text is text whatever it is called. A `.py`, `.log` or `.toml` file, or a `.ts` a browser
+    // labels `video/mp2t`, would otherwise be stored as an unknown file, which no model provider
+    // reads, so the router would refuse every turn that carries it.
+    if !claims_image_or_pdf && is_text(bytes) {
+        let mime = text_mime(&declared, filename).unwrap_or_else(|| "text/plain".to_string());
         return (MediaClass::TextLike, mime);
     }
     let harmless = !declared.is_empty() && !claims_image_or_pdf && !is_text_like(&declared);
@@ -121,6 +122,12 @@ fn is_text_like(mime: &str) -> bool {
         )
 }
 
+/// UTF-8 with no NUL byte: the test git and grep use to tell text from binary.
+fn is_text(bytes: &[u8]) -> bool {
+    !bytes.contains(&0) && std::str::from_utf8(bytes).is_ok()
+}
+
+/// The precise type of a text file whose declared type or extension names one.
 fn text_mime(declared: &str, filename: &str) -> Option<String> {
     if is_text_like(declared) {
         return Some(declared.to_string());
@@ -257,9 +264,40 @@ mod tests {
     }
 
     #[test]
-    fn text_that_is_not_utf8_is_another_file() {
+    fn utf8_text_of_any_name_or_declared_type_is_plain_text() {
+        let cases = [
+            ("application/octet-stream", "service.py"),
+            ("", "server.log"),
+            ("application/octet-stream", "settings.toml"),
+            ("video/mp2t", "service.ts"),
+            ("application/x-sh", "run.sh"),
+            ("application/sql", "schema.sql"),
+            ("", "Makefile"),
+        ];
+        for (declared, name) in cases {
+            assert_eq!(
+                class("OWNER = \"Zoë\"\nPORT = 7110\n".as_bytes(), declared, name),
+                (MediaClass::TextLike, "text/plain".to_string()),
+                "{name} declared {declared}"
+            );
+        }
+        assert_eq!(
+            class(b"a\tb\n", "text/tab-separated-values", "hosts.tsv"),
+            (
+                MediaClass::TextLike,
+                "text/tab-separated-values".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn text_that_is_not_utf8_or_holds_a_nul_is_another_file() {
         assert_eq!(
             class(b"caf\xE9\n", "text/plain", "latin1.txt"),
+            (MediaClass::Other, "application/octet-stream".to_string())
+        );
+        assert_eq!(
+            class(b"header\0body", "application/octet-stream", "data.bin"),
             (MediaClass::Other, "application/octet-stream".to_string())
         );
     }

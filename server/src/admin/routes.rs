@@ -589,7 +589,7 @@ async fn start(
     };
     // A parked agent is woken as its next call would wake it: its address and idle clock come back
     // and the answer waits until it serves, or it stays parked. Before the lifecycle lock, which
-    // the wake takes itself; inline, so EE's credit gate can still answer a refused wake.
+    // the wake takes itself; inline, so a wake seam that refuses the wake can still answer.
     if is_parked(&state, agent_id).await {
         if let Err(message) = state.agent_wake.before_forward(agent_id, None).await {
             return (StatusCode::SERVICE_UNAVAILABLE, message).into_response();

@@ -1,5 +1,5 @@
 /**
- * The app's left sidebar (plans/feat-app-shell.md §3–§4): the header (OpenRuntime home link, collapse), the nav groups
+ * The app's left sidebar (plans/feat-app-shell.md §3–§4): the header (Open Runtime home link, collapse), the nav groups
  * from `nav.ts` or a page's drill-in panel (`SidebarPanel`: Chat's history, Settings' sections), and the footer
  * (status in local builds, account; account settings open from the account menu). Built on shadcn's sidebar primitive.
  */

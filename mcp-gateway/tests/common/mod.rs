@@ -166,6 +166,7 @@ impl TestDb {
                 mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
             },
             authorizer,
+            entitlements: std::sync::Arc::new(nasiko_mcp_gateway::OssToolEntitlements),
             endpoint_refresher: std::sync::Arc::new(
                 nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher,
             ),

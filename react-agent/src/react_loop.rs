@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use nasiko_types::agent_clock::AgentClock;
+
 use crate::completion::{CompletionEvent, UsageModel, failure_text};
 use futures::StreamExt;
 use rig::completion::message::ToolCall;
@@ -429,6 +431,9 @@ pub struct OrchestratorConfig {
     /// fan-out from paying for it N times.
     pub outbound_prefix: Option<String>,
     pub attachment_note: Option<String>,
+    /// Whether each agent call carries the current date and time as its own part, after
+    /// `outbound_prefix` (`nasiko_types::agent_clock`). Off by default: the server switches it on.
+    pub clock: AgentClock,
 }
 
 impl Default for OrchestratorConfig {
@@ -445,6 +450,7 @@ impl Default for OrchestratorConfig {
             policy: None,
             outbound_prefix: None,
             attachment_note: None,
+            clock: AgentClock::OFF,
         }
     }
 }
@@ -905,6 +911,7 @@ impl Orchestrator {
             let tool = A2aTool::new(agent.clone(), self.a2a_client.clone())
                 .with_policy(self.config.policy.clone())
                 .with_outbound_prefix(self.config.outbound_prefix.clone())
+                .with_clock(self.config.clock)
                 .with_attachment_note(self.config.attachment_note.clone());
             defs.push(ToolDyn::definition(&tool, String::new()).await);
             builder = builder.static_tool(tool);
@@ -972,6 +979,7 @@ async fn run_stream_inner(
             .with_file_parts(file_parts.to_vec())
             .with_policy(config.policy.clone())
             .with_outbound_prefix(config.outbound_prefix.clone())
+            .with_clock(config.clock)
             .with_attachment_note(config.attachment_note.clone());
         tool_defs.push(ToolDyn::definition(&tool, String::new()).await);
         builder = builder.static_tool(tool);

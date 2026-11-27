@@ -13,7 +13,7 @@ const reasonList = (reasons: readonly { reason: string; count: number }[]) =>
  */
 export const copy = {
   title: 'Coding harnesses',
-  subtitle: 'Coding harnesses connected to OpenRuntime',
+  subtitle: 'Coding harnesses connected to Open Runtime',
   loading: 'Loading harness usage',
   registered: 'Registered',
   registeredTip:
@@ -59,7 +59,7 @@ export const copy = {
   noDevelopersInScope: 'No developers in this scope.',
   notVisible: 'Not found or not visible.',
   notVisibleHint: "This usage doesn't exist, or it isn't shared with you.",
-  noHarnesses: 'No harnesses connected to OpenRuntime yet.',
+  noHarnesses: 'No harnesses connected to Open Runtime yet.',
   deltaUnavailable: 'Δ unavailable',
 
   // Onboarding (viewer only).
@@ -85,7 +85,6 @@ export const copy = {
     findMyAgents: 'Find my agents',
     idle: 'Your coding agents are not being imported right now.',
     // Browser: running the command is the consent.
-    commandTitle: 'Bring in your coding agents',
     commandBody: 'To discover your coding agents and load your previous sessions, run:',
     command: 'nasiko agents setup',
     copyCommand: 'Copy command',

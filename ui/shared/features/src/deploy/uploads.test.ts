@@ -84,7 +84,7 @@ afterEach(() => {
 
 describe('upload registry (eng review R1, R2, R3, R7)', () => {
   it('posts to the API base, not the page, when the control plane is another origin', async () => {
-    // The multi-tenant dashboard: page on nasiko.dev, API on the workspace's own host.
+    // The multi-tenant dashboard: page on app.nasiko.com, API on the workspace's own host.
     setApiBase('https://acme.nasiko.example')
     const { qc } = setup()
     void startUpload(qc, USER, file, 'bot.zip', { name: 'bot' })

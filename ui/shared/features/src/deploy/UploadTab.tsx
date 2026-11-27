@@ -44,6 +44,7 @@ import {
 } from './zipcheck'
 import { DropZone } from './components/DropZone'
 import { LockedNameHint } from './components/LockedNameHint'
+import { ModelKeyNotice } from './components/ModelKeyNotice'
 import { Requirements, RequirementsCompact } from './components/Requirements'
 
 const schema = z.object({
@@ -88,11 +89,14 @@ export function UploadTab({
   userId,
   prefill,
   onStarted,
+  keyNotice = false,
 }: {
   userId: string
   /** `locked`: a new version of the agent `name` names, so the name can't change (`search.ts` `newVersion`). */
   prefill: { name?: string; version?: string; locked?: boolean }
   onStarted?: (to: DeployStarted) => void
+  /** The Deploy page's model-key notice atop the side column (above the compact checklist on phones). */
+  keyNotice?: boolean
 }) {
   const ids = useId()
   const locked = prefill.locked && prefill.name ? prefill.name : null
@@ -264,7 +268,8 @@ export function UploadTab({
         }}
         className="@container/deploy grid grid-cols-1 gap-4 @[768px]/deploy:grid-cols-[minmax(0,3fr)_minmax(0,2fr)] @[768px]/deploy:items-start"
       >
-        <div className="@[768px]/deploy:hidden">
+        <div className="flex flex-col gap-4 @[768px]/deploy:hidden">
+          {keyNotice ? <ModelKeyNotice /> : null}
           <RequirementsCompact
             items={items}
             advisory={!!check && !check.readable}
@@ -520,11 +525,11 @@ export function UploadTab({
           )}
         </Card>
         {/* Stays in view under the Deploy page's sticky method row while the form scrolls. */}
-        <div
-          data-tour="deploy-requirements"
-          className="sticky top-[calc(var(--topbar-h)+4rem)] @max-[768px]/deploy:hidden"
-        >
-          <Requirements items={items} advisory={!!check && !check.readable} />
+        <div className="sticky top-[calc(var(--topbar-h)+4rem)] flex flex-col gap-4 @max-[768px]/deploy:hidden">
+          {keyNotice ? <ModelKeyNotice /> : null}
+          <div data-tour="deploy-requirements">
+            <Requirements items={items} advisory={!!check && !check.readable} />
+          </div>
         </div>
       </form>
       {/* The CLI equivalent for the name being deployed; hidden on phones (design review 15). */}

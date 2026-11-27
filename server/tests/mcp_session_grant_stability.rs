@@ -42,7 +42,7 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use nasiko_mcp_gateway::config::{McpConfig, ToolSearchMode};
-use nasiko_mcp_gateway::permissions::{PermissionContext, PermissionRule};
+use nasiko_mcp_gateway::permissions::{EffectiveAccess, PermissionContext, PermissionRule};
 use nasiko_mcp_gateway::protocol::handle_tools_call;
 use nasiko_mcp_gateway::provider::{GenericMcpProvider, Providers};
 use nasiko_mcp_gateway::repo::McpConnector;
@@ -149,6 +149,7 @@ fn mcp_state(db: PgPool) -> McpState {
             mcp: GenericMcpProvider::new(reqwest::Client::new(), reqwest::Client::new()),
         },
         authorizer: Arc::new(AllowAllAuthorizer),
+        entitlements: Arc::new(nasiko_mcp_gateway::OssToolEntitlements),
         endpoint_refresher: Arc::new(nasiko_mcp_gateway::endpoint_refresh::NoopEndpointRefresher),
         llm: nasiko_orchestrator::providers::LLMProvider::from_env(reqwest::Client::new()),
         search_index: Arc::new(nasiko_mcp_gateway::search::NoopSearchIndex),
@@ -333,7 +334,7 @@ async fn session_grant_spans_messages_in_the_only_chat_for_the_agent() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&msg1_trace),
         Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
     )
@@ -371,7 +372,7 @@ async fn session_grant_spans_messages_in_the_only_chat_for_the_agent() {
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&msg2_trace),
         Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
     )
@@ -442,7 +443,7 @@ async fn session_grant_is_not_attributed_to_a_more_recent_concurrent_chat_with_n
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&msg1_trace),
         Some("d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1"),
     )
@@ -553,7 +554,7 @@ async fn session_grant_never_leaks_across_concurrent_chats_even_when_the_other_i
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent(msg1_trace)),
         Some(msg1_trace),
     )
@@ -596,7 +597,7 @@ async fn session_grant_never_leaks_across_concurrent_chats_even_when_the_other_i
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent(msg2_trace)),
         Some(msg2_trace),
     )
@@ -615,7 +616,7 @@ async fn session_grant_never_leaks_across_concurrent_chats_even_when_the_other_i
         &json!(3),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent(msg3_trace)),
         Some(msg3_trace),
     )
@@ -671,7 +672,7 @@ async fn session_grant_row_is_keyed_by_the_chat_session_id_not_the_trace_id() {
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&trace),
         Some("ddddddddddddddddddddddddddddddd1"),
     )
@@ -786,7 +787,7 @@ async fn session_grant_from_an_orchestrator_chat_does_not_leak_into_a_direct_cha
         &json!(1),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent(msg1_trace)),
         Some(msg1_trace),
     )
@@ -831,7 +832,7 @@ async fn session_grant_from_an_orchestrator_chat_does_not_leak_into_a_direct_cha
         &json!(2),
         &json!({ "name": tool, "arguments": {} }),
         &resolved,
-        &perms,
+        &EffectiveAccess::unrestricted(&perms),
         Some(&traceparent(msg2_trace)),
         Some(msg2_trace),
     )

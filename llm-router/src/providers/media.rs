@@ -3,11 +3,17 @@ use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD};
 
 use crate::ir::{DataSource, UnsupportedPart};
 
+mod office;
+
+use office::Office;
+
 pub(crate) const TEXT_DOCUMENT_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum DocumentKind {
     Pdf,
+    /// Sent to the model as text ([`decode_text`]): a text file as it is, a Word or Excel file as
+    /// the text it holds.
     TextLike,
     Other,
 }
@@ -15,7 +21,7 @@ pub(crate) enum DocumentKind {
 pub(crate) fn document_kind(media_type: &str) -> DocumentKind {
     match media_type {
         "application/pdf" => DocumentKind::Pdf,
-        m if is_text_like(m) => DocumentKind::TextLike,
+        m if is_text_like(m) || Office::of(m).is_some() => DocumentKind::TextLike,
         _ => DocumentKind::Other,
     }
 }
@@ -33,18 +39,37 @@ pub(crate) fn decoded_len(b64: &str) -> u64 {
 }
 
 pub(crate) fn decode_text(source: &DataSource) -> Result<String, UnsupportedPart> {
-    let Some((_, data)) = source.inline() else {
+    let Some((media_type, data)) = source.inline() else {
         return Err(UnsupportedPart::new("a text document given by URL"));
     };
-    if decoded_len(data) > TEXT_DOCUMENT_MAX_BYTES {
-        return Err(UnsupportedPart::new("a text document over 1 MiB"));
+    let office = Office::of(media_type);
+    let (limit, too_large) = match office {
+        Some(_) => (
+            office::PACKAGE_MAX_BYTES,
+            "a Word or Excel file over 20 MiB",
+        ),
+        None => (TEXT_DOCUMENT_MAX_BYTES, "a text document over 1 MiB"),
+    };
+    if decoded_len(data) > limit {
+        return Err(UnsupportedPart::new(too_large));
     }
     let bytes = STANDARD
         .decode(data)
         .or_else(|_| STANDARD_NO_PAD.decode(data))
         .map_err(|_| UnsupportedPart::new("a text document that is not valid base64"))?;
-    let text = String::from_utf8(bytes)
-        .map_err(|_| UnsupportedPart::new("a text document that is not UTF-8"))?;
+    let text = match office {
+        Some(office) => {
+            let text = office.text(&bytes)?;
+            if text.len() as u64 > TEXT_DOCUMENT_MAX_BYTES {
+                return Err(UnsupportedPart::new(
+                    "a Word or Excel file holding over 1 MiB of text",
+                ));
+            }
+            text
+        }
+        None => String::from_utf8(bytes)
+            .map_err(|_| UnsupportedPart::new("a text document that is not UTF-8"))?,
+    };
     if text.is_empty() {
         return Err(UnsupportedPart::new("an empty text document"));
     }
@@ -92,11 +117,14 @@ mod tests {
             "text/markdown",
             "application/json",
             "application/x-yaml",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         ] {
             assert_eq!(document_kind(text), DocumentKind::TextLike, "{text}");
         }
         for other in [
-            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            "application/msword",
+            "application/vnd.ms-excel",
             "application/zip",
             "application/octet-stream",
         ] {
@@ -134,5 +162,24 @@ mod tests {
             assert!(message.contains(expected), "{message}");
         }
         assert!(decode_text(&inline("text/plain", &vec![b'a'; 1_048_576])).is_ok());
+    }
+
+    #[test]
+    fn a_word_or_excel_file_decodes_to_the_text_it_holds() {
+        let docx = office::tests::word(r#"<w:p><w:r><w:t>Signed in Bergen</w:t></w:r></w:p>"#);
+        let source = inline(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            &docx,
+        );
+        assert_eq!(decode_text(&source).unwrap(), "Signed in Bergen");
+        let named = text_document(&source, Some("contract.docx")).unwrap();
+        assert_eq!(named, "File: contract.docx\n\nSigned in Bergen");
+
+        let broken = inline(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            b"PK\x03\x04",
+        );
+        let message = decode_text(&broken).unwrap_err().into_message();
+        assert_eq!(message, "an Excel workbook that cannot be read");
     }
 }

@@ -79,8 +79,8 @@ describe('first-run guide', () => {
     const user = userEvent.setup()
     renderApp('/')
     await guide()
-    // OpenRuntime's narrative and its four stages come before the capabilities.
-    const stages = screen.getByRole('list', { name: 'How work flows through OpenRuntime' })
+    // Open Runtime's narrative and its four stages come before the capabilities.
+    const stages = screen.getByRole('list', { name: 'How work flows through Open Runtime' })
     expect(
       within(stages)
         .getAllByRole('listitem')

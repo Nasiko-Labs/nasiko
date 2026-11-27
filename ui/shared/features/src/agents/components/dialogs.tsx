@@ -15,8 +15,8 @@ import {
   AlertDialogTitle,
 } from '@nasiko/ui/primitives/alert-dialog'
 import { Button } from '@nasiko/ui/primitives/button'
-import { Input } from '@nasiko/ui/primitives/input'
 import { Textarea } from '@nasiko/ui/primitives/textarea'
+import { TypeToConfirm } from '@nasiko/ui/composites/type-to-confirm'
 import { meQuery } from '@nasiko/data-access/auth'
 import { useDeleteAgent } from '../api'
 import { copy, type ErrorContext } from '../copy'
@@ -94,7 +94,6 @@ function DeleteDialog({
   onConfirm: () => void
 }) {
   const [typed, setTyped] = useState('')
-  const id = useId()
   return (
     <ConfirmDialog
       open={open}
@@ -112,17 +111,12 @@ function DeleteDialog({
       confirmDisabled={typed !== name}
       onConfirm={onConfirm}
     >
-      <label htmlFor={id} className="text-sm">
-        {copy.deleteConfirmLead} <code className="font-mono">{name}</code> {copy.deleteConfirmTail}
-      </label>
-      <Input
-        id={id}
-        placeholder={name}
+      <TypeToConfirm
+        phrase={name}
         value={typed}
-        onChange={(e) => setTyped(e.target.value)}
-        autoComplete="off"
-        spellCheck={false}
-        className="font-mono"
+        onChange={setTyped}
+        lead={copy.deleteConfirmLead}
+        tail={copy.deleteConfirmTail}
       />
     </ConfirmDialog>
   )

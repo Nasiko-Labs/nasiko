@@ -226,6 +226,12 @@ describe('Deploy: upload a zip (plans/feat-deploy.md §4.1)', () => {
     expect(nameInput()).toHaveValue('doc-writer')
   })
 
+  it('says deployed agents need a model key, and links to the LLM router', async () => {
+    renderApp('/deploy')
+    const [link] = await screen.findAllByRole('link', { name: copy.keyNotice.link })
+    expect(link).toHaveAttribute('href', '/router')
+  })
+
   it('shows the CLI equivalent', async () => {
     renderApp('/deploy?name=bot')
     expect(

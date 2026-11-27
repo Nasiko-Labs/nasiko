@@ -52,95 +52,82 @@ pub struct TemplateStep {
 
 /// Every template this server knows. Ids must be unique.
 pub const TEMPLATES: &[WorkflowTemplate] = &[
-    // Showcase workflows: a run needs no input (the dashboard's Run sends none), so each
-    // carries its own sample data in its first step, and its description says so.
+    // Showcase workflows: a run needs no input (the dashboard's Run sends none). Each first step
+    // reads the running user's own apps, with a connect card the first time for each app not yet
+    // connected; the description names the apps.
     WorkflowTemplate {
-        id: "chief-of-staff-follow-up",
-        version: 1,
-        name: "Chief of Staff: Meeting Follow-up",
-        description: "Turns a meeting into decisions, owners and a ready-to-send \
-                      follow-up email. Runs on a built-in sample meeting.",
+        id: "inbox-morning-brief",
+        version: 2,
+        name: "Inbox Morning Brief",
+        description: "Reads the last 30 days of your Gmail, Google Calendar and Linear, \
+                      and turns them into what to do now: meetings to prepare for or follow \
+                      up, emails that still need a reply, and your top priorities. Asks you \
+                      to connect each app the first time.",
         steps: &[
             TemplateStep {
-                agent: "meeting-notes-processor",
-                agent_version: "1.1.1",
-                task: "Read this sample meeting transcript and pull out the decisions, \
-                       the action items with owner and due date, and the open \
-                       questions. Transcript: \"Weekly launch sync, 12 Nov. Attendees: \
-                       Priya (PM), Rahul (Eng), Anil (Marketing). Priya: We agreed to \
-                       ship the new onboarding flow on 20 Nov. Rahul: I'll fix the CSV \
-                       export bug by 18 Nov. Anil: I'll have the launch blog post ready \
-                       by 17 Nov. Open question: do we launch the mobile app now? \
-                       Decision: the mobile app moves to December. Priya: Rahul, please \
-                       also add usage alerts before launch.\"",
+                agent: "scout",
+                agent_version: "1.0.0",
+                // The time ranges are spelled out so the search does not depend on the model
+                // working out "today" on its own; Scout also gets the current date with the step.
+                task: "Gather my material from the last 30 days: the emails I received \
+                       in Gmail (Gmail search: newer_than:30d), my meetings in Google \
+                       Calendar from the last 30 days and today, and my Linear issues \
+                       assigned to me that changed in the last 30 days, with their status, \
+                       priority and due date.",
             },
             TemplateStep {
-                agent: "task-breakdown",
-                agent_version: "1.1.1",
-                task: "Turn the action items into an ordered task list for the launch, \
-                       keeping each owner and due date, and flag anything due before \
-                       18 Nov as urgent.",
-            },
-            TemplateStep {
-                agent: "reply-drafter",
-                agent_version: "1.1.1",
-                task: "Draft the follow-up email the meeting organiser sends to Priya, \
-                       Rahul and Anil: thank them, confirm the decisions, list each task \
-                       with owner and due date, and note that the mobile app moved to \
-                       December. It goes out by email.",
-            },
-            TemplateStep {
-                agent: "humanizer",
-                agent_version: "1.1.1",
-                task: "Rewrite the email so it reads warm and natural, without changing \
-                       any decision, owner or date.",
+                agent: "distiller",
+                agent_version: "1.0.0",
+                task: "From that material, tell me what to do now, with these sections: \
+                       Meetings (today's first, with what to prepare; then follow-ups from \
+                       recent meetings), Needs a reply (who, about what, since when), Top \
+                       priorities (open Linear issues by priority and due date), Everything \
+                       else (one line each). Order each section by urgency, and say plainly \
+                       when a source had nothing.",
             },
         ],
     },
     WorkflowTemplate {
-        id: "voice-of-customer-roadmap",
+        id: "monthly-work-recap",
         version: 1,
-        name: "Voice of Customer \u{2192} Roadmap",
-        description: "Turns raw customer feedback into ranked themes, roadmap tasks and \
-                      a reply to the customer in their own language. Runs on built-in \
-                      sample feedback.",
+        name: "Monthly Work Recap",
+        description: "Gathers your last 30 days from GitHub, Linear, Gmail and Google \
+                      Drive, turns it into a monthly update (done, impact, in progress, \
+                      backlog, risks), saves it as a Gmail draft for your manager and sends \
+                      you a short version on Slack. Asks you to connect each app the first \
+                      time.",
         steps: &[
             TemplateStep {
-                agent: "summarizer",
-                agent_version: "1.1.1",
-                task: "Group this sample customer feedback into themes, ranked by how \
-                       many customers raised each, with one short quote per theme. \
-                       Feedback: \"1. Acme (500 users): Monthly reports download as \
-                       blank PDFs, our finance team is blocked. 2. Brightly: I can't \
-                       find where to add teammates. 3. Acme: Blank PDF reports again \
-                       this month, please fix. 4. Zento: Love the dashboard, but \
-                       exports are slow. 5. Lumen (Spain): Los informes en PDF salen en \
-                       blanco, necesitamos una soluci\u{f3}n urgente. 6. Brightly: \
-                       Adding teammates is confusing.\"",
+                agent: "scout",
+                agent_version: "1.0.0",
+                // One step reads every app: Scout asks to connect each one it needs before it
+                // fetches, reads them read-only, and reports a status line per app, so a source
+                // that is not connected or empty shows up in the update instead of vanishing.
+                task: "Gather my work from the last 30 days: my merged pull requests and \
+                       closed issues on GitHub, my completed and still-open issues in \
+                       Linear, the work emails I sent in Gmail (Gmail search: in:sent \
+                       newer_than:30d), and my meeting notes in Google Drive.",
             },
             TemplateStep {
-                agent: "task-breakdown",
-                agent_version: "1.1.1",
-                task: "Turn the top themes into prioritised roadmap tasks, highest \
-                       customer impact first, each with a one-line reason.",
+                agent: "distiller",
+                agent_version: "1.0.0",
+                task: "From that material, write my monthly update with these sections: \
+                       Done, Contributions and impact, In progress, Backlog (by priority), \
+                       Risks and blockers. Say plainly when a source had nothing.",
             },
             TemplateStep {
-                agent: "reply-drafter",
-                agent_version: "1.1.1",
-                task: "Draft a reply to Lumen, the Spanish customer whose PDF reports \
-                       come out blank: apologise, say the fix is planned, and promise \
-                       an update by 20 Nov. It goes out by email.",
+                agent: "herald",
+                agent_version: "1.0.0",
+                task: "Write that monthly update as a warm, concise email to my manager \
+                       and save it as a Gmail draft.",
             },
             TemplateStep {
-                agent: "humanizer",
-                agent_version: "1.1.1",
-                task: "Make the reply sound natural and caring, keeping the commitment \
-                       and the date.",
-            },
-            TemplateStep {
-                agent: "translator",
-                agent_version: "1.1.1",
-                task: "Translate the reply into Spanish for Lumen, keeping its tone.",
+                agent: "herald",
+                agent_version: "1.0.0",
+                // A direct message to the runner, never a channel: a showcase run must not post
+                // into a shared channel of someone's workspace.
+                task: "Send me a five-bullet version of that monthly update as a Slack \
+                       direct message.",
             },
         ],
     },
@@ -364,7 +351,7 @@ async fn resolve_steps(
 }
 
 /// The tag of an image reference, ignoring a `host:port` registry and any
-/// digest: `registry.nasiko.dev/nasiko/summarizer:1.0.1-image` → `1.0.1-image`.
+/// digest: `registry.nasiko.com/nasiko/summarizer:1.0.1-image` → `1.0.1-image`.
 fn image_tag(image: &str) -> Option<&str> {
     let image = image.split('@').next().unwrap_or(image);
     let last_segment = image.rsplit('/').next().unwrap_or(image);
@@ -403,8 +390,8 @@ mod tests {
     #[test]
     fn templates_are_found_by_id() {
         assert_eq!(
-            template("chief-of-staff-follow-up").map(|t| t.id),
-            Some("chief-of-staff-follow-up")
+            template("monthly-work-recap").map(|t| t.id),
+            Some("monthly-work-recap")
         );
         assert!(template("no-such-template").is_none());
     }
@@ -412,7 +399,7 @@ mod tests {
     #[test]
     fn the_tag_ignores_the_registry_port_and_digest() {
         assert_eq!(
-            image_tag("registry.nasiko.dev/nasiko/summarizer:1.0.1-image"),
+            image_tag("registry.nasiko.com/nasiko/summarizer:1.0.1-image"),
             Some("1.0.1-image")
         );
         assert_eq!(

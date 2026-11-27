@@ -720,6 +720,11 @@ pub struct AgentFinOps {
 pub struct TraceUsageRow {
     pub trace_id: String,
     pub agent_name: String,
+    /// Which agent `agent_name` is, when the spans said: the LLM router's verified caller id, or
+    /// the workload UUID its deploy put on its resource. A name is unique only per owner, so
+    /// without this two users' same-named agents cannot be told apart. `None` when no span
+    /// said, or when spans grouped under one name named different agents.
+    pub agent_uuid: Option<uuid::Uuid>,
     pub session_id: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,

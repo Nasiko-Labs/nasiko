@@ -1024,14 +1024,14 @@ mod registry_alias_tests {
     async fn an_image_on_a_former_registry_host_is_held_to_the_namespace_rules() {
         let db = sqlx::PgPool::connect_lazy("postgres://hermetic.invalid/none").unwrap();
         let (caller, other) = (Uuid::new_v4(), Uuid::new_v4());
-        let image = format!("free.nasiko.dev/u-{}/agent:1", other.as_simple());
-        let aliases = vec!["free.nasiko.dev".to_string()];
+        let image = format!("free.old.example/u-{}/agent:1", other.as_simple());
+        let aliases = vec!["free.old.example".to_string()];
 
         let refused =
             validate_image_ref(&db, "free.app.nasiko.com", &aliases, &image, caller, false).await;
         assert_eq!(refused.unwrap_err().0, axum::http::StatusCode::FORBIDDEN);
 
-        let own = format!("free.nasiko.dev/u-{}/agent:1", caller.as_simple());
+        let own = format!("free.old.example/u-{}/agent:1", caller.as_simple());
         assert!(
             validate_image_ref(&db, "free.app.nasiko.com", &aliases, &own, caller, false)
                 .await

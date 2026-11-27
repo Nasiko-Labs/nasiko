@@ -35,6 +35,7 @@ import { filterRepos, useGithubConnect } from './github'
 import { nameFromFile, nameProblem, uploadCommand } from './name'
 import { type DeploySearch, lockedName } from './search'
 import { LockedNameHint } from './components/LockedNameHint'
+import { ModelKeyNotice } from './components/ModelKeyNotice'
 import { Requirements } from './components/Requirements'
 import { parseVersion } from './version'
 
@@ -51,10 +52,13 @@ export function GithubTab({
   search,
   setSearch,
   onStarted,
+  keyNotice = false,
 }: {
   search: DeploySearch
   setSearch: (patch: Partial<DeploySearch>) => void
   onStarted?: (to: DeployStarted) => void
+  /** The Deploy page's model-key notice atop the side column. */
+  keyNotice?: boolean
 }) {
   const configured = useGithubConfigured()
   const on = configured.data === true
@@ -167,7 +171,8 @@ export function GithubTab({
             />
           ) : null}
         </Card>
-        <div className="@max-[768px]/github:order-first">
+        <div className="flex flex-col gap-4 @max-[768px]/github:order-first">
+          {keyNotice ? <ModelKeyNotice /> : null}
           <Requirements
             items={RULES}
             advisory={false}

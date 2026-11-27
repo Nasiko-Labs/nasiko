@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use nasiko_types::agent_clock::AgentClock;
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,9 @@ pub struct A2aTool {
     /// message. `None` sends the LLM's own wording unchanged. See
     /// `OrchestratorConfig::outbound_prefix`.
     outbound_prefix: Option<String>,
+    /// Whether each call carries the current date and time as its own part, after
+    /// `outbound_prefix`. See `OrchestratorConfig::clock`.
+    clock: AgentClock,
     attachment_note: Option<String>,
 }
 
@@ -97,6 +101,7 @@ impl A2aTool {
             file_parts: vec![],
             policy: None,
             outbound_prefix: None,
+            clock: AgentClock::OFF,
             attachment_note: None,
         }
     }
@@ -118,6 +123,12 @@ impl A2aTool {
     /// the unconfigured case is one call site fewer to get wrong.
     pub fn with_outbound_prefix(mut self, prefix: Option<String>) -> Self {
         self.outbound_prefix = prefix;
+        self
+    }
+
+    /// Whether each call this tool makes carries the current date and time.
+    pub fn with_clock(mut self, clock: AgentClock) -> Self {
+        self.clock = clock;
         self
     }
 
@@ -255,7 +266,15 @@ impl Tool for A2aTool {
         // this platform's real `a2a-lf` agents (proto dialect) reject an unexpected `"kind"`
         // field outright — confirmed live against a real deployed agent. `build_message_body`
         // re-tags this text per attempt, exactly like the primary message part already is.
-        let extra_text_parts: Vec<String> = self.outbound_prefix.iter().cloned().collect();
+        //
+        // The current date and time follows it, read per call rather than per turn: a fan-out's
+        // legs go out at different moments, and each is a new task, never a continuation.
+        let extra_text_parts: Vec<String> = self
+            .outbound_prefix
+            .iter()
+            .cloned()
+            .chain(self.clock.note())
+            .collect();
         let args = A2aToolArgs {
             message: with_attachment_note(args.message, self.attachment_note.as_deref()),
             context_id: args.context_id,
@@ -603,6 +622,33 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// The current date and time follows the policy as its own part; the model's message stays
+    /// first, unchanged.
+    #[tokio::test]
+    async fn the_current_time_follows_the_policy_as_its_own_part() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/")
+            .match_request(|request| tells_the_time_after(request, "hi"))
+            .with_status(200)
+            .with_body(a2a_response_body())
+            .create_async()
+            .await;
+
+        let tool = A2aTool::new(test_agent(&server.url()), Arc::new(A2aClient::new()))
+            .with_outbound_prefix(Some("POLICY".into()))
+            .with_clock(AgentClock::ON);
+        let result = tool
+            .call(A2aToolArgs {
+                message: "hi".into(),
+                context_id: None,
+            })
+            .await;
+
+        mock.assert_async().await;
+        assert!(result.is_ok());
+    }
+
     /// Both a file part (set at construction, always present) and org policy (appended per-call)
     /// must coexist without either clobbering the other — the shape a fan-out with both a file
     /// upload and an active org policy actually produces.
@@ -722,6 +768,29 @@ mod tests {
     /// How many message parts a forwarded request carried. `mockito::Matcher::PartialJson` accepts
     /// extra trailing array elements, so on its own it cannot say "and nothing else was sent"; a
     /// test that claims an exact list pairs it with this.
+    /// The text of each part of the forwarded message, in order.
+    fn forwarded_texts(request: &mockito::Request) -> Vec<String> {
+        request
+            .body()
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<serde_json::Value>(raw).ok())
+            .and_then(|body| body.pointer("/params/message/parts").cloned())
+            .and_then(|parts| parts.as_array().cloned())
+            .unwrap_or_default()
+            .iter()
+            .map(|part| part["text"].as_str().unwrap_or_default().to_string())
+            .collect()
+    }
+
+    /// The model's message, then the policy, then the current time, each its own part.
+    fn tells_the_time_after(request: &mockito::Request, first: &str) -> bool {
+        let texts = forwarded_texts(request);
+        texts.len() == 3
+            && texts[0] == first
+            && texts[1] == "POLICY"
+            && texts[2].starts_with(nasiko_types::agent_clock::NOTE_LEAD)
+    }
+
     fn forwarded_part_count(request: &mockito::Request) -> usize {
         request
             .body()

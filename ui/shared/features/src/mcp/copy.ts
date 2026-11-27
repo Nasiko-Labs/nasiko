@@ -319,6 +319,8 @@ export const copy = {
     'MCP servers this agent may use. Set each tool to allow, ask or block. Ask pauses the agent mid-task and asks you to approve that call before it runs.',
   agentMcpSubHarness:
     'MCP servers this coding harness may use. Set each tool to allow or block. Approval before a call isn’t available for coding harnesses yet.',
+  agentMcpSubLocal:
+    'MCP servers this agent may use from the machine it runs on. Set each tool to allow or block. Approval before a call isn’t available for agents running outside Nasiko yet.',
   noAgentServers: 'No MCP servers available',
   noAgentServersFix: 'Connect servers on the MCP servers page to make their tools available here.',
   openCatalog: 'Open MCP servers',
@@ -360,7 +362,7 @@ export const copy = {
 
   // Access tab
   publicTitle: 'Visibility',
-  publicToggle: 'Public: everyone on this OpenRuntime can use this server',
+  publicToggle: 'Public: everyone on this Open Runtime can use this server',
   grantsTitle: 'Who has access',
   grantsSub: 'Who this server is shared with.',
   searchGrants: 'Search people',
@@ -404,11 +406,11 @@ export const copy = {
 
 /** The server's own words when it sent any (the gateway's `client_message` is safe to show), else a fallback. */
 export function reason(err: unknown): string {
-  if (isTimeoutError(err)) return 'OpenRuntime took too long to answer.'
+  if (isTimeoutError(err)) return 'Open Runtime took too long to answer.'
   if (err instanceof ApiError) {
     if (err.status === 403 && !err.serverMessage) return "you don't have permission"
     if (err.serverMessage) return err.serverMessage
-    if (err.isServerUnreachable) return "OpenRuntime isn't answering."
+    if (err.isServerUnreachable) return "Open Runtime isn't answering."
     return `error ${err.status}`
   }
   return err instanceof Error ? err.message : 'unknown error'

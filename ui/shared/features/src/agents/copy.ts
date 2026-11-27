@@ -317,10 +317,10 @@ export const copy = {
   details: 'Details',
   cancel: 'Cancel',
   retry: 'Retry',
-  serverDown: 'OpenRuntime server unreachable.',
+  serverDown: 'Open Runtime server unreachable.',
   somethingWrong: 'Something went wrong.',
   /** The server's own reason, when it gave one we have no better words for. */
-  serverSaid: (t: string) => `OpenRuntime said: ${/[.!?]$/.test(t) ? t : `${t}.`}`,
+  serverSaid: (t: string) => `Open Runtime said: ${/[.!?]$/.test(t) ? t : `${t}.`}`,
 } as const
 
 /**

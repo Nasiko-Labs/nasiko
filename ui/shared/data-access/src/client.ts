@@ -221,7 +221,7 @@ export async function apiFetch<T>(path: string, init: ApiInit & Checked<T> = {})
       502,
       null,
       path,
-      `Couldn't reach OpenRuntime (${rest.method ?? 'GET'} ${path})`,
+      `Couldn't reach Open Runtime (${rest.method ?? 'GET'} ${path})`,
     )
   }
   const text = await res.text()

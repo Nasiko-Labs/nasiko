@@ -220,6 +220,7 @@ fn agent_calls() -> AgentCalls {
         client: reqwest::Client::new(),
         meter: Arc::new(Unmetered),
         outbound: Arc::new(nasiko_orchestrator::outbound::NoOutboundPrefix),
+        clock: nasiko_types::agent_clock::AgentClock::OFF,
         // Never asked: `CountingExecutor` never calls an agent, so the pool is never dialled.
         targets: Arc::new(nasiko_orchestrator::DirectAddress::new(
             sqlx::PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/db")

@@ -12,20 +12,20 @@ export interface ErrorCopy {
 export const errorCopy = {
   createFailed: {
     problem: 'Not sent.',
-    cause: "OpenRuntime couldn't start this chat.",
+    cause: "Open Runtime couldn't start this chat.",
     action: 'Try again.',
   },
   saveUserFailed: {
     problem: "Couldn't save your message.",
-    cause: 'OpenRuntime refused or lost the request, so nothing was sent to the agent.',
+    cause: 'Open Runtime refused or lost the request, so nothing was sent to the agent.',
     action: 'Try again.',
   },
   badRequest: {
     problem: "The agent couldn't read this message.",
-    cause: 'OpenRuntime rejected the request before running it.',
+    cause: 'Open Runtime rejected the request before running it.',
     action: 'Edit the message and send it again.',
   },
-  // The agent's own HTTP server refused the body — not a OpenRuntime limit, so the composer
+  // The agent's own HTTP server refused the body — not an Open Runtime limit, so the composer
   // accepted the file and the dispatch still bounced. Attachments are sent base64'd inside the
   // message, which is what pushes a request past an agent's own cap (§7.7).
   messageTooLarge: {
@@ -40,28 +40,28 @@ export const errorCopy = {
   },
   agentGone: {
     problem: 'This agent is gone or you lost access.',
-    cause: 'OpenRuntime no longer finds it for your account.',
+    cause: 'Open Runtime no longer finds it for your account.',
     action: 'Pick another agent on Agents.',
   },
   rateLimited: {
     problem: 'Too many messages. Try again in a minute.',
-    cause: 'OpenRuntime allows 30 chat requests per minute per person.',
+    cause: 'Open Runtime allows 30 chat requests per minute per person.',
     action: 'Wait a minute, then retry.',
   },
   noAgents: {
-    problem: 'OpenRuntime has no running agent for this.',
+    problem: 'Open Runtime has no running agent for this.',
     cause: 'The agent is stopped or still deploying.',
     action: 'Open Agents to start it.',
   },
   // A 503 that isn't "not running" (an unreadable attachment, a refused session): its reason shows under it.
   refusedWithReason: {
-    problem: "OpenRuntime couldn't run this message.",
+    problem: "Open Runtime couldn't run this message.",
     cause: 'It refused the request before the agent saw it.',
     action: 'Fix what the reason says, then send it again.',
   },
   // A 5xx that came with a reason: the server answered, so the connection didn't drop.
   serverError: {
-    problem: "OpenRuntime couldn't finish this request.",
+    problem: "Open Runtime couldn't finish this request.",
     cause: 'It answered with an error, and the agent may already have started.',
     action: 'Fix what the reason says, then refresh status before running it again.',
   },
@@ -92,12 +92,12 @@ export const errorCopy = {
   },
   saveDefinite: {
     problem: 'Reply not saved.',
-    cause: 'OpenRuntime refused to store it.',
+    cause: 'Open Runtime refused to store it.',
     action: 'Save again, or discard it.',
   },
   saveUnknown: {
     problem: 'This reply may already be saved.',
-    cause: 'The save request failed without an answer from OpenRuntime.',
+    cause: 'The save request failed without an answer from Open Runtime.',
     action: 'Refresh status before saving again.',
   },
   busy: {
@@ -146,7 +146,7 @@ export const errorCopy = {
   },
   routedMayStillArrive: {
     problem: 'The reply may still be arriving.',
-    cause: "OpenRuntime couldn't replay the resumed reply.",
+    cause: "Open Runtime couldn't replay the resumed reply.",
     action: 'Refresh status.',
   },
   routedRateLimited: {
@@ -155,7 +155,7 @@ export const errorCopy = {
     action: 'Wait a minute and try again.',
   },
   routedInternal: {
-    problem: 'OpenRuntime hit an error.',
+    problem: 'Open Runtime hit an error.',
     cause: 'The request may have started.',
     action: 'Refresh status before running it again.',
   },
@@ -172,7 +172,7 @@ export const errorCopy = {
   // The Waiting queue's poll (v1c §5.9, DX4).
   pendingFailed: {
     problem: "Couldn't load waiting requests",
-    cause: "OpenRuntime didn't answer the pending-requests check.",
+    cause: "Open Runtime didn't answer the pending-requests check.",
     action: 'Retry, or check the server logs with the correlation id.',
   },
   tooManyLive: {
@@ -183,15 +183,15 @@ export const errorCopy = {
   // The attachments failed to upload, so nothing was sent: the message is still in the box.
   uploadFailed: {
     problem: "Couldn't upload your attachments.",
-    cause: 'OpenRuntime refused or lost the upload, so nothing was sent to the agent.',
+    cause: 'Open Runtime refused or lost the upload, so nothing was sent to the agent.',
     action: 'Try again, or remove the attachment and send the message without it.',
   },
   // Dictation (docs/superpowers/specs/2026-11-13-chat-dictation-design.md). The draft is never touched.
-  // `navigator.mediaDevices` is undefined on an insecure origin, usually OpenRuntime served over plain HTTP on an IP.
+  // `navigator.mediaDevices` is undefined on an insecure origin, usually Open Runtime served over plain HTTP on an IP.
   micInsecure: {
     problem: "Couldn't use the microphone.",
     cause: 'Browsers allow microphones only on HTTPS pages and localhost.',
-    action: 'Open OpenRuntime over HTTPS, or ask your admin to set it up.',
+    action: 'Open Open Runtime over HTTPS, or ask your admin to set it up.',
   },
   micDenied: {
     problem: "Couldn't use the microphone.",
@@ -210,7 +210,7 @@ export const errorCopy = {
   },
   transcribeUnconfigured: {
     problem: "Couldn't transcribe your recording.",
-    cause: 'Speech-to-text needs an OpenAI API key, and this OpenRuntime has none.',
+    cause: 'Speech-to-text needs an OpenAI API key, and this Open Runtime has none.',
     action: 'Save an OpenAI key in the LLM router, or ask your admin to set OPENAI_API_KEY.',
   },
   // quirk: the server sends a provider failure as a 502 with a body; apiFetch's network error is a 502 without one.
@@ -222,12 +222,12 @@ export const errorCopy = {
   },
   transcribeUnreadable: {
     problem: "Couldn't transcribe your recording.",
-    cause: "OpenRuntime couldn't read it. It may be too long.",
+    cause: "Open Runtime couldn't read it. It may be too long.",
     action: 'Record a shorter message.',
   },
   transcribeFailed: {
     problem: "Couldn't transcribe your recording.",
-    cause: "OpenRuntime didn't answer.",
+    cause: "Open Runtime didn't answer.",
     action: 'Try again.',
   },
 } satisfies Record<string, ErrorCopy>
@@ -240,10 +240,10 @@ export const policyCopy = {
   tokens: 'token budget',
   timeout: 'time limit',
   guard: 'limit check',
-  stopped: (limit: string) => `Stopped by an OpenRuntime limit: ${limit}.`,
+  stopped: (limit: string) => `Stopped by an Open Runtime limit: ${limit}.`,
   raise: (env: string) => `Ask your admin to raise ${env}.`,
   cycleFix: 'The request asked an agent that was already in the call chain.',
-  guardFix: "OpenRuntime couldn't check its limits. Try again later.",
+  guardFix: "Open Runtime couldn't check its limits. Try again later.",
 } as const
 
 export type ErrorKey = keyof typeof errorCopy
@@ -344,7 +344,7 @@ export const copy = {
   replace: 'Replace',
   chatsNav: 'Chat',
   moreChatActions: 'More chat actions',
-  /** The router, as a routed chat names it (v1c §5.1: "OpenRuntime" stays the platform's name). */
+  /** The router, as a routed chat names it (v1c §5.1: "Open Runtime" stays the platform's name). */
   orchestratorName: 'Orchestrator',
   /** "Ask the Orchestrator": composed strings take the article (v1c §5.1). */
   askOrchestrator: 'Ask the Orchestrator',
@@ -406,6 +406,8 @@ export const copy = {
   heroChooseTitle: 'Start a chat',
   heroChooseSubline: 'Pick an agent, or let the Orchestrator choose.',
   heroAgentSubline: 'Ask me anything',
+  heroDescriptionMore: 'More',
+  heroDescriptionLess: 'Less',
   chooseAnother: 'Choose another agent',
   heroOrchestratorTitle: 'Orchestrate a task',
   heroOrchestratorSubline: 'Describe a task and the Orchestrator picks the agents to run it.',
@@ -542,6 +544,7 @@ export const copy = {
   worksWithHintConnected: 'Your apps are connected. Ask it to use them, or just send your text.',
   appConnected: (app: string) => `${app}: connected`,
   moreApps: (n: number) => `+${n} more`,
+  moreAppsLabel: (n: number) => `${n} more apps: see all toolkits on MCP servers`,
   replyConnect: 'Connect it so the agent can use it here:',
   loading: 'Loading…',
   usageLoaded: 'Usage for loaded messages',

@@ -1469,7 +1469,7 @@ pub struct AgentRecord {
     pub id: String,
     #[tabled(rename = "NAME")]
     pub name: String,
-    /// The server's human-facing label (e.g. "Claude Code (ankit@nasiko.com)")
+    /// The server's human-facing label (e.g. "Claude Code (dev@example.com)")
     /// — same string the web UI shows. `None` for agents registered before
     /// the server started returning it. `name` above stays the real
     /// identifier used everywhere else (chat targeting, resolution); this is

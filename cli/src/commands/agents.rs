@@ -589,7 +589,7 @@ pub fn cmd_ls() -> Result<()> {
         return Ok(());
     }
 
-    // Same label the web UI shows (e.g. "Claude Code (ankit@nasiko.com)") —
+    // Same label the web UI shows (e.g. "Claude Code (dev@example.com)") —
     // `AgentRecord.name` stays the real identifier used for chat targeting
     // and resolution elsewhere, so it isn't touched, just not what's printed.
     let rows: Vec<LsTableRow> = agents

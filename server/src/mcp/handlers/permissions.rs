@@ -238,7 +238,8 @@ pub async fn list_tool_rules(
     claims: Claims,
     AppPath(agent_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
-    let mut data = service::permissions::list_tool_rules(&state, agent_id).await?;
+    let user_id = parse_user(&claims)?;
+    let mut data = service::permissions::list_tool_rules(&state, user_id, agent_id).await?;
     if !crate::acl::can_manage_agent(&state, &claims, agent_id).await {
         let mut allowed: std::collections::HashMap<Uuid, bool> = std::collections::HashMap::new();
         if let Some(rules) = data.get_mut("rules").and_then(|v| v.as_array_mut()) {
@@ -352,7 +353,7 @@ pub async fn bulk_update_tools(
     params(("agent_id" = Uuid, Path, description = "Agent id")),
     responses(
         (status = 200, description = "Permissions reset — `data` is `{rows_deleted}`", body = McpEnvelope),
-        (status = 403, description = "Caller cannot manage this agent", body = McpEnvelope),
+        (status = 403, description = "Caller cannot manage this agent, or is restricted to a subset of tools", body = McpEnvelope),
     ),
 )]
 pub async fn reset(
@@ -361,8 +362,9 @@ pub async fn reset(
     AppPath(agent_id): AppPath<Uuid>,
 ) -> Result<ApiResponse, ApiError> {
     ensure_can_manage_agent(&state, &claims, agent_id).await?;
+    let user_id = parse_user(&claims)?;
     tracing::info!(%agent_id, caller = %claims.sub, "resetting agent tool permissions");
-    let deleted = service::permissions::reset(&state, agent_id).await?;
+    let deleted = service::permissions::reset(&state, user_id, agent_id).await?;
     Ok(ApiResponse::ok(
         json!({ "rows_deleted": deleted }),
         "Agent permissions reset successfully",

@@ -40,6 +40,19 @@ fn pct(part: f64, whole: f64) -> Option<f64> {
     Some((part / whole * 100.0 * 100.0).round() / 100.0)
 }
 
+/// `saved / (actual + saved)`, or `None` when nothing was billed.
+///
+/// With no billed spend in scope the ratio is `saved / saved`, a 100% that says only that the
+/// spend side is missing (calls not yet materialized, or attributed outside this scope), not that
+/// every token was saved. Bug found 2026-11-18: a Free-plane user's banner read "$0.00 · 100.0%
+/// fewer tokens" over 1.4K saved tokens and no billed ones.
+fn reduction_pct(saved: f64, actual: f64) -> Option<f64> {
+    if actual <= 0.0 {
+        return None;
+    }
+    pct(saved, actual + saved)
+}
+
 /// The five fields every savings object carries, at every level of the response.
 ///
 /// One shape for the total, each program, each layer, each agent and each session, so a consumer
@@ -57,8 +70,8 @@ pub struct Savings {
     /// `actual + saved` — what it would have cost without the layer.
     pub baseline_tokens: i64,
     pub baseline_cost_usd: f64,
-    /// `saved / baseline`. Expect this to exceed `cost_reduction_pct`: savings are overwhelmingly
-    /// input tokens, and input is the cheap side.
+    /// `saved / baseline`, null when nothing was billed. Expect this to exceed
+    /// `cost_reduction_pct`: savings are overwhelmingly input tokens, and input is the cheap side.
     pub token_reduction_pct: Option<f64>,
     pub cost_reduction_pct: Option<f64>,
     /// `measured` | `fixture` | `seed_default` | `mixed`.
@@ -86,8 +99,8 @@ impl Savings {
             actual_cost_usd: actual_cost,
             baseline_tokens,
             baseline_cost_usd: baseline_cost,
-            token_reduction_pct: pct(saved_tokens as f64, baseline_tokens as f64),
-            cost_reduction_pct: pct(saved_cost, baseline_cost),
+            token_reduction_pct: reduction_pct(saved_tokens as f64, actual_tokens as f64),
+            cost_reduction_pct: reduction_pct(saved_cost, actual_cost),
             basis,
         }
     }
@@ -274,7 +287,7 @@ pub struct SavingsQuery<'a> {
     /// Restricts every aggregate to these callers' own calls (bug found 2026-10-22: this panel
     /// never had this filter at all, only `accessible_agent_ids` — a public agent's savings looked
     /// the same for every viewer who could see it, not just the person who actually made the calls).
-    /// `None` means unrestricted (an admin, or a request scoped to an agent the caller owns); `Some`
+    /// `None` means unrestricted (a user manager); `Some`
     /// mirrors `accessible_agent_ids`'s shape exactly, same handler-level resolution.
     pub user_ids: Option<&'a [uuid::Uuid]>,
 }
@@ -1243,6 +1256,14 @@ mod tests {
         let s = Savings::new(250, 0, 0.0, 1000, 0.0, "measured");
         assert_eq!(s.baseline_tokens, 1250);
         assert_eq!(s.token_reduction_pct, Some(20.0));
+    }
+
+    #[test]
+    fn savings_with_nothing_billed_yield_no_percentage_rather_than_a_hundred() {
+        let s = Savings::new(1400, 0, 0.0, 0, 0.0, "measured");
+        assert_eq!(s.saved_tokens, 1400);
+        assert_eq!(s.token_reduction_pct, None);
+        assert_eq!(s.cost_reduction_pct, None);
     }
 
     #[test]
