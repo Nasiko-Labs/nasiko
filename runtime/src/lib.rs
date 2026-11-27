@@ -1,6 +1,8 @@
+pub mod batch;
 #[cfg(feature = "testing")]
 pub mod conformance;
 mod error;
+pub mod harness_agent;
 mod sandbox;
 mod sandbox_routed;
 mod sandbox_unavailable;
@@ -18,6 +20,10 @@ pub mod sandbox_fake;
 #[cfg(feature = "simulated")]
 mod simulated;
 
+pub use batch::{
+    BatchFile, BatchJob, BatchLimits, BatchNetwork, BatchOutcome, BatchRunner, BatchStop,
+    UnavailableBatchRunner,
+};
 pub use error::{Result, RuntimeError};
 pub use sandbox::{
     HARNESS_SCRATCH_DIR, SandboxHandle, SandboxInfo, SandboxKey, SandboxProvider,
@@ -71,7 +77,9 @@ pub struct NodeInfo {
 
 #[cfg(feature = "docker")]
 pub use docker::{
-    DockerRuntime, DockerRuntimeConfig, DockerStatsProvider, sandbox::DockerSandboxProvider,
+    DockerRuntime, DockerRuntimeConfig, DockerStatsProvider,
+    batch::{BATCH_LABEL, DockerBatchConfig, DockerBatchRunner},
+    sandbox::DockerSandboxProvider,
 };
 
 #[cfg(feature = "docker")]

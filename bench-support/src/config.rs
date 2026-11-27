@@ -100,6 +100,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         // The bench never builds images; keep the worker serial so it can't
         // compete with the benchmarked request path for runtime threads.
         database_max_connections: 10,
+        dashboard_max_concurrent: 10,
         build_concurrency: 1,
         build_push_rate_limit_per_minute: 600,
         // Same reasoning: no MAF runs compete with the benchmarked request path.
@@ -159,6 +160,7 @@ pub fn build_bench_config(database_url: String, mock_llm_base_url: &str) -> Conf
         otel_capture_content: false,
         coding_agent_otlp_endpoint: None,
         coding_agent_ingest: Default::default(),
+        evals: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         // Off for benches so they never reach out to a provider or to Portkey.

@@ -767,14 +767,27 @@ impl AuthService for AuthServiceImpl {
         let Ok(agent_uuid) = agent_id.parse::<uuid::Uuid>() else {
             return false;
         };
+        !self
+            .accessible_agents(identity, &[agent_uuid])
+            .await
+            .is_empty()
+    }
+
+    async fn accessible_agents(
+        &self,
+        identity: &Identity,
+        agent_ids: &[uuid::Uuid],
+    ) -> Vec<uuid::Uuid> {
+        if identity.is_superuser {
+            return agent_ids.to_vec();
+        }
         let Ok(user_uuid) = identity.user_id.parse::<uuid::Uuid>() else {
-            return false;
+            return Vec::new();
         };
 
-        sqlx::query_scalar::<_, bool>(&format!(
-            r#"SELECT EXISTS(
-                SELECT 1 FROM agents a
-                WHERE a.id = $2
+        sqlx::query_scalar::<_, uuid::Uuid>(&format!(
+            r#"SELECT a.id FROM agents a
+                WHERE a.id = ANY($2)
                   AND a.deleted_at IS NULL
                   AND (
                       a.owner_id = $1
@@ -787,15 +800,14 @@ impl AuthService for AuthServiceImpl {
                              OR (ag.grant_type = 'user'   AND ag.grantee_id = $1::text)
                             )
                       ))
-                  )
-            )"#,
+                  )"#,
             grants_reach = crate::sharing::grants_reach_sql("a"),
         ))
         .bind(user_uuid)
-        .bind(agent_uuid)
-        .fetch_one(&self.db)
+        .bind(agent_ids)
+        .fetch_all(&self.db)
         .await
-        .unwrap_or(false)
+        .unwrap_or_default()
     }
 }
 

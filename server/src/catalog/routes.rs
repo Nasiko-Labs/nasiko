@@ -52,17 +52,20 @@ pub(crate) struct RegisterCodingAgentResponse {
     created: bool,
 }
 
-fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
+pub(crate) fn coding_agent_spec(integration_id: &str) -> Option<(&'static str, &'static str)> {
     match integration_id {
         "claude" => Some(("claude-code", "Claude Code")),
         "opencode" => Some(("opencode", "OpenCode")),
         "codex" => Some(("codex", "Codex")),
         "cursor" => Some(("cursor", "Cursor")),
+        // The replay-eval runner's own identity: its calls may carry an attempt tag
+        // (`x-nasiko-eval-attempt`), which the router keeps for this integration only.
+        "eval" => Some(("nasiko-eval", "Nasiko Eval")),
         _ => None,
     }
 }
 
-fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
+pub(crate) fn coding_agent_name(username: &str, base_name: &str) -> Option<String> {
     let mut normalized = String::new();
     let mut pending_separator = false;
     for character in username.chars().flat_map(char::to_lowercase) {

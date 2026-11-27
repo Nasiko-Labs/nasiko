@@ -1224,13 +1224,8 @@ async fn accessible_agent_ids(state: &AppState, claims: &Claims) -> Option<Vec<u
             .fetch_all(&state.db)
             .await
             .unwrap_or_default();
-    let mut accessible = Vec::new();
-    for agent_id in agent_ids {
-        if crate::acl::can_access_agent(state, claims, agent_id).await {
-            accessible.push(agent_id);
-        }
-    }
-    Some(accessible)
+    let identity: nasiko_auth::Identity = claims.clone().into();
+    Some(state.auth.accessible_agents(&identity, &agent_ids).await)
 }
 
 // ---------------------------------------------------------------------------

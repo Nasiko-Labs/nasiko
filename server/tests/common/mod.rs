@@ -67,6 +67,9 @@ pub struct FakeRuntime {
     /// When set, `deploy` fails instead of succeeding — lets a test exercise
     /// a genuine (post-build) deploy failure without a real runtime.
     fail_deploy: std::sync::atomic::AtomicBool,
+    /// The `(code, message)` every `deploy` is refused with, as a layer that declines to run
+    /// workloads answers: not a failure of the deploy, so callers keep what they had.
+    decline_deploy: std::sync::Mutex<Option<(String, String)>>,
     /// When set, `build` fails instead of succeeding - a failed image build, which must leave
     /// the running agent untouched.
     fail_build: std::sync::atomic::AtomicBool,
@@ -165,6 +168,14 @@ impl FakeRuntime {
             .store(fail, std::sync::atomic::Ordering::SeqCst);
     }
 
+    /// Make every `deploy` answer `RuntimeError::Declined` with `code` and `message` until
+    /// cleared with `None`.
+    #[allow(dead_code)]
+    pub fn set_decline_deploy(&self, declined: Option<(&str, &str)>) {
+        *self.decline_deploy.lock().unwrap() =
+            declined.map(|(code, message)| (code.to_owned(), message.to_owned()));
+    }
+
     /// Make `build` calls fail instead of succeeding.
     #[allow(dead_code)]
     pub fn set_fail_build(&self, fail: bool) {
@@ -260,6 +271,9 @@ impl ContainerRuntime for FakeRuntime {
             return Err(nasiko_runtime::RuntimeError::BackendUnreachable(
                 "fake deploy failure (scripted by test)".into(),
             ));
+        }
+        if let Some((code, message)) = self.decline_deploy.lock().unwrap().clone() {
+            return Err(nasiko_runtime::RuntimeError::Declined { code, message });
         }
         let status = fake_status(&spec.container_id);
         self.deployed.lock().unwrap().push(spec.clone());
@@ -1001,6 +1015,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
             tempo_max_age_secs: u64::MAX / 4,
             ..Default::default()
         },
+        evals: Default::default(),
         tempo_url: "http://localhost:3200".into(),
         loki_url: "http://localhost:3100".into(),
         observability_enabled: false,
@@ -1126,6 +1141,7 @@ fn test_config(db_url: String, redis_url: String, s3_endpoint: String) -> Config
         // Serial builds in tests: several suites seed build_jobs rows and assert
         // on them, and a concurrent worker would make those assertions racy.
         database_max_connections: 10,
+        dashboard_max_concurrent: 10,
         build_concurrency: 1,
         build_push_rate_limit_per_minute: 600,
         // Serial MAF runs in tests, for the same reason as build_concurrency above.

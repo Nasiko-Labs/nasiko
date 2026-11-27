@@ -365,6 +365,7 @@ function Page({
                 custom={custom}
                 registry={registry}
                 superuser={superuser}
+                viewer={me?.sub}
                 onAdd={() => setCustomMode({ kind: 'create' })}
                 onEdit={(p) => setCustomMode({ kind: 'edit', provider: p })}
               />

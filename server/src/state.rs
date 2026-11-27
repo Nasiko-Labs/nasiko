@@ -58,6 +58,8 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     /// Rate limit, concurrency cap and counters of the coding-agent ingest route.
     pub coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard,
+    /// How many dashboard reads this server serves at once (`dashboard_limit`).
+    pub dashboard_limit: crate::dashboard_limit::DashboardLimit,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
     /// In-process LLM router for the server's own platform-key calls (titles, planner,
@@ -153,6 +155,11 @@ pub struct AppState {
     pub resource_stats: Arc<dyn nasiko_runtime::ResourceStatsProvider>,
     /// Shared GitHubService instance — None if GitHub OAuth is not configured.
     pub github_svc: Option<Arc<GitHubService>>,
+    /// Runs replay evals' containers. Refuses every job until the composition root installs a
+    /// backend (`evals::runner`).
+    pub batch_runner: Arc<crate::evals::runner::SwappableBatchRunner>,
+    /// Wakes the eval worker when a job is enqueued (`evals::jobs`).
+    pub eval_jobs: Arc<tokio::sync::Notify>,
     /// Wakes the build worker immediately when a new job is enqueued.
     pub build_tx: mpsc::Sender<()>,
     /// HITL persistence (`hitl_requests`) — detection, human-facing API, and the resume
@@ -587,6 +594,9 @@ impl AppState {
             flow_events,
             genai_metrics,
             coding_agent_ingest,
+            dashboard_limit: crate::dashboard_limit::DashboardLimit::new(
+                config.dashboard_max_concurrent,
+            ),
             config: Arc::new(config),
             routing_engine,
             llm_backend: routing_backend,
@@ -613,6 +623,10 @@ impl AppState {
             history_embedding_cache,
             observability,
             github_svc,
+            batch_runner: Arc::new(crate::evals::runner::SwappableBatchRunner::unavailable(
+                "no container backend runs batch jobs on this server (EVAL_ENABLED is off)",
+            )),
+            eval_jobs: Arc::new(tokio::sync::Notify::new()),
             build_tx,
             hitl_store,
             hitl_resume_tx,
@@ -805,6 +819,7 @@ impl AppState {
             tokio::spawn(crate::agents::rehost::retry_until_drained(self.clone()));
         }
 
+        crate::sessions::readiness::log_at_boot(self);
         // One replica seeds at a time: a replica that starts while another is seeding (a rolling
         // update starts the new pod beside the old) skips it rather than register and deploy the
         // same agents alongside it.
@@ -816,7 +831,6 @@ impl AppState {
                 // the line above registers (its deploy may still be in progress;
                 // a step finds its agent's endpoint when it runs).
                 crate::seed_workflows::seed_workflows_if_configured(&state).await;
-                crate::seed::seed_harness_agents_if_enabled(&state).await;
                 crate::seed::seed_toolkits_if_configured(&state).await;
                 // After both: it pairs the seed agents' rows with the registered toolkits.
                 crate::seed::grant_toolkits_to_seed_agents(&state).await;

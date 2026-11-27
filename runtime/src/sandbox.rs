@@ -2,8 +2,8 @@
 //!
 //! A `ContainerRuntime` deploys a long-lived service per agent. A [`SandboxProvider`] hands out
 //! a sandbox that exists only while it is serving: acquired on demand, suspended when idle,
-//! resumed by the next request. Backends (Docker, bare pod, shared runtime pods, per-user harness
-//! agents) implement the trait; this module holds only the trait and its types.
+//! resumed by the next request. Backends (Docker, bare pod, per-user harness agents) implement
+//! the trait; this module holds only the trait and its types.
 
 use std::collections::HashMap;
 
@@ -20,8 +20,6 @@ pub enum SandboxProviderKind {
     Docker,
     /// The bare Kubernetes pod backend.
     Pod,
-    /// Shared runtime pods: many sandboxes packed onto replicas of one StatefulSet.
-    SharedPod,
     /// Each user's own harness agent: every session of one user and harness is a process in
     /// that agent's workload.
     HarnessAgent,
@@ -35,7 +33,6 @@ impl std::fmt::Display for SandboxProviderKind {
         f.write_str(match self {
             Self::Docker => "docker",
             Self::Pod => "pod",
-            Self::SharedPod => "shared-pod",
             Self::HarnessAgent => "harness-agent",
             Self::Fake => "fake",
         })
@@ -51,7 +48,6 @@ impl std::str::FromStr for SandboxProviderKind {
         match s {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
-            "shared-pod" => Ok(Self::SharedPod),
             "harness-agent" => Ok(Self::HarnessAgent),
             "fake" => Ok(Self::Fake),
             other => Err(RuntimeError::Internal(format!(
@@ -444,13 +440,13 @@ pub trait SandboxProvider: Send + Sync {
     /// of its key running on the env of that acquire (and of the attach that follows) rather
     /// than on the env it was created with. True for a backend that starts a resumed sandbox
     /// afresh from the resuming spec (the bare pod) or whose sandbox takes its settings from the
-    /// caller at attach (shared runtime pods, configured over the shim's handshake); false for
+    /// caller at attach (a harness agent's sessions, configured over the shim's handshake); false for
     /// one that keeps the object it created (Docker keeps the container and its env), and for a
     /// sandbox the next `acquire` of its key would not resume at all.
     ///
     /// A caller that must change a sandbox's env suspends it where this holds and releases it
-    /// only where it does not, because `release` may take the sandbox's files with it (shared
-    /// runtime pods purge the session's directory). An error means the provider could not tell
+    /// only where it does not, because `release` may take the sandbox's files with it (a harness
+    /// agent purges the session's directory). An error means the provider could not tell
     /// (a routing lookup failed); the caller then neither suspends nor releases on a guess.
     ///
     /// RUN-1: a decorator wrapping a provider MUST forward this method to whichever provider
@@ -476,7 +472,6 @@ mod tests {
         match k {
             SandboxProviderKind::Docker
             | SandboxProviderKind::Pod
-            | SandboxProviderKind::SharedPod
             | SandboxProviderKind::HarnessAgent
             | SandboxProviderKind::Fake => (),
         }
@@ -487,15 +482,6 @@ mod tests {
         for kind in ALL_KINDS {
             kind_listing_is_exhaustive(kind);
         }
-    }
-
-    #[test]
-    fn shared_pod_kind_displays_and_parses_as_shared_pod() {
-        assert_eq!(SandboxProviderKind::SharedPod.to_string(), "shared-pod");
-        assert_eq!(
-            "shared-pod".parse::<SandboxProviderKind>().unwrap(),
-            SandboxProviderKind::SharedPod
-        );
     }
 
     #[test]
@@ -544,10 +530,9 @@ mod tests {
         );
     }
 
-    const ALL_KINDS: [SandboxProviderKind; 5] = [
+    const ALL_KINDS: [SandboxProviderKind; 4] = [
         SandboxProviderKind::Docker,
         SandboxProviderKind::Pod,
-        SandboxProviderKind::SharedPod,
         SandboxProviderKind::HarnessAgent,
         SandboxProviderKind::Fake,
     ];
@@ -710,7 +695,6 @@ mod tests {
                 kind
             );
         }
-        assert_eq!(SandboxProviderKind::SharedPod.to_string(), "shared-pod");
         assert_eq!(
             SandboxProviderKind::HarnessAgent.to_string(),
             "harness-agent"

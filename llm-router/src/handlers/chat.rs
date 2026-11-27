@@ -12,8 +12,8 @@ use std::time::Instant;
 use axum::body::Body;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
-use axum::http::header::{AUTHORIZATION, CACHE_CONTROL, CONTENT_TYPE};
-use axum::http::{HeaderMap, HeaderName};
+use axum::http::HeaderMap;
+use axum::http::header::{CACHE_CONTROL, CONTENT_TYPE};
 use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use futures::StreamExt;
@@ -22,13 +22,11 @@ use tracing::Instrument;
 
 use futures::stream::BoxStream;
 
-use nasiko_session_token::{
-    SessionClaims, SessionTokenError, parse_algorithm, verify_session_token,
-};
+use nasiko_session_token::SessionClaims;
 
 use super::auth_layer::rejected_body;
 use crate::LlmRouterCtx;
-use crate::auth::{EvalScope, verify_agent_token};
+use crate::auth::{EvalScope, caller_credential, verify_agent_token, verify_session_credential};
 use crate::error::GatewayError;
 use crate::inbound::{ChatStreamRenderer, InboundFormat, inbound_for};
 use crate::ir::{ChatChunk, Usage};
@@ -139,12 +137,6 @@ pub enum AuthedCaller {
     Session(SessionClaims),
 }
 
-const CREDENTIAL_HEADERS: [HeaderName; 3] = [
-    AUTHORIZATION,
-    HeaderName::from_static("x-api-key"),
-    HeaderName::from_static("x-goog-api-key"),
-];
-
 /// Authenticate the caller, preferring a coding-agent session token and falling
 /// back to the agent-identity token.
 ///
@@ -156,28 +148,9 @@ pub(crate) async fn authenticate_caller(
     store: &dyn RegistryStore,
     headers: &HeaderMap,
 ) -> Result<AuthedCaller, GatewayError> {
-    let authz = CREDENTIAL_HEADERS
-        .into_iter()
-        .find_map(|name| headers.get(name).and_then(|value| value.to_str().ok()));
-
-    if !ctx.cfg.agent_jwt_secret.is_empty()
-        && let Some(raw) = authz
-    {
-        let algorithm = parse_algorithm(&ctx.cfg.agent_jwt_algorithm);
-        match verify_session_token(raw, &ctx.cfg.agent_jwt_secret, algorithm) {
-            Ok(claims) => {
-                if is_session_token_revoked(&ctx.db, &claims.jti).await? {
-                    return Err(GatewayError::Forbidden("session token revoked".into()));
-                }
-                return Ok(AuthedCaller::Session(claims));
-            }
-            // Not one of ours → fall through to the agent-identity token.
-            Err(SessionTokenError::NotSessionToken) => {}
-            Err(SessionTokenError::Expired) => return Err(GatewayError::TokenExpired),
-            // SecretNotConfigured / MissingToken can't occur here (secret set,
-            // token present); fall back rather than hard-fail on anything else.
-            Err(_) => {}
-        }
+    let authz = caller_credential(headers);
+    if let Some(claims) = verify_session_credential(authz, &ctx.cfg, &ctx.db).await? {
+        return Ok(AuthedCaller::Session(claims));
     }
 
     let (agent_id, owner_id, eval) = verify_agent_identity_scoped(ctx, store, authz).await?;
@@ -250,21 +223,6 @@ fn is_revoked(issued_at: Option<i64>, revoked_at: Option<chrono::DateTime<chrono
         return false;
     };
     issued_at.is_none_or(|issued| issued < revoked_at.timestamp())
-}
-
-/// True if this session token's `jti` has been revoked. Fails closed (a store
-/// error denies the request) rather than letting a possibly-revoked token through.
-async fn is_session_token_revoked(db: &sqlx::PgPool, jti: &str) -> Result<bool, GatewayError> {
-    let found: Option<i32> =
-        sqlx::query_scalar("SELECT 1 FROM revoked_session_tokens WHERE jti = $1")
-            .bind(jti)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| {
-                tracing::error!(error = %e, "llm-router: revocation check failed — failing closed");
-                GatewayError::Forbidden("identity store unavailable".into())
-            })?;
-    Ok(found.is_some())
 }
 
 /// The owner of the agent a session token names — needed for config/secret
@@ -1042,9 +1000,10 @@ pub(crate) async fn resolve_routed_request_scoped(
                 s.user_id.clone(),
                 Some(attributed.source.into()),
                 signals.query,
-                // A session token's agent is the user's own coding-agent integration or a
-                // platform harness; neither is an agent shared through access settings, so it
-                // keeps resolving on the agent owner.
+                // A session token's agent is the user's own: their coding-agent integration or
+                // their harness agent (a session opened before users had one names the platform's
+                // harness agent). None is shared through access settings, so it keeps resolving
+                // on the agent owner, which for the user's own agent is the user.
                 None,
             )
         } else if runs_outside_flows(store, &agent_id).await? {
@@ -1549,6 +1508,7 @@ mod tests {
     use crate::resolver::{AgentConfigResult, ConfigCache, LLMConfig};
     use async_trait::async_trait;
     use axum::http::StatusCode;
+    use axum::http::header::AUTHORIZATION;
     use jsonwebtoken::Algorithm;
     use nasiko_secrets::SecretsCrypto;
     use serde_json::json;
@@ -1846,6 +1806,7 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
+            _: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
@@ -1901,8 +1862,9 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             name: &str,
+            user: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            self.inner.fetch_custom_provider(name).await
+            self.inner.fetch_custom_provider(name, user).await
         }
         async fn fetch_org_embedding_default(
             &self,
@@ -2849,8 +2811,9 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             label: &str,
+            user: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            self.0.fetch_custom_provider(label).await
+            self.0.fetch_custom_provider(label, user).await
         }
         async fn fetch_org_embedding_default(
             &self,
@@ -2973,6 +2936,7 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
+            _: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
@@ -3415,6 +3379,7 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
+            _: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(None)
         }
@@ -3620,8 +3585,9 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             label: &str,
+            user: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
-            self.0.fetch_custom_provider(label).await
+            self.0.fetch_custom_provider(label, user).await
         }
         async fn fetch_org_embedding_default(
             &self,
@@ -4159,6 +4125,7 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
+            _: Option<Uuid>,
         ) -> Result<Option<crate::resolver::CustomProvider>, sqlx::Error> {
             Ok(Some(self.custom.clone()))
         }
@@ -4619,6 +4586,7 @@ mod tests {
                 dialect: crate::providers::ProviderDialect::BedrockConverse,
                 api_key: "bedrock-key".into(),
                 default_model: None,
+                public_only: false,
             },
         };
         chat_core(

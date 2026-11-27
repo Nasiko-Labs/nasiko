@@ -22,6 +22,7 @@ use nasiko_runtime::RuntimeError;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
+use crate::agent_wake::WakeRefusal;
 use crate::agent_wake::parked::WorkloadDeployer;
 use crate::state::AppState;
 
@@ -133,8 +134,9 @@ pub async fn deploy(
     Ok(Deployed { url, image })
 }
 
-/// How a deploy for the wake went: `Err` carries the message its caller is refused with.
-type DeployOutcome = Result<(), String>;
+/// How a deploy for the wake went: `Err` carries the message its caller is refused with, and
+/// whether the runtime declined the deploy.
+type DeployOutcome = Result<(), WakeRefusal>;
 
 /// What a caller is told when its agent's workload could not be deployed; the cause is logged.
 const COULD_NOT_DEPLOY: &str = "the agent's workload could not be deployed";
@@ -161,7 +163,7 @@ pub fn deployer() -> (CatalogDeployer, DeployRequests) {
 
 #[async_trait]
 impl WorkloadDeployer for CatalogDeployer {
-    async fn deploy(&self, agent_id: Uuid) -> Result<(), String> {
+    async fn deploy(&self, agent_id: Uuid) -> Result<(), WakeRefusal> {
         let (reply, answer) = oneshot::channel();
         self.requests
             .send(DeployRequest { agent_id, reply })
@@ -206,7 +208,7 @@ where
         tokio::spawn(async move {
             let outcome = deploying.await.unwrap_or_else(|e| {
                 tracing::error!(%agent_id, error = %e, "agent wake: the deploy of a parked agent's missing workload panicked");
-                Err(COULD_NOT_DEPLOY.to_owned())
+                Err(COULD_NOT_DEPLOY.to_owned().into())
             });
             let waiting = in_flight
                 .lock()
@@ -257,7 +259,7 @@ async fn deploy_missing_workload(state: &AppState, agent_id: Uuid) -> DeployOutc
     }
     let agent = match load(&state.db, agent_id).await {
         Ok(Some(agent)) => agent,
-        Ok(None) => return Err("the agent no longer exists".to_owned()),
+        Ok(None) => return Err("the agent no longer exists".to_owned().into()),
         Err(e) => return Err(db_error(e)),
     };
     let deployed = deploy(state, &agent)
@@ -292,9 +294,16 @@ async fn deploy_lock(state: &AppState, agent_id: Uuid) -> sqlx::Result<sqlx::PgC
     Ok(conn)
 }
 
-fn logged(agent_id: Uuid, e: &CatalogDeployError) -> String {
+fn logged(agent_id: Uuid, e: &CatalogDeployError) -> WakeRefusal {
     tracing::warn!(%agent_id, error = %e, "agent wake: could not deploy a parked agent's missing workload");
-    COULD_NOT_DEPLOY.to_owned()
+    match e {
+        // The refusing layer worded this for the caller.
+        CatalogDeployError::Runtime(RuntimeError::Declined { message, .. }) => WakeRefusal {
+            message: message.clone(),
+            declined: true,
+        },
+        _ => COULD_NOT_DEPLOY.to_owned().into(),
+    }
 }
 
 #[cfg(test)]
@@ -309,6 +318,33 @@ mod tests {
             owner_id: Uuid::nil(),
             writable: false,
             writable_path: None,
+        }
+    }
+
+    #[test]
+    fn a_deploy_the_runtime_declined_is_reported_in_its_own_words_and_any_other_failure_generically()
+     {
+        let declined = CatalogDeployError::Runtime(RuntimeError::Declined {
+            code: "plan_refused".into(),
+            message: "This workspace cannot start more agents.".into(),
+        });
+        assert_eq!(
+            logged(Uuid::nil(), &declined),
+            WakeRefusal {
+                message: "This workspace cannot start more agents.".into(),
+                declined: true,
+            }
+        );
+        for other in [
+            CatalogDeployError::NoImage,
+            CatalogDeployError::Db(sqlx::Error::PoolClosed),
+            CatalogDeployError::Runtime(RuntimeError::Internal("boom".into())),
+        ] {
+            assert_eq!(
+                logged(Uuid::nil(), &other),
+                COULD_NOT_DEPLOY.to_owned().into(),
+                "{other}"
+            );
         }
     }
 
@@ -408,7 +444,7 @@ mod tests {
 
         assert_eq!(
             WorkloadDeployer::deploy(&deployer, agent).await,
-            Err(COULD_NOT_DEPLOY.to_owned())
+            Err(COULD_NOT_DEPLOY.to_owned().into())
         );
         assert_eq!(WorkloadDeployer::deploy(&deployer, agent).await, Ok(()));
 

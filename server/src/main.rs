@@ -150,6 +150,14 @@ async fn main() {
     )
     .await;
     state.init().await;
+    // Replay evals run their containers on the local daemon, when enabled.
+    if state.config.evals.enabled {
+        match nasiko_server::evals::runner::connect_docker_runner(&state.config).await {
+            Ok(runner) => state.batch_runner.install(runner),
+            Err(e) => tracing::error!(error = %e, "evals: no Docker daemon for eval jobs"),
+        }
+    }
+    nasiko_server::evals::spawn_worker(&state);
     // Clear stale coding-agent session leases left by a prior crash, then keep
     // reconciling session rows against live containers in the background.
     nasiko_server::coding::spawn_reconciler(state.clone());

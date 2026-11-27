@@ -3,8 +3,10 @@ use std::collections::BTreeMap;
 use nasiko_utils::{env_bool, env_or, env_parse, require_all, required_env};
 
 mod coding_agent_ingest;
+mod evals;
 mod seed_agents;
 pub use coding_agent_ingest::CodingAgentIngestConfig;
+pub use evals::EvalsConfig;
 pub use seed_agents::{SeedAgentSettings, parse_seed_agent_settings};
 
 /// Model for a platform task call (selector, titles, capability generation, MCP
@@ -226,6 +228,8 @@ pub struct Config {
     pub coding_agent_otlp_endpoint: Option<String>,
     /// Rate, concurrency and Tempo-age limits on coding-agent telemetry ingest.
     pub coding_agent_ingest: CodingAgentIngestConfig,
+    /// Replay evals run by this server (`EVAL_*`).
+    pub evals: EvalsConfig,
     pub tempo_url: String,
     pub loki_url: String,
     /// Whether the Tempo/Loki observability backend is enabled — the SINGLE
@@ -297,11 +301,12 @@ pub struct Config {
     /// satisfied (see [`Config::validate_session_lifecycle`]).
     pub coding_agent_idle_ttl_secs: i64,
     /// Where coding-agent sandboxes run, from `SANDBOX_PROVIDER`: `docker`
-    /// (default), `pod`, `shared-pod` or `harness-agent`. Docker is the OSS default and
+    /// (default), `pod` or `harness-agent`. Docker is the OSS default and
     /// needs no cluster; the others are implemented by enterprise crates and
     /// selected at cluster create. An unknown value fails startup rather than
     /// silently falling back, because running sessions on the wrong provider
-    /// changes isolation and cost.
+    /// changes isolation and cost. So does a retired one (`shared-pod`), with a
+    /// message naming its replacement.
     pub sandbox_provider: SandboxProviderSetting,
     /// Whether users can open coding sessions on this server, from `HARNESS_SESSIONS_ENABLED`
     /// (**default `false`**). Off, startup creates no harness agents and hides (soft-deletes)
@@ -612,6 +617,12 @@ pub struct Config {
     /// so at 50 turns a second the pool carries about 2,500 a second. Keep it under Postgres's
     /// own `max_connections` (100 by default), less what other clients use.
     pub database_max_connections: u32,
+    /// Dashboard reads (the Overview, the spend pages, the session list) one server serves at
+    /// once; the rest wait up to a few seconds for a turn and are then answered `503`.
+    /// DASHBOARD_MAX_CONCURRENT, default an eighth of `database_max_connections` (at least 1),
+    /// clamped to 1..=500. One such read holds up to six connections at a time, so a burst of
+    /// them can no longer take the pool from chat (`dashboard_limit`).
+    pub dashboard_max_concurrent: u32,
     /// Number of agent/connector image builds the build worker runs
     /// concurrently. BUILD_CONCURRENCY, default 4. Clamped to 1..=256: each
     /// in-flight build is a `docker build` on this host (OSS) or a build on the
@@ -687,7 +698,8 @@ pub struct Config {
     /// since users without a key would silently run on that shared one.
     /// Holds API keys — deliver it as a secret. Example:
     /// `[{"name":"firecrawl","url":"https://mcp.firecrawl.dev/v2/mcp","auth_type":"bearer"},{"name":"anakin","url":"https://mcp.anakin.io/mcp","auth_type":"oauth2"}]`
-    /// (both per-user; the Helm chart seeds exactly these by default).
+    /// (both per-user; the Helm chart's default seeds these plus Tavily, also
+    /// `oauth2`).
     pub seed_connectors: String,
     /// MCP tool search mode: `semantic` (embedding cosine, default), `keyword`
     /// (BM25 fallback), or `none` (eager fan-out, no search — rollback).
@@ -813,6 +825,7 @@ impl Config {
         )
         .map_err(anyhow::Error::msg)?;
         let build_concurrency = env_parse("BUILD_CONCURRENCY", 4).clamp(1, 256);
+        let database_max_connections = env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500);
         let config = Self {
             bind: env_or("CP_BIND", "0.0.0.0:8080"),
             shutdown_drain_delay_secs: env_parse("SERVER_DRAIN_DELAY_SECS", 5).clamp(0, 60),
@@ -917,6 +930,7 @@ impl Config {
                 .map(|value| value.trim_end_matches('/').to_owned())
                 .filter(|value| !value.is_empty()),
             coding_agent_ingest: CodingAgentIngestConfig::from_env(),
+            evals: EvalsConfig::from_env(),
             tempo_url: env_or("TEMPO_URL", ""),
             loki_url: env_or("LOKI_URL", ""),
             // Enabled only when BOTH backends are explicitly configured; a
@@ -1101,7 +1115,12 @@ impl Config {
             mcp_servers_network: env_or("MCP_SERVERS_NETWORK", "nasiko-mcp-servers-net"),
             mcp_upload_max_replicas: env_parse("MCP_UPLOAD_MAX_REPLICAS", 1),
             agent_max_replicas: env_parse("AGENT_MAX_REPLICAS", 1),
-            database_max_connections: env_parse("DATABASE_MAX_CONNECTIONS", 50).clamp(1, 500),
+            database_max_connections,
+            dashboard_max_concurrent: env_parse(
+                "DASHBOARD_MAX_CONCURRENT",
+                (database_max_connections / 8).max(1),
+            )
+            .clamp(1, 500),
             build_concurrency,
             build_push_rate_limit_per_minute: env_parse(
                 "BUILD_PUSH_RATE_LIMIT_PER_MINUTE",
@@ -1303,10 +1322,13 @@ pub fn openai_base_url_without_v1(base_url: &str) -> &str {
 pub enum SandboxProviderSetting {
     Docker,
     Pod,
-    SharedPod,
     /// Each user's own harness agent runs every session of that user and harness.
     HarnessAgent,
 }
+
+/// Providers that were once accepted and are no longer: an install still naming one is refused
+/// with the replacement, not with the generic list of allowed values.
+const RETIRED_SANDBOX_PROVIDERS: [&str; 2] = ["shared-pod", "substrate"];
 
 impl std::str::FromStr for SandboxProviderSetting {
     type Err = String;
@@ -1315,10 +1337,13 @@ impl std::str::FromStr for SandboxProviderSetting {
         match raw.trim().to_ascii_lowercase().as_str() {
             "docker" => Ok(Self::Docker),
             "pod" => Ok(Self::Pod),
-            "shared-pod" => Ok(Self::SharedPod),
             "harness-agent" => Ok(Self::HarnessAgent),
+            retired if RETIRED_SANDBOX_PROVIDERS.contains(&retired) => Err(format!(
+                "SANDBOX_PROVIDER {raw:?} was retired: set harness-agent (each user's sessions in \
+                 their own harness agent) or pod (a pod per session)"
+            )),
             _ => Err(format!(
-                "SANDBOX_PROVIDER must be one of docker, pod, shared-pod, harness-agent, got {raw:?}"
+                "SANDBOX_PROVIDER must be one of docker, pod, harness-agent, got {raw:?}"
             )),
         }
     }
@@ -1579,8 +1604,7 @@ mod tests {
         for (raw, want) in [
             ("docker", SandboxProviderSetting::Docker),
             ("Pod", SandboxProviderSetting::Pod),
-            (" Shared-Pod ", SandboxProviderSetting::SharedPod),
-            ("harness-agent", SandboxProviderSetting::HarnessAgent),
+            (" Harness-Agent ", SandboxProviderSetting::HarnessAgent),
         ] {
             assert_eq!(raw.parse::<SandboxProviderSetting>(), Ok(want));
         }
@@ -1590,10 +1614,16 @@ mod tests {
     fn unknown_sandbox_provider_names_key_and_allowed_values() {
         let err = "firecracker".parse::<SandboxProviderSetting>().unwrap_err();
         assert!(err.contains("SANDBOX_PROVIDER"), "{err}");
-        assert!(
-            err.contains("docker, pod, shared-pod, harness-agent"),
-            "{err}"
-        );
+        assert!(err.contains("docker, pod, harness-agent"), "{err}");
+    }
+
+    #[test]
+    fn a_retired_sandbox_provider_names_its_replacement() {
+        for retired in ["shared-pod", " Shared-Pod ", "substrate"] {
+            let err = retired.parse::<SandboxProviderSetting>().unwrap_err();
+            assert!(err.contains("was retired"), "{err}");
+            assert!(err.contains("harness-agent"), "{err}");
+        }
     }
 
     #[test]

@@ -33,6 +33,7 @@ nasiko-flow.workspace = true
 nasiko-hitl.workspace = true
 nasiko-mcp-gateway.workspace = true
 nasiko-secrets.workspace = true
+nasiko-evals = { workspace = true }
 nasiko-github = { workspace = true }
 nasiko-oci.workspace = true
 nasiko-pricing.workspace = true

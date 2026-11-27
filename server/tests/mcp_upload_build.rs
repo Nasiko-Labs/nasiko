@@ -20,7 +20,10 @@ use std::sync::Arc;
 use nasiko_mcp_gateway::provider::GenericMcpProvider;
 use nasiko_mcp_gateway::types::{MCPServerConfig, ServerType};
 use nasiko_runtime::{ContainerId, ContainerRuntime, DockerRuntime, DockerRuntimeConfig};
-use nasiko_server::mcp::build::{BuildSource, execute_mcp_server_build};
+use nasiko_server::mcp::build::{
+    BuildSource, UploadedConnectorDeploySettings, deploy_and_verify_uploaded_connector,
+    execute_mcp_server_build,
+};
 use serde_json::{Value, json};
 use serial_test::serial;
 use uuid::Uuid;
@@ -408,5 +411,88 @@ async fn corrupt_upload_fails_cleanly_with_no_orphaned_container() {
         "the real build error must be preserved, not just a deletion side effect"
     );
 
+    server.cleanup().await;
+}
+
+/// The deploy of an uploaded connector's image, over `server`'s own fake runtime; returns whether
+/// it deployed. The failure paths under test come before any readiness check.
+async fn deploy_uploaded_connector(
+    server: &common::TestServer,
+    owner_id: Uuid,
+    name: &str,
+) -> (bool, Uuid) {
+    let (connector_id, build_id) = insert_pending_upload(&server.db, owner_id, name).await;
+    let settings = UploadedConnectorDeploySettings {
+        runtime: server.runtime.clone(),
+        db: server.db.clone(),
+        http_client: server.state.http_client.clone(),
+        mcp_servers_network: server.state.config.mcp_servers_network.clone(),
+        upload_default_port: server.state.config.mcp_upload_default_port,
+        agent_runtime: server.state.config.agent_runtime.clone(),
+        agent_image_registry: server.state.config.agent_image_registry.clone(),
+        max_replicas: server.state.config.mcp_upload_max_replicas,
+        llm: server.state.mcp.llm.clone(),
+        description_model: server.state.config.mcp_description_model.clone(),
+    };
+    let deployed = deploy_and_verify_uploaded_connector(
+        &settings,
+        connector_id,
+        name.to_owned(),
+        format!("mcp-fake-{}:v1", Uuid::new_v4().simple()),
+        HashMap::new(),
+        build_id,
+    )
+    .await;
+    (deployed, build_id)
+}
+
+/// The reason the upload's status row (the one that survives the connector's deletion) gives.
+async fn upload_error(server: &common::TestServer, build_id: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT error_message FROM mcp_upload_status WHERE upload_id = $1")
+        .bind(build_id.to_string())
+        .fetch_one(&server.db)
+        .await
+        .unwrap()
+}
+
+/// A deploy the runtime declines is reported in the words of the layer that declined it, which it
+/// worded for the user, not as a failed deploy of the runtime.
+#[tokio::test]
+#[serial]
+async fn a_declined_connector_deploy_stores_the_declining_layers_message() {
+    const MESSAGE: &str = "This connector cannot be started right now. Try again later.";
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_id: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+    server
+        .runtime
+        .set_decline_deploy(Some(("start_refused", MESSAGE)));
+
+    let (deployed, build_id) =
+        deploy_uploaded_connector(&server, owner_id, "declined-connector").await;
+
+    assert!(!deployed);
+    assert_eq!(
+        upload_error(&server, build_id).await.as_deref(),
+        Some(MESSAGE)
+    );
+    server.cleanup().await;
+}
+
+/// The contrast: any other deploy failure keeps the runtime's own error text.
+#[tokio::test]
+#[serial]
+async fn a_failed_connector_deploy_stores_the_runtimes_error() {
+    let server = common::TestServer::start().await;
+    let admin = init_admin(&server).await;
+    let owner_id: Uuid = admin["user_id"].as_str().unwrap().parse().unwrap();
+    server.runtime.set_fail_deploy(true);
+
+    let (deployed, build_id) =
+        deploy_uploaded_connector(&server, owner_id, "failing-connector").await;
+
+    assert!(!deployed);
+    let stored = upload_error(&server, build_id).await.unwrap();
+    assert!(stored.starts_with("deploy: "), "{stored}");
     server.cleanup().await;
 }

@@ -106,39 +106,11 @@ pub(super) async fn agent_name_fully_accessible(
     true
 }
 
-/// Does this caller own the named agent (or, if several agents share the
-/// name across editions/soft-deletes, own every one of them)?
+/// Whether no one else has, or had, an agent by any name the caller's live agents bear. Spend rows
+/// are matched by agent name, and names are unique per owner only, so a "my agents" read that
+/// counts every caller's calls is safe only while this holds.
 ///
-/// Used to exempt an owner's own-agent read — Home's row for it, its Hub
-/// page, a `/tokenops` read filtered to it — from the default "your own
-/// calls only" scope ([`FinopsUserScope`](super::handler::FinopsUserScope)):
-/// owning the agent is its own reason to see its full usage, same as being
-/// an admin is for everything else (bug found 2026-10-22 — a public agent's
-/// owner couldn't see how it was actually used, only their own calls to it).
-///
-/// Deleted agents count: spend rows are keyed by agent name and outlive the
-/// agent, so a name another owner once used still matches their spend.
-pub(super) async fn agent_name_owned_by_caller(
-    state: &AppState,
-    claims: &Claims,
-    agent_name: &str,
-) -> bool {
-    let Ok(caller_id) = claims.user_uuid() else {
-        return false;
-    };
-    let Ok(owner_ids) =
-        sqlx::query_scalar::<_, Option<Uuid>>("SELECT owner_id FROM agents WHERE name = $1")
-            .bind(agent_name)
-            .fetch_all(&state.db)
-            .await
-    else {
-        return false;
-    };
-    !owner_ids.is_empty() && owner_ids.iter().all(|o| *o == Some(caller_id))
-}
-
-/// [`agent_name_owned_by_caller`] for every name the caller's live agents bear: whether no
-/// one else has, or had, an agent by any of them.
+/// Deleted agents count: spend rows are keyed by agent name and outlive the agent.
 pub(super) async fn agent_names_owned_by_caller(state: &AppState, claims: &Claims) -> bool {
     let Ok(caller_id) = claims.user_uuid() else {
         return false;
@@ -152,29 +124,6 @@ pub(super) async fn agent_names_owned_by_caller(state: &AppState, claims: &Claim
     .fetch_one(&state.db)
     .await
     .unwrap_or(false)
-}
-
-/// Same as [`agent_name_owned_by_caller`], for a caller that already resolved the agent's UUID
-/// (`/finops/savings`'s own `resolve_agent_uuid`, never a name).
-pub(super) async fn agent_id_owned_by_caller(
-    state: &AppState,
-    claims: &Claims,
-    agent_id: Uuid,
-) -> bool {
-    let Ok(caller_id) = claims.user_uuid() else {
-        return false;
-    };
-    let owner_id: Option<Uuid> = match sqlx::query_scalar::<_, Option<Uuid>>(
-        "SELECT owner_id FROM agents WHERE id = $1 AND deleted_at IS NULL",
-    )
-    .bind(agent_id)
-    .fetch_optional(&state.db)
-    .await
-    {
-        Ok(Some(o)) => o,
-        _ => None,
-    };
-    owner_id == Some(caller_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -201,7 +150,8 @@ pub fn router() -> Router<AppState> {
 /// reporting endpoints; the cost belongs in Tempo query bounds, not in a
 /// request counter that breaks the UI long before it protects anything.
 pub fn protected_router(state: AppState) -> Router<AppState> {
-    let finops_routes = Router::new()
+    // The dashboard reads, capped per server (`dashboard_limit`).
+    let dashboard_routes = Router::new()
         .route("/finops/dashboard", get(handler::get_finops_dashboard))
         .route("/finops/savings", get(handler::get_finops_savings))
         .route("/finops/model-routing", get(handler::get_model_routing))
@@ -214,7 +164,6 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
             "/finops/context-savings/top-requests",
             get(handler::get_context_savings_top_requests),
         )
-        .route("/finops/insights", post(handler::get_finops_insights))
         .route("/finops/agent-hours", get(handler::get_agent_hours))
         .route(
             "/finops/spend-timeseries",
@@ -231,10 +180,16 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
         .route(
             "/finops/attributions",
             get(handler::get_finops_attributions),
-        );
+        )
+        .route("/session/list", get(handler::get_all_sessions))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::dashboard_limit::limit,
+        ))
+        // After the cap: it waits on a model call, and would hold a dashboard slot that long.
+        .route("/finops/insights", post(handler::get_finops_insights));
 
     Router::new()
-        .route("/session/list", get(handler::get_all_sessions))
         .route("/session/ensure", post(handler::ensure_session))
         .route("/session/{session_id}", get(handler::get_session_details))
         .route(
@@ -256,7 +211,7 @@ pub fn protected_router(state: AppState) -> Router<AppState> {
             "/coding-agents/usage",
             get(super::coding_agents::get_coding_agent_usage),
         )
-        .merge(finops_routes)
+        .merge(dashboard_routes)
         // Owner-scoped: authenticated, then narrowed by the agent ACL inside the
         // handler. Deliberately NOT admin-gated — an agent's owner may see their
         // own agent's usage. Distinct path from `/agent/{id}/stats`, which is

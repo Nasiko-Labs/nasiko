@@ -2939,6 +2939,7 @@ mod tests {
         let endpoint = crate::resolver::CustomEndpoint {
             base_url: server.url(),
             dialect: crate::providers::dialect::ProviderDialect::BedrockConverse,
+            public_only: false,
         };
         let provider = crate::providers::provider_for(
             "aws-bedrock",

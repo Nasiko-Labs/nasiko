@@ -34,8 +34,10 @@ mod coding_agent_usage;
 pub mod composio_settings;
 pub mod context_selection;
 pub mod current_time;
+pub mod dashboard_limit;
 pub mod embedding_change;
 pub mod error_reporting;
+pub mod evals;
 pub mod flow_sweeper;
 pub mod flows;
 pub mod github;
@@ -396,10 +398,11 @@ where
         .merge(context_selection::router())
         .merge(onboarding::router())
         .merge(assessment::router(assessment_limiter))
-        .merge(overview::router())
+        .merge(overview::router(state.clone()))
         .merge(coding_agent_onboarding::router())
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
+        .merge(evals::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())
@@ -544,6 +547,12 @@ where
     // Both sync loops below read the router's effective config, resolved once here
     // rather than re-read from env per loop.
     let llm_cfg = llm_ctx.cfg.clone();
+    // A member's custom provider is a URL they typed: the router reaches it, catalog sync
+    // included, only through a client that refuses private addresses at connect time.
+    nasiko_llm_router::install_public_only_client(
+        nasiko_mcp_gateway::net::guarded_client_builder(),
+        std::time::Duration::from_secs(llm_cfg.provider_timeout_secs),
+    );
     let llm_routes = nasiko_llm_router::router(llm_ctx);
     // Keep the provider model catalog (tier-routing candidates) fresh from each
     // provider's GET /models. Runs immediately, then every 24 h; fail-open.

@@ -31,6 +31,7 @@ members = [
     "tool-compact",
     "mcp-gateway",
     "cli",
+    "evals",
     "github",
     "bench",
     "bench-support",
@@ -71,6 +72,7 @@ nasiko-coding-policy = { path = "coding-policy" }
 nasiko-oci = { path = "oci" }
 nasiko-llm-router = { path = "llm-router" }
 nasiko-tool-compact = { path = "tool-compact" }
+nasiko-evals = { path = "evals" }
 nasiko-bench-support = { path = "bench-support" }
 
 # ─── Testing ────────────────────────────────────────────────────────────────
@@ -96,6 +98,8 @@ serde_json = { version = "1", features = ["raw_value"] }
 
 # ─── Text / patterns ────────────────────────────────────────────────────────
 regex = "1"
+# Unified diffs written and applied in process, for replay evals (the server has no git CLI).
+diffy = "0.4"
 
 # ─── Database & state ───────────────────────────────────────────────────────
 sqlx = { version = "0.8", features = ["runtime-tokio", "postgres", "chrono", "uuid", "rust_decimal", "migrate", "json", "tls-rustls"] }
@@ -221,13 +225,6 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # Official Rust SDK for ACP (Agent Client Protocol). Pinned to the v1 schema;
 # `unstable_*` features are deliberately left off (see oss/acp-client).
 agent-client-protocol = "2.2.0"
-
-# ─── Process confinement (Linux) ────────────────────────────────────────────
-# `harness-supervisor` confines each session's process tree in a shared pod: the filesystem view
-# with Landlock, the syscall surface with a seccomp-bpf filter (the harness-shim crate's
-# `src/supervisor/confine.rs`). Linux-only dependencies of that crate.
-landlock = "0.4.7"
-seccompiler = "0.5.0"
 
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }

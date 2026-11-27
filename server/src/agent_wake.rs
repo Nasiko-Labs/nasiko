@@ -28,6 +28,37 @@ pub trait AgentWake: Send + Sync {
     /// message (a 503 for an HTTP caller) and the forward is not attempted. `flow_id` is the flow
     /// the call belongs to, so a wake can be announced on its event stream.
     async fn before_forward(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String>;
+
+    /// [`before_forward`](Self::before_forward) that also says whether a refusal was a decline.
+    /// Only a caller that retries needs it. The default reports every refusal as a failure.
+    async fn before_forward_or_decline(
+        &self,
+        agent_id: Uuid,
+        flow_id: Option<&str>,
+    ) -> Result<(), WakeRefusal> {
+        self.before_forward(agent_id, flow_id)
+            .await
+            .map_err(WakeRefusal::from)
+    }
+}
+
+/// Why a wake refused a call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WakeRefusal {
+    /// What the caller is told.
+    pub message: String,
+    /// The runtime declined to start the agent for a reason that can pass (the message names it).
+    /// Nothing failed, so a caller that retries must not count this against its attempts.
+    pub declined: bool,
+}
+
+impl From<String> for WakeRefusal {
+    fn from(message: String) -> Self {
+        Self {
+            message,
+            declined: false,
+        }
+    }
 }
 
 /// Prepares nothing: every agent is taken as ready.
@@ -120,6 +151,16 @@ impl SwappableAgentWake {
 impl AgentWake for SwappableAgentWake {
     async fn before_forward(&self, agent_id: Uuid, flow_id: Option<&str>) -> Result<(), String> {
         self.current().before_forward(agent_id, flow_id).await
+    }
+
+    async fn before_forward_or_decline(
+        &self,
+        agent_id: Uuid,
+        flow_id: Option<&str>,
+    ) -> Result<(), WakeRefusal> {
+        self.current()
+            .before_forward_or_decline(agent_id, flow_id)
+            .await
     }
 }
 
