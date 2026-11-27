@@ -8,8 +8,11 @@ pub mod storage;
 use std::sync::Arc;
 
 use axum::Router;
+use bytes::BytesMut;
+use dashmap::DashMap;
 use nasiko_runtime::BlobStore;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 pub use authz::{
     BUILD_SERVICE_USERNAME, BuildServiceIdentity, Caller, CallerIdentity, PullOnlyIdentity, Writer,
@@ -18,13 +21,11 @@ pub use authz::{
 /// Shared state for the OCI registry.
 /// Construct this in the host binary. Pass to `axum_routes()` for the default
 /// orchestrator, or use the `ops` module directly for custom route wiring.
-///
-/// Holds no per-process state: an upload session lives in `oci_uploads` and its
-/// chunks in `storage`, so any replica can take any request of a session.
 #[derive(Clone)]
 pub struct OciState {
     pub pool: PgPool,
     pub storage: Arc<dyn BlobStore>,
+    pub upload_buffers: Arc<DashMap<Uuid, BytesMut>>,
     /// The host agent images are qualified with (`AGENT_IMAGE_REGISTRY`); empty when unset.
     /// Only images on this host or with no host count as platform repositories.
     pub platform_registry_host: String,
@@ -35,6 +36,7 @@ impl OciState {
         Self {
             pool,
             storage,
+            upload_buffers: Arc::new(DashMap::new()),
             platform_registry_host,
         }
     }

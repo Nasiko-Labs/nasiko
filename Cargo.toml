@@ -24,7 +24,6 @@ members = [
     "oci",
     "flow",
     "redis",
-    "leader",
     "hitl",
     "agent-proxy",
     "llm-router",
@@ -51,7 +50,6 @@ nasiko-event-store = { path = "event-store" }
 nasiko-savings = { path = "savings" }
 nasiko-flow = { path = "flow" }
 nasiko-redis = { path = "redis" }
-nasiko-leader = { path = "leader" }
 nasiko-hitl = { path = "hitl" }
 nasiko-agent-proxy = { path = "agent-proxy" }
 nasiko-mcp-gateway = { path = "mcp-gateway" }
@@ -84,7 +82,7 @@ axum = { version = "0.8", features = ["json", "query", "multipart", "ws"] }
 tower = "0.5"
 # Already in the tree through axum; named for the server's own accept loop (`nasiko_server::serve`).
 hyper = { version = "1", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "server-graceful", "service", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto", "service", "http1", "http2"] }
 tower-http = { version = "0.6", features = ["cors", "trace", "decompression-zstd"] }
 
 # ─── OpenAPI docs ───────────────────────────────────────────────────────────
@@ -226,6 +224,13 @@ tokio-tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 # `unstable_*` features are deliberately left off (see oss/acp-client).
 agent-client-protocol = "2.2.0"
 
+# ─── Process confinement (Linux) ────────────────────────────────────────────
+# `harness-supervisor` confines each session's process tree in a shared pod: the filesystem view
+# with Landlock, the syscall surface with a seccomp-bpf filter (the harness-shim crate's
+# `src/supervisor/confine.rs`). Linux-only dependencies of that crate.
+landlock = "0.4.7"
+seccompiler = "0.5.0"
+
 # ─── Common utilities ───────────────────────────────────────────────────────
 chrono = { version = "0.4", features = ["serde"] }
 # Metrics API only (no SDK): the process that links a meter provider decides where they go.
@@ -237,7 +242,6 @@ anyhow = "1"
 base64 = "0.22"
 dotenvy = "0.15"
 http = "1"
-http-body = "1"
 
 # ─── Embedding / registry ──────────────────────────────────────────────────
 rust-embed = { version = "8", features = ["mime-guess", "include-exclude", "interpolate-folder-path"] }

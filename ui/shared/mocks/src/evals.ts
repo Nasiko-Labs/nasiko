@@ -38,7 +38,7 @@ const SESSION_CAP = 50
 
 const PROMPTS = [
   'Add retries with backoff to the billing webhook handler',
-  'Fix the flaky date test in the invoices suite',
+  'Fix the flaky date test in the reports suite',
   'Refactor the auth middleware into smaller functions',
   'Write a migration that adds an index on sessions.user_id',
   'Explain why the build cache misses on CI',

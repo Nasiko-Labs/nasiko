@@ -82,10 +82,8 @@ import {
   deleteCustom,
   listConfigs,
   listCustom,
-  hiddenCustomLabels,
   listSecrets,
   deleteSecret,
-  managedCustom,
   myChoice,
   patchRouting,
   touchSecret,
@@ -96,7 +94,6 @@ import {
   updateConfig,
   updateCustom,
   usageByAgent,
-  type ProviderViewer,
   type RouterState,
 } from './router'
 import {
@@ -447,15 +444,6 @@ function sessionUser(): SessionUser {
   }
 }
 
-/** The signed-in user as `custom_providers::usable_by` sees them. */
-function providerViewer(): ProviderViewer {
-  const u = sessionUser()
-  return { id: u.id, superuser: u.is_superuser }
-}
-
-/** The seed admin, whose configs the config routes read and write, as `usable_by` sees them. */
-const configViewer = (): ProviderViewer => ({ id: ADMIN_ID, superuser: superuser() })
-
 /** The onboarding card's states (`?mock=agents-*`, but not `agents-absent`) are a viewer with no registered harness
  *  yet: their usage counts none (their activity stays, as for a deleted registration). Memoised per viewer. */
 let onboardingSeedMemo: { base: HarnessSeed; viewer: string; seed: HarnessSeed } | null = null
@@ -661,7 +649,6 @@ function getRouter(): RouterState {
     routerState = buildRouterState(getAgents().agents, nowFn(), {
       empty: hasVariant('router-empty'),
       legacy: hasVariant('router-legacy'),
-      registrar: getHarnessSeed().users.find((u) => u.is_superuser && u.id !== ADMIN_ID)?.id,
     })
     routerKey = key
   }
@@ -1588,12 +1575,9 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         if (m.model === 'gemini-2.0-flash') rows.push(row('boot seed (static list)', 12))
         byProvider.set(m.provider, [...(byProvider.get(m.provider) ?? []), ...rows])
       }
-      const me = providerViewer()
-      const custom = new Map(listCustom(getRouter(), me).map((c) => [c.label, c]))
-      const hidden = hiddenCustomLabels(getRouter(), me)
+      const custom = new Map(listCustom(getRouter()).map((c) => [c.label, c]))
       return HttpResponse.json({
-        data: [...byProvider.entries()].flatMap(([provider, models]) => {
-          if (hidden.has(provider)) return []
+        data: [...byProvider.entries()].map(([provider, models]) => {
           const c = custom.get(provider)
           return c
             ? { provider, provider_id: c.id, display_name: c.display_name, models }
@@ -1903,7 +1887,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
       return routed(() =>
         HttpResponse.json(
           {
-            data: createConfig(getRouter(), configViewer(), body as never, nowFn()),
+            data: createConfig(getRouter(), ADMIN_ID, body as never, nowFn()),
             status_code: 201,
             message: 'LLM config created successfully',
           },
@@ -1914,7 +1898,7 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
     http.patch('/api/llm-configs/:id', async ({ params: prm, request }) => {
       const body = await request.json().catch(() => ({}))
       return routed(() =>
-        envelope(updateConfig(getRouter(), String(prm.id), configViewer(), body as never, nowFn())),
+        envelope(updateConfig(getRouter(), String(prm.id), ADMIN_ID, body as never, nowFn())),
       )
     }),
     http.delete('/api/llm-configs/:id', ({ params: prm }) =>
@@ -2074,31 +2058,22 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         return HttpResponse.json({ data: page, total: page.length })
       }),
     ),
-    // custom_providers.rs: register and test for anyone (a non-superuser's URL must be public); the list (never
-    // the key) holds the caller's own, and for a superuser other superusers' (`usable_by`); edit, delete and sync
-    // for its creator or a superuser (`managed`: 403).
-    http.get('/api/custom-providers', () =>
-      routed(() => envelope(listCustom(getRouter(), providerViewer()))),
-    ),
+    // custom_providers.rs: list for anyone (never the key), writes superuser-only (require_superuser: 403).
+    http.get('/api/custom-providers', () => routed(() => envelope(listCustom(getRouter())))),
     http.post('/api/custom-providers', async ({ request }) => {
-      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
-      return routed(() => {
-        publicEndpoint(body.base_url)
-        return HttpResponse.json(
-          {
-            data: createCustom(
-              getRouter(),
-              body as never,
-              nowFn(),
-              sessionUser().id,
-              sessionUser().is_superuser,
-            ),
-            status_code: 201,
-            message: 'Custom provider created',
-          },
-          { status: 201 },
-        )
-      })
+      const body = await request.json().catch(() => ({}))
+      return routed(
+        () =>
+          HttpResponse.json(
+            {
+              data: createCustom(getRouter(), body as never, nowFn()),
+              status_code: 201,
+              message: 'Custom provider created',
+            },
+            { status: 201 },
+          ),
+        true,
+      )
     }),
     http.post('/api/custom-providers/test', async ({ request }) => {
       const body = (await request.json().catch(() => ({}))) as {
@@ -2112,33 +2087,26 @@ export const handlerGroups: Record<Mockable, HttpHandler[]> = {
         validateDialect(body.kind, body.api_version)
         if (!body.base_url?.trim() || !body.api_key?.trim())
           throw new MockHttpError(400, 'base_url and api_key are required')
-        publicEndpoint(body.base_url)
         if (hasVariant('router-custom-down'))
           return envelope({ chat_ok: false, chat_error: 'connection refused', models: [] })
         return envelope({ chat_ok: !!body.model, models: ['custom-local', 'custom-large'] })
-      })
+      }, true)
     }),
     http.patch('/api/custom-providers/:id', async ({ params: prm, request }) => {
-      const body = (await request.json().catch(() => ({}))) as { base_url?: string }
-      return routed(() => {
-        manageCustom(String(prm.id))
-        publicEndpoint(body.base_url)
-        return envelope(updateCustom(getRouter(), String(prm.id), body as never))
-      })
+      const body = await request.json().catch(() => ({}))
+      return routed(() => envelope(updateCustom(getRouter(), String(prm.id), body as never)), true)
     }),
     http.delete('/api/custom-providers/:id', ({ params: prm }) =>
-      routed(() => {
-        manageCustom(String(prm.id))
-        return envelope(deleteCustom(getRouter(), String(prm.id)))
-      }),
+      routed(() => envelope(deleteCustom(getRouter(), String(prm.id))), true),
     ),
     http.post('/api/custom-providers/:id/sync', ({ params: prm }) =>
-      routed(() => {
-        manageCustom(String(prm.id))
-        return envelope(
-          syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
-        )
-      }),
+      routed(
+        () =>
+          envelope(
+            syncCustom(getRouter(), String(prm.id), nowFn(), hasVariant('router-custom-down')),
+          ),
+        true,
+      ),
     ),
   ],
   // Filled in below: chatHandlers() needs the seed getters defined in this file.
@@ -2257,28 +2225,6 @@ function routed(fn: () => Response, superuserOnly = false): Response {
     if (err instanceof Response) return err
     return text('internal error', 500)
   }
-}
-
-function manageCustom(id: string) {
-  const me = sessionUser()
-  managedCustom(getRouter(), id, me.id, me.is_superuser)
-}
-
-/** custom_providers.rs `check_endpoint`: a non-superuser's base URL must be public. The server resolves the host;
- *  the mock only reads literal ones. */
-function publicEndpoint(url: string | undefined) {
-  if (!url || sessionUser().is_superuser) return
-  let host = ''
-  try {
-    host = new URL(url).hostname
-  } catch {
-    return
-  }
-  if (/^(localhost|127\.|10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.|\[::1\])/.test(host))
-    throw new MockHttpError(
-      400,
-      'base_url refused: url resolves to a disallowed (private/internal) address. A private endpoint needs a superuser.',
-    )
 }
 
 /** agents/llm_config.rs `agent_owner_or_reject`: 404 unknown, 403 "not the agent owner" unless owner or superuser. */

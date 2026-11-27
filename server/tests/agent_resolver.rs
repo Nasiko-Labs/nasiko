@@ -421,7 +421,7 @@ async fn resolution_by_status_and_kind() {
     for parked in [parked_parkable, parked_resident] {
         assert!(matches!(
             resolve(parked).await,
-            Err(ResolveError::ParkedMidRequest(_))
+            Err(ResolveError::ParkedMidRequest)
         ));
         assert_eq!(status_and_last_request(&server, parked).await.0, "parked");
     }

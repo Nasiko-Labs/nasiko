@@ -278,13 +278,10 @@ pub struct CustomEndpoint {
     pub base_url: String,
     /// Wire dialect: plain OpenAI-compatible, Azure OpenAI, …
     pub dialect: ProviderDialect,
-    /// A member registered it, so its base URL is user input and it is reached only
-    /// through [`crate::public_only_client`].
-    pub public_only: bool,
 }
 
-/// A custom provider (`custom_providers` table), resolved by its `label`. Read per
-/// request through [`RegistryStore`] — deliberately uncached so a
+/// An admin-registered custom provider (`custom_providers` table), resolved by its
+/// `label`. Read per request through [`RegistryStore`] — deliberately uncached so a
 /// key rotation or delete takes effect immediately on every replica (the api key is
 /// decrypted in the impl, so mocks can supply plaintext).
 #[derive(Debug, Clone)]
@@ -293,37 +290,11 @@ pub struct CustomProvider {
     pub base_url: String,
     /// Wire dialect this endpoint speaks, from the row's `kind`/`api_version`.
     pub dialect: ProviderDialect,
-    /// The decrypted API key for this endpoint, the one its creator registered.
+    /// The decrypted platform-owned API key for this endpoint.
     pub api_key: String,
     /// Last-resort model, used in place of the global `DEFAULT_MODEL`. See §4.3.
     pub default_model: Option<String>,
-    /// See [`CustomEndpoint::public_only`].
-    pub public_only: bool,
 }
-
-/// SQL over `custom_providers`: whether the user bound at `$n` (a nullable uuid) may
-/// route through the provider, and so spend the key it was registered with. A member may
-/// use only the ones they registered. Superusers share theirs among themselves, so the
-/// platform's own agents (seed agents run on a superuser's config) keep working whichever
-/// superuser registered the provider. `NULL` is the platform itself (its default
-/// provider, the organization embedding default): a superuser's provider only.
-///
-/// The query must read `custom_providers` unaliased; `created_by` is qualified because
-/// `users` has a column of that name too.
-pub fn usable_by_sql(n: u8) -> String {
-    format!(
-        "(custom_providers.created_by = ${n}::uuid OR (\
-           EXISTS (SELECT 1 FROM users su \
-                   WHERE su.id = custom_providers.created_by AND su.is_superuser) \
-           AND (${n}::uuid IS NULL \
-                OR EXISTS (SELECT 1 FROM users su WHERE su.id = ${n}::uuid AND su.is_superuser))))"
-    )
-}
-
-/// SQL over `custom_providers` (unaliased, as for [`usable_by_sql`]): whether a member,
-/// not a superuser, registered it — see [`CustomEndpoint::public_only`].
-pub const PUBLIC_ONLY_SQL: &str = "NOT EXISTS (SELECT 1 FROM users su \
-     WHERE su.id = custom_providers.created_by AND su.is_superuser)";
 
 /// Storage seam for the resolver — mockable in tests.
 /// What the router needs to know about a live agent to accept its identity token.
@@ -450,16 +421,13 @@ pub trait RegistryStore: Send + Sync {
         }
     }
 
-    /// The active custom provider registered under `label` that `user` may use
-    /// ([`usable_by_sql`]; `None` = the platform itself), or `None`: a provider someone
-    /// else registered reads as missing. Decryption
+    /// The active custom provider registered under `label`, or `None`. Decryption
     /// of the stored api key happens in the impl, so mocks can supply a plaintext
     /// key. Read per request (never cached) so key rotation and delete take effect
     /// immediately — see §2.4 of the custom-provider plan.
     async fn fetch_custom_provider(
         &self,
         label: &str,
-        user: Option<Uuid>,
     ) -> Result<Option<CustomProvider>, sqlx::Error>;
 
     /// The organization-wide embedding default from `settings`, or `None` when the
@@ -551,20 +519,11 @@ impl PgRegistry {
         .await
     }
 
-    /// Config `id`, only while `owner` created it: an agent runs on its owner's configs
-    /// alone, so an attached config that is someone else's (written around the attach
-    /// route's check) reads as none.
-    async fn load_owned_config(
-        &self,
-        id: Uuid,
-        owner: Uuid,
-    ) -> Result<Option<LLMConfig>, sqlx::Error> {
+    async fn load_config_by_id(&self, id: Uuid) -> Result<Option<LLMConfig>, sqlx::Error> {
         let row: Option<ConfigRow> = sqlx::query_as(&format!(
-            "SELECT {CONFIG_COLS} FROM llm_configs \
-             WHERE id = $1 AND created_by = $2 AND deleted_at IS NULL"
+            "SELECT {CONFIG_COLS} FROM llm_configs WHERE id = $1 AND deleted_at IS NULL"
         ))
         .bind(id)
-        .bind(owner)
         .fetch_optional(&self.db)
         .await?;
         Ok(row.map(row_to_config))
@@ -605,7 +564,7 @@ impl RegistryStore for PgRegistry {
 
         // Attached config wins; else the owner's default; else none (platform defaults).
         let attached = match config_id {
-            Some(cid) => self.load_owned_config(cid, owner_id).await?,
+            Some(cid) => self.load_config_by_id(cid).await?,
             None => None,
         };
         let config = match attached {
@@ -802,23 +761,15 @@ impl RegistryStore for PgRegistry {
     async fn fetch_custom_provider(
         &self,
         label: &str,
-        user: Option<Uuid>,
     ) -> Result<Option<CustomProvider>, sqlx::Error> {
-        #[allow(clippy::type_complexity)]
-        let row: Option<(String, String, Option<String>, String, Option<String>, bool)> =
-            sqlx::query_as(&format!(
-                "SELECT base_url, kind, api_version, encrypted_api_key, default_model, \
-                        {PUBLIC_ONLY_SQL} \
-                 FROM custom_providers WHERE label = $1 AND deleted_at IS NULL AND {}",
-                usable_by_sql(2)
-            ))
-            .bind(label)
-            .bind(user)
-            .fetch_optional(&self.db)
-            .await?;
-        let Some((base_url, kind, api_version, encrypted_api_key, default_model, public_only)) =
-            row
-        else {
+        let row: Option<(String, String, Option<String>, String, Option<String>)> = sqlx::query_as(
+            "SELECT base_url, kind, api_version, encrypted_api_key, default_model \
+             FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
+        )
+        .bind(label)
+        .fetch_optional(&self.db)
+        .await?;
+        let Some((base_url, kind, api_version, encrypted_api_key, default_model)) = row else {
             return Ok(None);
         };
         // Shared platform credential (not a per-user secret) → platform-settings scope.
@@ -830,7 +781,6 @@ impl RegistryStore for PgRegistry {
             dialect: ProviderDialect::from_kind(&kind, api_version.as_deref()),
             api_key,
             default_model,
-            public_only,
         }))
     }
 
@@ -914,17 +864,6 @@ impl<'a> ConfigSubject<'a> {
             Self::Owner(owner_id) | Self::Sponsored(owner_id) => (*owner_id).to_string(),
             Self::SharedUser(user) => user.to_string(),
             Self::Platform => String::new(),
-        }
-    }
-
-    /// Whose config the call runs on, the user a custom provider it names must be usable
-    /// by ([`usable_by_sql`]): the owner's for `Owner`/`Sponsored` (a superuser's config
-    /// for the seed agents), the shared user's own, or `None` for the platform.
-    fn config_owner(&self) -> Option<Uuid> {
-        match self {
-            Self::Owner(owner_id) | Self::Sponsored(owner_id) => Uuid::parse_str(owner_id).ok(),
-            Self::SharedUser(user) => Some(*user),
-            Self::Platform => None,
         }
     }
 
@@ -1048,16 +987,24 @@ async fn resolve_loaded(
     // custom (DB-registered) provider row can be loaded before the pure planning
     // step. A non-built-in name that resolves to no active row is a client error —
     // never a silent fallthrough to OpenAI (that would send the platform key to an
-    // unknown endpoint; see the `platform_key_for` fail-closed change). The config names
-    // the provider when there is one, so its owner must be allowed to use it; without
-    // one the platform's defaults do.
+    // unknown endpoint; see the `platform_key_for` fail-closed change).
     let provider_name = destination_provider(&llm_config, cfg, hint);
-    let provider_user = if has_llm_config {
-        subject.config_owner()
-    } else {
+    let custom = if is_builtin_provider(&provider_name) {
         None
+    } else {
+        match store
+            .fetch_custom_provider(&provider_name)
+            .await
+            .map_err(|e| GatewayError::Internal(format!("custom provider read failed: {e}")))?
+        {
+            Some(cp) => Some(cp),
+            None => {
+                return Err(GatewayError::BadRequest(format!(
+                    "provider '{provider_name}' is not a registered custom provider"
+                )));
+            }
+        }
     };
-    let custom = load_custom_provider(store, &provider_name, provider_user).await?;
 
     let plan = plan_config(
         llm_config,
@@ -1101,7 +1048,6 @@ async fn resolve_loaded(
         custom_endpoint: custom.as_ref().map(|c| CustomEndpoint {
             base_url: c.base_url.clone(),
             dialect: c.dialect.clone(),
-            public_only: c.public_only,
         }),
         is_coding_agent,
         coding_integration,
@@ -1214,13 +1160,7 @@ pub async fn resolve_embeddings_for(
         },
     };
 
-    // The config's own level must name a provider its owner may use; the request's level is
-    // a built-in, and the organization default is the platform's.
-    let provider_user = match source {
-        EmbeddingSource::Config | EmbeddingSource::ConfigOverride => subject.config_owner(),
-        EmbeddingSource::Request | EmbeddingSource::OrgDefault => None,
-    };
-    let custom = load_custom_provider(store, &pick.provider, provider_user).await?;
+    let custom = load_custom_provider(store, &pick.provider).await?;
     let api_key = match &pick.org_api_key {
         // Level 4 with a stored key: it is already decrypted and already scoped to this
         // provider, so it bypasses the per-user secret path entirely.
@@ -1255,7 +1195,6 @@ pub async fn resolve_embeddings_for(
         custom_endpoint: custom.as_ref().map(|c| CustomEndpoint {
             base_url: c.base_url.clone(),
             dialect: c.dialect.clone(),
-            public_only: c.public_only,
         }),
         platform_paid,
     };
@@ -1356,19 +1295,18 @@ async fn load_org_embedding_default(
 
 /// The custom-provider row backing `provider`, or `None` for a built-in.
 ///
-/// Fail-closed: a non-built-in name with no active row `user` may use is a client error,
-/// never a silent fallthrough to OpenAI (which would send the platform OpenAI key to an
-/// unknown endpoint), nor a call on someone else's provider and key.
+/// Same fail-closed rule the chat path uses: a non-built-in name with no active row is a
+/// client error, never a silent fallthrough to OpenAI (which would send the platform
+/// OpenAI key to an unknown endpoint).
 async fn load_custom_provider(
     store: &dyn RegistryStore,
     provider: &str,
-    user: Option<Uuid>,
 ) -> Result<Option<CustomProvider>, GatewayError> {
     if is_builtin_provider(provider) {
         return Ok(None);
     }
     store
-        .fetch_custom_provider(provider, user)
+        .fetch_custom_provider(provider)
         .await
         .map_err(|e| GatewayError::Internal(format!("custom provider read failed: {e}")))?
         .map(Some)
@@ -1858,7 +1796,6 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
-            _: Option<Uuid>,
         ) -> Result<Option<CustomProvider>, sqlx::Error> {
             Ok(self.custom_provider.clone())
         }
@@ -2026,7 +1963,6 @@ mod tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
-            _: Option<Uuid>,
         ) -> Result<Option<CustomProvider>, sqlx::Error> {
             Ok(None)
         }
@@ -2649,7 +2585,6 @@ mod tests {
             dialect: ProviderDialect::OpenAi,
             api_key: api_key.into(),
             default_model: Some(default_model.into()),
-            public_only: false,
         }
     }
 
@@ -3181,7 +3116,6 @@ mod shared_user_tests {
         async fn fetch_custom_provider(
             &self,
             _: &str,
-            _: Option<Uuid>,
         ) -> Result<Option<CustomProvider>, sqlx::Error> {
             Ok(None)
         }
@@ -3337,7 +3271,7 @@ mod shared_user_tests {
     }
 
     async fn resolve_as(
-        store: &dyn RegistryStore,
+        store: &SharedAgentStore,
         subject: ConfigSubject<'_>,
     ) -> Result<ResolvedConfig, GatewayError> {
         let cache = ConfigCache::new(Duration::from_secs(30));
@@ -3347,144 +3281,6 @@ mod shared_user_tests {
 
     fn shared_user() -> Uuid {
         Uuid::parse_str(SHARED_USER).unwrap()
-    }
-
-    /// A store whose one custom provider, `my-gw`, only `usable_by` may use, recording the
-    /// user each lookup was made for.
-    struct ProviderAccessStore {
-        owner_config: Option<LLMConfig>,
-        user_default: Option<LLMConfig>,
-        usable_by: Option<Uuid>,
-        lookups: Mutex<Vec<Option<Uuid>>>,
-    }
-
-    impl ProviderAccessStore {
-        fn new(owner_config: Option<LLMConfig>, user_default: Option<LLMConfig>) -> Self {
-            Self {
-                owner_config,
-                user_default,
-                usable_by: None,
-                lookups: Mutex::new(Vec::new()),
-            }
-        }
-        fn usable_by(mut self, user: Option<Uuid>) -> Self {
-            self.usable_by = user;
-            self
-        }
-        fn lookups(&self) -> Vec<Option<Uuid>> {
-            self.lookups.lock().unwrap().clone()
-        }
-    }
-
-    #[async_trait]
-    impl RegistryStore for ProviderAccessStore {
-        async fn fetch_llm_config(
-            &self,
-            _: Uuid,
-        ) -> Result<Option<AgentConfigResult>, sqlx::Error> {
-            Ok(Some(AgentConfigResult {
-                config: self.owner_config.clone(),
-                agent_pinned_model: None,
-                is_coding_agent: false,
-                coding_integration: None,
-                is_discovered_agent: false,
-                compress_enabled: false,
-            }))
-        }
-        async fn fetch_agent_owner(&self, _: Uuid) -> Result<Option<Uuid>, sqlx::Error> {
-            Ok(Uuid::parse_str(OWNER).ok())
-        }
-        async fn fetch_user_default_config(
-            &self,
-            _: Uuid,
-        ) -> Result<Option<LLMConfig>, sqlx::Error> {
-            Ok(self.user_default.clone())
-        }
-        async fn fetch_user_secret(&self, _: Uuid, _: &str) -> Result<Option<String>, sqlx::Error> {
-            Ok(None)
-        }
-        async fn fetch_live_flow(
-            &self,
-            _: &str,
-            _: Uuid,
-            _: i64,
-        ) -> Result<Option<crate::routing::attribution::LiveFlow>, sqlx::Error> {
-            unreachable!("resolution never attributes flows")
-        }
-        async fn fetch_custom_provider(
-            &self,
-            label: &str,
-            user: Option<Uuid>,
-        ) -> Result<Option<CustomProvider>, sqlx::Error> {
-            self.lookups.lock().unwrap().push(user);
-            Ok(
-                (label == "my-gw" && user == self.usable_by).then(|| CustomProvider {
-                    base_url: "https://gw.example/v1".into(),
-                    dialect: ProviderDialect::OpenAi,
-                    api_key: "sk-gw".into(),
-                    default_model: None,
-                    public_only: true,
-                }),
-            )
-        }
-        async fn fetch_org_embedding_default(
-            &self,
-        ) -> Result<Option<OrgEmbeddingDefault>, sqlx::Error> {
-            Ok(None)
-        }
-    }
-
-    #[tokio::test]
-    async fn an_agents_config_reaches_a_custom_provider_only_as_its_owner() {
-        // Seed agents run this way: the owner (a superuser) and their config, whether the
-        // owner calls or a payer sponsors someone else's call.
-        let owner = Uuid::parse_str(OWNER).ok();
-        for subject in [ConfigSubject::Owner(OWNER), ConfigSubject::Sponsored(OWNER)] {
-            let store =
-                ProviderAccessStore::new(Some(config("my-gw", "m", None)), None).usable_by(owner);
-            let r = resolve_as(&store, subject).await.unwrap();
-            assert_eq!(store.lookups(), vec![owner]);
-            let endpoint = r.custom_endpoint.expect("custom endpoint");
-            assert!(endpoint.public_only, "the row's flag reaches the dispatch");
-        }
-    }
-
-    #[tokio::test]
-    async fn a_shared_user_reaches_a_custom_provider_only_as_themselves() {
-        let store = ProviderAccessStore::new(None, Some(config("my-gw", "m", None)))
-            .usable_by(Some(shared_user()));
-        resolve_as(&store, ConfigSubject::SharedUser(shared_user()))
-            .await
-            .unwrap();
-        assert_eq!(store.lookups(), vec![Some(shared_user())]);
-    }
-
-    #[tokio::test]
-    async fn a_custom_provider_someone_else_registered_is_refused() {
-        // The owner's config names a provider only another user may use: the call fails
-        // instead of running on that user's provider and key.
-        let store = ProviderAccessStore::new(Some(config("my-gw", "m", None)), None)
-            .usable_by(Some(shared_user()));
-        let err = resolve_as(&store, ConfigSubject::Owner(OWNER))
-            .await
-            .unwrap_err();
-        assert!(matches!(err, GatewayError::BadRequest(_)), "{err:?}");
-    }
-
-    #[tokio::test]
-    async fn the_platform_default_reaches_a_custom_provider_as_the_platform() {
-        let store = ProviderAccessStore::new(None, None).usable_by(None);
-        let cfg = GatewayConfig {
-            default_provider: "my-gw".into(),
-            default_model: "m".into(),
-            ..gateway()
-        };
-        let cache = ConfigCache::new(Duration::from_secs(30));
-        let subject = ConfigSubject::Owner(OWNER);
-        resolve_for(&store, &cache, &cfg, AGENT, subject, RequestHint::default())
-            .await
-            .unwrap();
-        assert_eq!(store.lookups(), vec![None]);
     }
 
     #[test]

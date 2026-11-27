@@ -974,7 +974,6 @@ async fn media_reaches_bedrock() {
         endpoint: Some(CustomEndpoint {
             base_url,
             dialect: ProviderDialect::BedrockConverse,
-            public_only: false,
         }),
         model: &model,
         key: &key,

@@ -18,22 +18,6 @@ use crate::telemetry::GenAiMetrics;
 use crate::usage::UsageTracker;
 use nasiko_config::Config;
 use nasiko_flow::{FlowConfig, FlowEventBus, FlowGuard};
-use nasiko_leader::LockKey;
-
-/// Boot seeding (`SEED_AGENTS`, workflows, harness agents, toolkits), one replica at a time.
-const BOOT_SEED_LOCK: LockKey = LockKey::named("server.boot_seed");
-/// The startup agent reconcile, one replica at a time.
-const STARTUP_RECONCILE_LOCK: LockKey = LockKey::named("server.startup_reconcile");
-/// The hourly materialized-view refresh, on one replica per period.
-const MATVIEW_REFRESH_LOCK: LockKey = LockKey::named("server.matview_refresh");
-/// Held while a replica migrates (both editions' migrations, and the extensions before them).
-///
-/// Taken by polling, never by a blocking `pg_advisory_lock`: a session waiting inside a statement
-/// holds a snapshot, and a `CREATE INDEX CONCURRENTLY` in the holder's migration waits for every
-/// older snapshot to end, so a blocked waiter and the holder would wait on each other. sqlx's own
-/// migration lock is that blocking kind; under this one no other replica ever waits on it.
-pub const MIGRATIONS_LOCK: LockKey = LockKey::named("server.migrations");
-pub const MIGRATIONS_LOCK_POLL: std::time::Duration = std::time::Duration::from_secs(1);
 
 #[derive(Clone)]
 pub struct AppState {
@@ -42,9 +26,6 @@ pub struct AppState {
     pub sandbox: Arc<dyn SandboxProvider>,
     pub db: PgPool,
     pub redis: nasiko_redis::SharedRedis,
-    /// Tells other replicas what this one changed, and runs this one's handlers for theirs
-    /// (`invalidation`).
-    pub invalidations: crate::invalidation::Invalidations,
     pub oci_storage: Arc<dyn nasiko_runtime::BlobStore>,
     pub usage_tracker: UsageTracker,
     pub http_client: reqwest::Client,
@@ -58,8 +39,6 @@ pub struct AppState {
     pub genai_metrics: GenAiMetrics,
     /// Rate limit, concurrency cap and counters of the coding-agent ingest route.
     pub coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard,
-    /// How many dashboard reads this server serves at once (`dashboard_limit`).
-    pub dashboard_limit: crate::dashboard_limit::DashboardLimit,
     pub config: Arc<Config>,
     pub routing_engine: Arc<dyn RoutingEngine>,
     /// In-process LLM router for the server's own platform-key calls (titles, planner,
@@ -178,66 +157,9 @@ pub struct AppState {
     /// prefix with its own login page. Both editions serve the root mount only;
     /// the slice exists so another frontend can be mounted under its own prefix.
     pub ui_mounts: &'static [crate::auth::UiMount],
-    /// Set when this replica is asked to stop: `/ready` answers 503 and workers stop claiming
-    /// work. See `shutdown.rs`.
-    pub shutdown: crate::shutdown::ShutdownSignal,
 }
 
 impl AppState {
-    /// After any `llm_configs` write: drop every cached resolution here and on every replica.
-    pub fn llm_configs_changed(&self) {
-        self.llm_config_cache.clear();
-        self.invalidations
-            .publish(crate::invalidation::topic::LLM_CONFIG);
-    }
-
-    /// After an agent's own LLM config binding changes: drop its cached resolution here and on
-    /// every replica.
-    pub fn agent_llm_config_changed(&self, agent_id: uuid::Uuid) {
-        self.llm_config_cache.invalidate(agent_id);
-        self.invalidations
-            .publish_key(crate::invalidation::topic::LLM_CONFIG, agent_id.to_string());
-    }
-
-    /// A build job was queued: wake the build worker here and on every replica. Latency only;
-    /// each worker's poll is the delivery guarantee.
-    pub async fn wake_build_worker(&self) {
-        let _ = self.build_tx.send(()).await;
-        self.invalidations
-            .publish(crate::invalidation::topic::BUILD_QUEUE);
-    }
-
-    /// A HITL request was resolved: wake the resume dispatcher here and on every replica.
-    /// Latency only; each dispatcher's poll is the delivery guarantee.
-    pub fn wake_hitl_resume(&self) {
-        let _ = self.hitl_resume_tx.try_send(());
-        self.invalidations
-            .publish(crate::invalidation::topic::HITL_RESUME);
-    }
-
-    /// What this replica does when another one publishes an OSS invalidation (the tool-search
-    /// handler is installed with its index, `mcp::search_sync`).
-    fn register_invalidation_handlers(&self) {
-        use crate::invalidation::{Invalidated, topic};
-        let cache = self.llm_config_cache.clone();
-        self.invalidations
-            .register(topic::LLM_CONFIG, move |what| match what {
-                Invalidated::Key(key) => match uuid::Uuid::parse_str(key) {
-                    Ok(agent_id) => cache.invalidate(agent_id),
-                    Err(_) => cache.clear(),
-                },
-                Invalidated::All => cache.clear(),
-            });
-        let build_tx = self.build_tx.clone();
-        self.invalidations.register(topic::BUILD_QUEUE, move |_| {
-            let _ = build_tx.try_send(());
-        });
-        let hitl_resume_tx = self.hitl_resume_tx.clone();
-        self.invalidations.register(topic::HITL_RESUME, move |_| {
-            let _ = hitl_resume_tx.try_send(());
-        });
-    }
-
     /// Whether agent messages carry the current date and time (`AGENT_CONTEXT_CURRENT_TIME`).
     pub fn agent_clock(&self) -> nasiko_types::agent_clock::AgentClock {
         nasiko_types::agent_clock::AgentClock::new(self.config.agent_current_time)
@@ -304,11 +226,7 @@ impl AppState {
         Self::from_config_with_db(config, auth, runtime, oci_storage, db).await
     }
 
-    /// Runs under [`MIGRATIONS_LOCK`], so replicas starting together migrate one at a time.
     pub async fn run_migrations(db: &PgPool) {
-        let held = nasiko_leader::lock(db, MIGRATIONS_LOCK, MIGRATIONS_LOCK_POLL)
-            .await
-            .expect("could not take the migrations lock");
         ensure_pg_extensions(db).await;
         sqlx::migrate!("../migrations")
             .set_ignore_missing(true)
@@ -319,7 +237,6 @@ impl AppState {
         // and pricing-sync history always win. Code (not a migration) so price
         // updates ship with the binary.
         nasiko_observability::pricing::seed_model_pricing(db).await;
-        held.release().await;
     }
 
     /// `oci_storage` is received, not constructed, for the same reason `auth`
@@ -471,9 +388,7 @@ impl AppState {
             flow_state_ttl_secs: nasiko_flow::state_ttl_for(config.flow_timeout_secs as u64),
         };
         let flow_guard = FlowGuard::new(redis.clone(), flow_config);
-        // Over Redis: a flow's events are published wherever the causing request lands (an
-        // agent's /api/mcp call, a proxy hop), not where the user's chat stream is subscribed.
-        let flow_events = FlowEventBus::with_redis(redis.clone());
+        let flow_events = FlowEventBus::new();
         // A parked agent with no workload gets one from a worker that holds the state, spawned
         // below once the state exists.
         let (workload_deployer, workload_deploys) = crate::agents::catalog_deploy::deployer();
@@ -535,9 +450,7 @@ impl AppState {
 
         let (build_tx, build_rx) = mpsc::channel(64);
         let (hitl_resume_tx, hitl_resume_rx) = mpsc::channel(64);
-        let continuation_events =
-            crate::hitl::continuation::ContinuationRegistry::new(redis.clone());
-        // Pauses and resume outcomes are written from several places (the store, the MCP
+        let continuation_events = crate::hitl::continuation::ContinuationRegistry::new(); // Pauses and resume outcomes are written from several places (the store, the MCP
         // gateway's inserts, both resume dispatchers); each reports through this one observer. A
         // second AppState in the same process (tests) keeps the first one's: the instruments sit
         // on the process-wide meter either way.
@@ -567,14 +480,6 @@ impl AppState {
         if let Err(e) = mcp.search_index.rebuild(&db).await {
             tracing::warn!(%e, "initial search index build failed — search will return empty until next sync");
         }
-        // From here on, a rebuild on this replica also has every other replica rebuild.
-        let invalidations = crate::invalidation::Invalidations::start(redis.clone());
-        crate::mcp::search_sync::install(&mut mcp, db.clone(), &invalidations);
-
-        let coding_agent_ingest = crate::coding_agent_ingest_guard::IngestGuard::new(
-            &config.coding_agent_ingest,
-            &crate::rate_limit::RateLimitStore::Redis(redis.clone()),
-        );
 
         let state = Self {
             pricing,
@@ -582,7 +487,6 @@ impl AppState {
             sandbox,
             db,
             redis,
-            invalidations,
             oci_storage,
             usage_tracker,
             resource_stats,
@@ -593,9 +497,8 @@ impl AppState {
             flow_guard,
             flow_events,
             genai_metrics,
-            coding_agent_ingest,
-            dashboard_limit: crate::dashboard_limit::DashboardLimit::new(
-                config.dashboard_max_concurrent,
+            coding_agent_ingest: crate::coding_agent_ingest_guard::IngestGuard::new(
+                &config.coding_agent_ingest,
             ),
             config: Arc::new(config),
             routing_engine,
@@ -632,10 +535,7 @@ impl AppState {
             hitl_resume_tx,
             continuation_events,
             ui_mounts: &[crate::auth::UiMount::ROOT],
-            shutdown: crate::shutdown::ShutdownSignal::new(),
         };
-
-        state.register_invalidation_handlers();
 
         // Spawn the durable build worker. It owns the receiver and exits when sender drops.
         let worker_state = state.clone();
@@ -661,6 +561,12 @@ impl AppState {
         tokio::spawn(crate::telemetry::agent_replicas::run(
             state.genai_metrics.agent_ready_replicas(),
             state.runtime.clone(),
+        ));
+
+        // Periodic eviction for finished continuation buffers — same shape as every other
+        // periodic sweep in this file.
+        tokio::spawn(crate::hitl::continuation::sweep_loop(
+            state.continuation_events.clone(),
         ));
 
         // The `mcp_tool`-origin resume dispatcher (AuthRequired's auto-resume nudge, and any
@@ -819,23 +725,17 @@ impl AppState {
             tokio::spawn(crate::agents::rehost::retry_until_drained(self.clone()));
         }
 
-        crate::sessions::readiness::log_at_boot(self);
-        // One replica seeds at a time: a replica that starts while another is seeding (a rolling
-        // update starts the new pod beside the old) skips it rather than register and deploy the
-        // same agents alongside it.
         let state = self.clone();
         tokio::spawn(async move {
-            nasiko_leader::single_flight(&state.db.clone(), BOOT_SEED_LOCK, || async {
-                crate::seed::seed_agents_if_configured(&state).await;
-                // After the agents: each step binds to a seed agent's row, which
-                // the line above registers (its deploy may still be in progress;
-                // a step finds its agent's endpoint when it runs).
-                crate::seed_workflows::seed_workflows_if_configured(&state).await;
-                crate::seed::seed_toolkits_if_configured(&state).await;
-                // After both: it pairs the seed agents' rows with the registered toolkits.
-                crate::seed::grant_toolkits_to_seed_agents(&state).await;
-            })
-            .await;
+            crate::seed::seed_agents_if_configured(&state).await;
+            // After the agents: each step binds to a seed agent's row, which
+            // the line above registers (its deploy may still be in progress;
+            // a step finds its agent's endpoint when it runs).
+            crate::seed_workflows::seed_workflows_if_configured(&state).await;
+            crate::seed::seed_harness_agents_if_enabled(&state).await;
+            crate::seed::seed_toolkits_if_configured(&state).await;
+            // After both: it pairs the seed agents' rows with the registered toolkits.
+            crate::seed::grant_toolkits_to_seed_agents(&state).await;
         });
 
         // Lakehouse tiering (docs/LAKEHOUSE_TRD.md §8). Every replica spawns the
@@ -879,19 +779,16 @@ impl AppState {
         // `agents::reconcile`'s module doc.
         let state = self.clone();
         tokio::spawn(async move {
-            nasiko_leader::single_flight(&state.db.clone(), STARTUP_RECONCILE_LOCK, || {
-                crate::agents::reconcile::reconcile_agents_on_startup(&state)
-            })
-            .await;
+            crate::agents::reconcile::reconcile_agents_on_startup(&state).await;
         });
 
-        // Periodic refresh of materialized views (agent_selection_stats), on one replica.
+        // Periodic refresh of materialized views (agent_selection_stats).
         let db = self.db.clone();
         tokio::spawn(async move {
-            const PERIOD: std::time::Duration = std::time::Duration::from_secs(3600);
-            // Not at startup: the first refresh waits a full period.
-            tokio::time::sleep(PERIOD).await;
-            nasiko_leader::every(db.clone(), MATVIEW_REFRESH_LOCK, PERIOD, || async {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(3600));
+            interval.tick().await; // first tick fires immediately — skip it to avoid startup load
+            loop {
+                interval.tick().await;
                 let views = ["REFRESH MATERIALIZED VIEW CONCURRENTLY agent_selection_stats"];
                 for sql in views {
                     if let Err(e) = sqlx::query(sql).execute(&db).await {
@@ -899,8 +796,7 @@ impl AppState {
                     }
                 }
                 tracing::debug!("materialized views refreshed");
-            })
-            .await;
+            }
         });
     }
 

@@ -62,7 +62,6 @@ tokio-util = { workspace = true }
 
 tokio = { workspace = true }
 axum = { workspace = true }
-http-body = { workspace = true }
 tower-http = { workspace = true }
 utoipa = { workspace = true }
 utoipa-swagger-ui = { workspace = true }
@@ -71,7 +70,6 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 redis = { workspace = true }
 nasiko-redis = { workspace = true }
-nasiko-leader = { workspace = true }
 rustls = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }

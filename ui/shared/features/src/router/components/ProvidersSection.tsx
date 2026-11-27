@@ -1,6 +1,6 @@
 /**
- * Providers (plan §4.1, §4.6): the catalog with prices, custom providers (sync status; anyone adds one, its creator
- * or a superuser gets its actions inline) and the read-only tier registry. A provider the router can't call (not built in, not a registered custom
+ * Providers (plan §4.1, §4.6): the catalog with prices, custom providers (sync status; superuser actions inline)
+ * and the read-only tier registry. A provider the router can't call (not built in, not a registered custom
  * provider) says so instead of looking usable.
  */
 import { AlertTriangle, MoreHorizontal } from 'lucide-react'
@@ -56,7 +56,6 @@ export function ProvidersSection({
   custom,
   registry,
   superuser,
-  viewer,
   onAdd,
   onEdit,
 }: {
@@ -64,12 +63,9 @@ export function ProvidersSection({
   custom: Q<CustomProvider[]>
   registry: Q<ModelMapping[]>
   superuser: boolean
-  /** The signed-in user's id: a provider they registered gets its actions. */
-  viewer?: string
   onAdd: () => void
   onEdit: (p: CustomProvider) => void
 }) {
-  const canManage = (p: CustomProvider) => superuser || (!!viewer && p.created_by === viewer)
   const customs = custom.data ?? []
   const labels = customs.map((c) => c.label)
   const byLabel = new Map(customs.map((c) => [c.label, c]))
@@ -98,9 +94,11 @@ export function ProvidersSection({
           <span className="text-sm text-muted-foreground">
             {catalog.data ? copy.providersCount(groups.length) : null}
           </span>
-          <Button size="sm" onClick={onAdd} className="ml-auto pointer-coarse:min-h-11">
-            {copy.addCustom}
-          </Button>
+          {superuser ? (
+            <Button size="sm" onClick={onAdd} className="ml-auto pointer-coarse:min-h-11">
+              {copy.addCustom}
+            </Button>
+          ) : null}
         </div>
         {catalog.isPending ? (
           <div className="p-2">
@@ -129,22 +127,19 @@ export function ProvidersSection({
                 </TableRow>
               </TableHeader>
               <TableBody className="max-sm:block">
-                {groups.map((g) => {
-                  const c = byLabel.get(g.provider)
-                  return (
-                    <ProviderRow
-                      key={g.provider}
-                      group={g}
-                      custom={c}
-                      routable={isRoutable(g.provider, labels)}
-                      manage={!!c && canManage(c)}
-                      onEdit={onEdit}
-                    />
-                  )
-                })}
+                {groups.map((g) => (
+                  <ProviderRow
+                    key={g.provider}
+                    group={g}
+                    custom={byLabel.get(g.provider)}
+                    routable={isRoutable(g.provider, labels)}
+                    superuser={superuser}
+                    onEdit={onEdit}
+                  />
+                ))}
               </TableBody>
             </Table>
-            {!customs.length && custom.data ? (
+            {superuser && !customs.length && custom.data ? (
               <p className="border-t border-border px-4 py-2 text-xs text-muted-foreground">
                 {copy.noCustom}
               </p>
@@ -170,13 +165,13 @@ function ProviderRow({
   group,
   custom,
   routable,
-  manage,
+  superuser,
   onEdit,
 }: {
   group: ProviderCatalog
   custom?: CustomProvider
   routable: boolean
-  manage: boolean
+  superuser: boolean
   onEdit: (p: CustomProvider) => void
 }) {
   return (
@@ -214,7 +209,7 @@ function ProviderRow({
         )}
       </TableCell>
       <TableCell className={cn(CELL, 'sm:text-right')}>
-        {custom && manage ? <CustomMenu p={custom} onEdit={onEdit} /> : null}
+        {custom && superuser ? <CustomMenu p={custom} onEdit={onEdit} /> : null}
       </TableCell>
     </TableRow>
   )

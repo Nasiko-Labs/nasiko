@@ -191,7 +191,7 @@ pub fn judge(harness: &str, session: &mut SessionSummary, readable: impl Fn(&str
     session.ineligible_reason = reason;
 }
 
-/// Where a session ran, from its `chat_sessions` row (migration 0117).
+/// Where a session ran, from its `chat_sessions` row (migration 0116).
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct PlacedSession {
     pub session_id: String,

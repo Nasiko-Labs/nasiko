@@ -77,8 +77,7 @@ async fn another_users_session_is_refused_and_left_untouched() {
     .await
     .unwrap();
 
-    // A 404, as for a session that is not there: a 403 would confirm alice's session exists.
-    assert_eq!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_eq!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     assert_eq!(
         messages_in(&server, "sess-alice-1").await,
         vec!["canary-A".to_string()]
@@ -104,7 +103,7 @@ async fn the_owner_can_still_continue_their_own_session() {
     .await
     .unwrap();
 
-    assert_ne!(resp.status(), reqwest::StatusCode::NOT_FOUND);
+    assert_ne!(resp.status(), reqwest::StatusCode::FORBIDDEN);
     let _ = resp.text().await;
     assert!(
         messages_in(&server, "sess-alice-2")

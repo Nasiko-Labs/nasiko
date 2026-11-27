@@ -2,7 +2,6 @@ pub mod batch;
 #[cfg(feature = "testing")]
 pub mod conformance;
 mod error;
-pub mod harness_agent;
 mod sandbox;
 mod sandbox_routed;
 mod sandbox_unavailable;
@@ -490,8 +489,7 @@ pub enum BlobStoreError {
 /// One implementation per storage protocol, selected once at the composition
 /// root and handed to `AppState` — exactly as [`ContainerRuntime`] is. This
 /// crate and `nasiko-oci` provide the S3-compatible one (RustFS/MinIO/AWS/any
-/// S3 API); an edition that offers more wires its own. Keys are digests, plus
-/// the OCI registry's staged upload chunks (`uploads:<upload>:<part>`); the
+/// S3 API); an edition that offers more wires its own. Keys are digests; the
 /// store never interprets them beyond a shared prefix, so the same bucket
 /// layout is readable by either backend and a migration is a plain object
 /// copy.
@@ -537,75 +535,6 @@ pub trait BlobStore: Send + Sync {
     /// that creates it, rather than surfacing later as an undiagnosable write
     /// failure.
     async fn ensure_bucket(&self, skip_create: bool) -> anyhow::Result<()>;
-
-    /// The object as a stream of pieces, so a caller can pass through an object
-    /// larger than it may hold in memory. Absence is `NotFound`, as for
-    /// [`get_blob`](Self::get_blob). The default reads the whole object first;
-    /// a backend that can stream overrides it.
-    async fn get_blob_stream(
-        &self,
-        digest: &str,
-    ) -> std::result::Result<BlobStream, BlobStoreError> {
-        let data = self.get_blob(digest).await?;
-        Ok(Box::pin(futures_util::stream::once(
-            async move { Ok(data) },
-        )))
-    }
-
-    /// A writer for an object written in pieces. Nothing is visible under
-    /// `digest` until [`BlobWriter::finish`]; [`BlobWriter::abort`] leaves the
-    /// key as it was, so a caller can verify the bytes before it commits them.
-    /// The default holds every piece and puts them at `finish`; a backend that
-    /// supports multipart writes overrides it.
-    async fn blob_writer<'a>(
-        &'a self,
-        digest: &str,
-    ) -> std::result::Result<Box<dyn BlobWriter + 'a>, BlobStoreError> {
-        Ok(Box::new(BufferedBlobWriter {
-            store: self,
-            digest: digest.to_owned(),
-            data: bytes::BytesMut::new(),
-        }))
-    }
-}
-
-/// An object's bytes in pieces, from [`BlobStore::get_blob_stream`].
-pub type BlobStream = std::pin::Pin<
-    Box<dyn futures_util::Stream<Item = std::result::Result<bytes::Bytes, BlobStoreError>> + Send>,
->;
-
-/// An object being written in pieces, from [`BlobStore::blob_writer`].
-#[async_trait]
-pub trait BlobWriter: Send {
-    async fn write(&mut self, data: bytes::Bytes) -> std::result::Result<(), BlobStoreError>;
-
-    /// Makes the object visible under its key; returns its size in bytes.
-    async fn finish(self: Box<Self>) -> std::result::Result<i64, BlobStoreError>;
-
-    /// Discards what was written. Best effort: a backend that keeps
-    /// uncommitted pieces for a while expires them on its own.
-    async fn abort(self: Box<Self>);
-}
-
-/// [`BlobStore::blob_writer`]'s default: one `put_blob` at `finish`.
-struct BufferedBlobWriter<'a, S: ?Sized> {
-    store: &'a S,
-    digest: String,
-    data: bytes::BytesMut,
-}
-
-#[async_trait]
-impl<S: BlobStore + ?Sized> BlobWriter for BufferedBlobWriter<'_, S> {
-    async fn write(&mut self, data: bytes::Bytes) -> std::result::Result<(), BlobStoreError> {
-        self.data.extend_from_slice(&data);
-        Ok(())
-    }
-
-    async fn finish(self: Box<Self>) -> std::result::Result<i64, BlobStoreError> {
-        self.store.put_blob(&self.digest, self.data.freeze()).await
-    }
-
-    async fn abort(self: Box<Self>) {}
 }
 
 /// Supplies image bytes for references the local container daemon doesn't have.

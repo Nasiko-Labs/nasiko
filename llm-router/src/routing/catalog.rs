@@ -41,9 +41,6 @@ pub(crate) struct CustomProviderEntry {
     pub api_key: String,
     pub default_model: Option<String>,
     pub catalog_sync_enabled: bool,
-    /// See [`crate::resolver::CustomEndpoint::public_only`]: its `/models` is fetched
-    /// through [`crate::public_only_client`].
-    pub public_only: bool,
 }
 
 /// The raw `custom_providers` columns the sweeps read.
@@ -55,17 +52,7 @@ type CustomProviderRow = (
     String,
     Option<String>,
     bool,
-    bool,
 );
-
-/// The `custom_providers` columns the sweeps read, in [`CustomProviderRow`] order.
-fn custom_provider_cols() -> String {
-    format!(
-        "label, base_url, kind, api_version, encrypted_api_key, default_model, \
-         catalog_sync_enabled, {}",
-        crate::resolver::PUBLIC_ONLY_SQL
-    )
-}
 
 fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
     let (
@@ -76,7 +63,6 @@ fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
         encrypted_api_key,
         default_model,
         catalog_sync_enabled,
-        public_only,
     ) = row;
     match SecretsCrypto::for_platform_settings().decrypt(&encrypted_api_key) {
         Ok(api_key) => Some(CustomProviderEntry {
@@ -86,7 +72,6 @@ fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
             api_key,
             default_model,
             catalog_sync_enabled,
-            public_only,
         }),
         Err(e) => {
             tracing::warn!(
@@ -102,10 +87,11 @@ fn row_to_entry(row: CustomProviderRow) -> Option<CustomProviderEntry> {
 /// Load every active custom provider (keys decrypted). Fail-soft: a DB error yields
 /// an empty list so the built-in sweep still runs.
 pub(crate) async fn load_custom_providers(db: &PgPool) -> Vec<CustomProviderEntry> {
-    let rows: Vec<CustomProviderRow> = match sqlx::query_as(&format!(
-        "SELECT {} FROM custom_providers WHERE deleted_at IS NULL",
-        custom_provider_cols()
-    ))
+    let rows: Vec<CustomProviderRow> = match sqlx::query_as(
+        "SELECT label, base_url, kind, api_version, encrypted_api_key, default_model, \
+                catalog_sync_enabled \
+         FROM custom_providers WHERE deleted_at IS NULL",
+    )
     .fetch_all(db)
     .await
     {
@@ -126,10 +112,11 @@ async fn load_custom_provider(
     db: &PgPool,
     label: &str,
 ) -> Result<Option<CustomProviderEntry>, sqlx::Error> {
-    let row: Option<CustomProviderRow> = sqlx::query_as(&format!(
-        "SELECT {} FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
-        custom_provider_cols()
-    ))
+    let row: Option<CustomProviderRow> = sqlx::query_as(
+        "SELECT label, base_url, kind, api_version, encrypted_api_key, default_model, \
+                catalog_sync_enabled \
+         FROM custom_providers WHERE label = $1 AND deleted_at IS NULL",
+    )
     .bind(label)
     .fetch_optional(db)
     .await?;
@@ -533,13 +520,6 @@ async fn sync_and_record(
     http: &reqwest::Client,
     entry: &CustomProviderEntry,
 ) -> Result<usize, sqlx::Error> {
-    let guarded;
-    let http = if entry.public_only {
-        guarded = crate::public_only_client();
-        &guarded
-    } else {
-        http
-    };
     match fetch_and_sync(
         db,
         http,
@@ -738,7 +718,6 @@ mod tests {
             api_key: format!("sk-{label}"),
             default_model: Some("m".into()),
             catalog_sync_enabled: sync_enabled,
-            public_only: false,
         }
     }
 

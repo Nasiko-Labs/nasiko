@@ -25,7 +25,7 @@ use opentelemetry::{KeyValue, global, metrics::Counter};
 use rand::Rng;
 use tokio::sync::Semaphore;
 
-use crate::rate_limit::{RateLimitStore, RateLimiter};
+use crate::rate_limit::RateLimiter;
 use crate::state::AppState;
 
 /// The per-user budget window.
@@ -35,8 +35,7 @@ const RATE_WINDOW: Duration = Duration::from_secs(60);
 const OVERLOAD_RETRY_SECS: std::ops::RangeInclusive<u64> = 2..=5;
 
 /// The ingest route's rate limiter, concurrency cap and counters. One per
-/// process, held on `AppState`. The per-user budget is counted across every
-/// replica; the concurrency cap protects this process, so it stays per replica.
+/// process, held on `AppState`.
 #[derive(Clone)]
 pub struct IngestGuard {
     events: RateLimiter,
@@ -45,23 +44,18 @@ pub struct IngestGuard {
 }
 
 impl IngestGuard {
-    pub fn new(config: &CodingAgentIngestConfig, rate_limits: &RateLimitStore) -> Self {
+    pub fn new(config: &CodingAgentIngestConfig) -> Self {
         Self {
-            events: RateLimiter::new(
-                rate_limits,
-                "coding-agent-ingest",
-                config.events_per_min,
-                RATE_WINDOW,
-            ),
+            events: RateLimiter::new(config.events_per_min, RATE_WINDOW),
             permits: Arc::new(Semaphore::new(config.max_concurrent)),
             metrics: IngestMetrics::new(),
         }
     }
 
     /// Charge `count` events to `user`'s budget, or the `429` to answer with.
-    pub(crate) async fn admit_events(&self, user: &str, count: usize) -> Result<(), Response> {
+    pub(crate) fn admit_events(&self, user: &str, count: usize) -> Result<(), Response> {
         let cost = u32::try_from(count).unwrap_or(u32::MAX);
-        self.events.try_consume(user, cost).await.map_err(|reset| {
+        self.events.try_consume(user, cost).map_err(|reset| {
             let retry_after = reset.as_secs().max(1);
             self.metrics.record_rejection(StatusCode::TOO_MANY_REQUESTS);
             tracing::info!(
@@ -232,20 +226,17 @@ mod tests {
     use super::*;
 
     fn guard(events_per_min: u32) -> IngestGuard {
-        IngestGuard::new(
-            &CodingAgentIngestConfig {
-                events_per_min,
-                ..Default::default()
-            },
-            &RateLimitStore::Local,
-        )
+        IngestGuard::new(&CodingAgentIngestConfig {
+            events_per_min,
+            ..Default::default()
+        })
     }
 
-    #[tokio::test]
-    async fn rate_limit_counts_events_and_answers_429_with_retry_after() {
+    #[test]
+    fn rate_limit_counts_events_and_answers_429_with_retry_after() {
         let guard = guard(150);
-        assert!(guard.admit_events("user", 100).await.is_ok());
-        let response = guard.admit_events("user", 100).await.unwrap_err();
+        assert!(guard.admit_events("user", 100).is_ok());
+        let response = guard.admit_events("user", 100).unwrap_err();
         assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
         let retry_after: u64 = response.headers()[header::RETRY_AFTER]
             .to_str()
@@ -254,7 +245,7 @@ mod tests {
             .unwrap();
         assert!((1..=60).contains(&retry_after));
         assert!(
-            guard.admit_events("other", 100).await.is_ok(),
+            guard.admit_events("other", 100).is_ok(),
             "each user has their own budget"
         );
         assert_eq!(guard.metrics.take().rate_limited, 1);

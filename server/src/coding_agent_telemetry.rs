@@ -85,7 +85,7 @@ async fn ingest_batch(
         Ok(id) => id,
         Err(error) => return error.into_response(),
     };
-    if let Err(response) = guard.admit_events(&claims.sub, batch.events.len()).await {
+    if let Err(response) = guard.admit_events(&claims.sub, batch.events.len()) {
         return response;
     }
     let tempo_cutoff = tempo_cutoff(state.config.coding_agent_ingest.tempo_max_age_secs);
