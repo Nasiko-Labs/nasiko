@@ -15,6 +15,7 @@ def main():
     root = Path(__file__).resolve().parent / "final"
     result = verify_benchmark(root)
     print("NASIKO AUTOEVAL — frozen real benchmark")
+    print("Verified recorded model runs; this display makes no model requests.")
     print(
         f"{len(result['verified_tasks'])} real tasks; {len(result['attempts'])} assigned model/task slots"
     )
@@ -29,10 +30,14 @@ def main():
             f"{row['model']}: {row['resolved']}/{row['attempted']} ({row['resolution_rate']:.1%}); infrastructure={row['infrastructure_failures']}"
         )
         print(
-            f"  Nasiko cost={money(row['cost_usd'])}; per assigned task={money(row['cost_per_attempt_usd'])}; per resolution={money(row['cost_per_resolution_usd'])}"
+            f"  Nasiko generation cost={money(row['cost_usd'])}; per assigned task={money(row['cost_per_attempt_usd'])}; per resolution={money(row['cost_per_resolution_usd'])}"
         )
     print(
-        "\nOnly declared final runs are scored. Calculator/security fixtures and development reruns are excluded."
+        "\nScores are regraded from captured test evidence; model names only group results."
+    )
+    print("Synthetic calculator validation uses no model calls and is excluded.")
+    print(
+        "Only declared final runs are scored; security fixtures and development reruns are excluded."
     )
     print(
         "Report/log overwrite regression blocked; in-process framework/stdout manipulation remains a risk. Grading is not tamper-proof."

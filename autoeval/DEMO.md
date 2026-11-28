@@ -57,6 +57,11 @@ One TypeScript patch regressed existing tests; the other failed compilation or
 suite loading. Each assigned slot had one generation request. Synthetic fixtures
 and development reruns do not enter these scores.”
 
+“This display makes no new model calls. The recorded benchmark used real model
+requests through Nasiko. Scores come from captured test evidence: verification
+re-parses the logs and regrades each candidate. Model names only group results;
+they never assign a passing score.”
+
 ## 1:45–2:15 — Exact recorded cost
 
 Open `autoeval/final/runs/iniconfig-bom/model-1.json`; show `usage.trace_id`, token
@@ -88,3 +93,16 @@ these observed outcomes, not a general model ranking.”
 
 The [README](README.md) has commands for unit tests, an independent security
 regression, individual calculator demos and a fresh paid benchmark replay.
+
+For a quick check without Docker, server access or paid model calls:
+
+```sh
+PYTHONPATH=autoeval/src python3 -m unittest discover -s autoeval/tests -v
+python3 autoeval/run.py verify --run autoeval/final
+python3 autoeval/demo.py
+```
+
+Calculator source is deliberately buggy; use `examples` to validate the old and
+reference versions. Running its regression tests directly on the buggy source
+is expected to fail. Keep new validation or benchmark output in a fresh directory;
+`final/` and `evidence/` retain the original frozen observations.

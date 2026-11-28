@@ -18,11 +18,13 @@ PYTHONPATH=autoeval/src python3 -m unittest discover -s autoeval/tests -v
 python3 -m compileall -q autoeval/src
 ```
 
-The final check completed 47 unit tests, five calculator Docker validations, the
-before/after security regression and the three real repeatability gates. Ruff
-lint/format and compilation passed. `cargo fmt`, `cargo check --workspace` and
-`cargo clippy --workspace` could not run because host Cargo is unavailable.
-The Rust calculator was compiled and tested with Cargo inside Docker.
+The current suite has 49 unit tests, including checks that scores follow captured
+test evidence and remain independent of model labels. The preserved Docker checks
+cover five calculator validations, the before/after security regression and the
+three real repeatability gates. Ruff lint/format and compilation passed. The
+recorded `cargo fmt`, `cargo check --workspace` and `cargo clippy --workspace`
+checks could not run because host Cargo was unavailable. The Rust calculator was
+compiled and tested with Cargo inside Docker.
 
 Optional installation: `python3 -m venv autoeval/.venv`, then
 `autoeval/.venv/bin/pip install -e autoeval`. This installs the `autoeval` command.

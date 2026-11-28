@@ -5,10 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from nasiko_autoeval.benchmark import collect_members
+from nasiko_autoeval.benchmark import collect_members, verify_benchmark
 from nasiko_autoeval.examples import EXAMPLES, NAMES, prepare_example
 from nasiko_autoeval.integrity import sha256, verify_checksums
-from nasiko_autoeval.schema import EvalError, save_json
+from nasiko_autoeval.report import summarize
+from nasiko_autoeval.results import grade
+from nasiko_autoeval.schema import EvalError, TestRun, save_json
 from nasiko_autoeval.tasks import build_task, git, model_prompt
 
 
@@ -110,3 +112,55 @@ class FrozenMembershipTests(unittest.TestCase):
             path.unlink()
             with self.assertRaises(EvalError):
                 verify_checksums(root, hashes)
+
+
+class FrozenScoringTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.frozen = verify_benchmark(Path(__file__).resolve().parents[1] / "final")
+        cls.gates = {
+            item["task"]["fix_sha"]: item["validation"]
+            for item in cls.frozen["verified_tasks"]
+        }
+
+    def test_final_scores_and_costs_follow_captured_test_evidence(self):
+        attempts = []
+        for attempt in self.frozen["attempts"]:
+            verdict = grade(TestRun(**attempt["test_run"]), self.gates[attempt["task"]])
+            self.assertEqual(verdict["outcome"], attempt["outcome"])
+            attempts.append({**attempt, **verdict})
+        summary = summarize(attempts)
+        self.assertEqual(summary, self.frozen["summary"])
+        self.assertEqual(
+            [
+                (r["model"], r["resolved"], r["attempted"], f"{r['cost_usd']:.6f}")
+                for r in summary
+            ],
+            [
+                ("gemini-3.1-flash-lite", 2, 3, "0.016999"),
+                ("gemini-3.5-flash-lite", 2, 3, "0.025345"),
+            ],
+        )
+
+    def test_model_labels_cannot_override_failing_test_evidence(self):
+        for row in self.frozen["summary"]:
+            model = row["model"]
+            attempts = [a for a in self.frozen["attempts"] if a["model"] == model]
+            passing = next(a for a in attempts if a["outcome"] == "resolved")
+            captured = passing["test_run"]
+            tests = dict(captured["tests"])
+            tests[self.gates[passing["task"]]["expected_tests"][0]] = "failed"
+            failed_run = TestRun(
+                **{**captured, "status": "test_failure", "tests": tests, "exit_code": 1}
+            )
+            verdict = grade(failed_run, self.gates[passing["task"]])
+            self.assertEqual(verdict["outcome"], "unresolved")
+            changed = [{**a, **verdict} if a is passing else dict(a) for a in attempts]
+            for label in (model, "anonymous-model"):
+                with self.subTest(model=model, label=label):
+                    original = summarize([{**a, "model": label} for a in attempts])[0]
+                    updated = summarize([{**a, "model": label} for a in changed])[0]
+                    self.assertEqual(original["resolved"], 2)
+                    self.assertEqual(updated["resolved"], 1)
+                    self.assertEqual(updated["attempted"], 3)
+                    self.assertEqual(updated["cost_usd"], row["cost_usd"])

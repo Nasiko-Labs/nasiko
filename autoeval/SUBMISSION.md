@@ -39,6 +39,24 @@ reconciliation. Exact native-model entries are applied; every final cost has
 usage. The older server's missing evaluation endpoints are bridged with read-only,
 owner/agent-scoped Postgres snapshots.
 
+The real benchmark used six live generation requests through Nasiko's
+`/v1/chat/completions`, one per model/task. Each `final/runs/*/model-*.json`
+retains the response ID, served model, generated content, provider token counts,
+attributable trace and ledger cost; `candidate-*.json` retains the parsed changes.
+The [six-generation ledger audit](evidence/pricing/final-ledger-audit.json)
+records matching response usage and exact, non-estimated costs. `demo.py` and
+`verify` inspect these recordings without making new model calls. This is
+preserved local provenance, not independently signed provider attestation.
+
+Scores are computed from test evidence, never assigned by model name.
+`results.grade` takes a test run and verified test requirements, with no model
+argument. Every required regression and existing test must pass; missing tests,
+skips, suite failures and infrastructure errors cannot resolve a task.
+`benchmark.verify_benchmark` re-parses raw captures, regrades candidates and
+checks the recomputed aggregation against the sealed results. Model names only
+group attempts in `report.summarize`. Unit checks also rename model labels and
+change copied test evidence to verify that scores follow test outcomes.
+
 The original writable-report attack was reproduced: buggy candidate code replaced
 the report and log, forced exit zero, and incorrectly resolved. Host-side bounded
 stream capture, read-only test execution and pytest phase/exit consistency checks
@@ -54,6 +72,11 @@ All five pass repeated Docker validation with two regression tests and one exist
 test each. They demonstrate adapter coverage, use no model calls, and remain
 separate from real benchmark scores.
 
+The calculator bug, reference patch and two-commit history are deterministic
+synthetic fixtures. Directly running regression tests on their buggy source is
+expected to fail. Use `python3 autoeval/run.py examples all` to validate both code
+versions through the shared Docker workflow; it does not ask an AI to fix them.
+
 Reproducibility evidence retains source Git bundles, pinned image digests,
 dependency inventories, prompts, responses, candidates, raw captures, normalized
 tests and ledger records. `verify` checks sealed hashes, recomputes membership and
@@ -64,3 +87,35 @@ validation passed inside Docker.
 
 [Run and test commands](README.md) · [Three-minute demo](DEMO.md) ·
 [Final report](final/report.md)
+
+Run the final submission checks from the repository root (Python 3.11+ and Git;
+these commands make no model calls and do not require a running server or Docker):
+
+```sh
+PYTHONPATH=autoeval/src python3 -m unittest discover -s autoeval/tests -v
+python3 autoeval/run.py verify --run autoeval/final
+python3 autoeval/demo.py
+```
+
+Finalization checks passed: 49 unit tests; sealed verification of three real tasks
+and six assigned slots; demo output with both models at 2/3 and generation costs
+of $0.016999 / $0.025345 respectively; Ruff lint/format and Python compilation.
+All 191 files under `final/` and `evidence/`, including 85 sealed artifacts,
+remain byte-for-byte unchanged. The original Docker validations are retained;
+finalization did not repeat paid model generation or Docker evaluation.
+A read-only recheck against the running Postgres ledger also matched all six
+frozen trace IDs, served models, provider token counts and costs ($0.042344 total).
+
+To exercise live models again, run the paid replay into a fresh output directory
+with Nasiko, Docker and valid server-side provider credentials available:
+
+```sh
+python3 autoeval/run.py benchmark --manifest autoeval/final/manifest.json \
+  --source-bundles autoeval/final/inputs \
+  --run /tmp/autoeval-submission-replay --postgres-container nasiko-postgres-1
+```
+
+A fresh replay can produce different patches and scores. Preserve `final/` and
+`evidence/`; the submission consists of this document, `DEMO.md`, `demo.py`, the
+README, CLI source/tests, benchmark manifest, synthetic examples and both evidence
+directories, including `final/report.md` and `final/benchmark.lock.json`.
