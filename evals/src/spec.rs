@@ -43,6 +43,7 @@ pub enum Language {
     Rust,
     #[serde(alias = "javascript")]
     TypeScript,
+    Python,
 }
 
 /// Default Rust toolchain image when the repo pins none. Debian 13 (trixie), not 12: prebuilt
@@ -53,6 +54,9 @@ pub const DEFAULT_RUST_IMAGE: &str = "rust:1-trixie";
 /// Default Node toolchain image for TypeScript/JavaScript repositories.
 pub const DEFAULT_NODE_IMAGE: &str = "node:22-bookworm-slim";
 
+/// Default Python toolchain image for Python repositories.
+pub const DEFAULT_PYTHON_IMAGE: &str = "python:3.12-slim";
+
 /// Proposes a spec from the files at the repo root; `toolchain` is the content of
 /// `rust-toolchain.toml` / `rust-toolchain` for Cargo repos, or `package.json` for Node repos.
 /// `None` for unsupported repos.
@@ -62,6 +66,8 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
     }
     if root_files.iter().any(|f| f == "package.json") {
         return propose_vitest(repo, root_files, toolchain?);
+    } else if is_python_pytest(root_files, toolchain) {
+        return Some(propose_pytest(repo, root_files));
     }
     None
 }
@@ -147,6 +153,49 @@ fn package_uses_vitest(package_json: &str) -> bool {
         .and_then(|t| t.as_str())
         .is_some_and(|t| t.contains("vitest"));
     has_dep || has_script
+}
+
+fn is_python_pytest(root_files: &[String], toolchain: Option<&str>) -> bool {
+    let has_python_marker = root_files.iter().any(|f| {
+        matches!(
+            f.as_str(),
+            "pyproject.toml" | "pytest.ini" | "setup.py" | "requirements.txt"
+        )
+    });
+    if !has_python_marker {
+        return false;
+    }
+    let has_pytest_ini = root_files.iter().any(|f| f == "pytest.ini");
+    let toolchain_has_pytest = toolchain.is_some_and(|t| t.to_ascii_lowercase().contains("pytest"));
+    has_pytest_ini || toolchain_has_pytest
+}
+
+fn propose_pytest(repo: &str, root_files: &[String]) -> EnvSpec {
+    let install = if root_files.iter().any(|f| f == "requirements.txt") {
+        "pip install --no-cache-dir -r requirements.txt pytest"
+    } else if root_files.iter().any(|f| f == "pyproject.toml") {
+        "pip install --no-cache-dir -e . pytest"
+    } else {
+        "pip install --no-cache-dir pytest"
+    };
+    EnvSpec {
+        repo: repo.to_string(),
+        language: Language::Python,
+        toolchain_image: DEFAULT_PYTHON_IMAGE.to_string(),
+        system_packages: vec![],
+        setup: vec![install.into()],
+        build_cmd: String::new(),
+        test_cmd: "pytest -v --tb=short".into(),
+        test_paths: vec![
+            "**/test_*.py".into(),
+            "**/*_test.py".into(),
+            "**/tests/**".into(),
+        ],
+        log_parser: LogParserKind::Pytest,
+        timeout_secs: 1800,
+        memory_mib: DEFAULT_MEMORY_MIB,
+        local_path: None,
+    }
 }
 
 /// A build container's memory limit unless the spec says otherwise.
@@ -472,5 +521,69 @@ mod tests {
         assert!(script.contains("git apply --whitespace=nowarn /eval/test.patch"));
         assert!(!script.contains("exit 12"));
         assert!(script.contains("npx vitest run --reporter=verbose\n"));
+    }
+
+    #[test]
+    fn proposes_pytest_for_pyproject_with_pytest_in_toolchain() {
+        let root = vec!["pyproject.toml".into()];
+        let spec = propose(
+            "o/pyapp",
+            &root,
+            Some("[project]\ndependencies = [\"pytest\"]"),
+        )
+        .expect("pytest");
+        assert_eq!(spec.language, Language::Python);
+        assert_eq!(spec.toolchain_image, DEFAULT_PYTHON_IMAGE);
+        assert!(spec.system_packages.is_empty());
+        assert_eq!(spec.setup, vec!["pip install --no-cache-dir -e . pytest"]);
+        assert_eq!(spec.build_cmd, "");
+        assert_eq!(spec.test_cmd, "pytest -v --tb=short");
+        assert_eq!(
+            spec.test_paths,
+            vec!["**/test_*.py", "**/*_test.py", "**/tests/**"]
+        );
+        assert_eq!(spec.log_parser, LogParserKind::Pytest);
+    }
+
+    #[test]
+    fn proposes_pytest_for_requirements_with_pytest_in_toolchain() {
+        let root = vec!["requirements.txt".into()];
+        let spec = propose("o/pyapp", &root, Some("PYTEST>=8.0\n")).expect("pytest");
+        assert_eq!(spec.language, Language::Python);
+        assert_eq!(
+            spec.setup,
+            vec!["pip install --no-cache-dir -r requirements.txt pytest"]
+        );
+    }
+
+    #[test]
+    fn proposes_pytest_for_pytest_ini_without_toolchain() {
+        let root = vec!["pytest.ini".into()];
+        let spec = propose("o/pyapp", &root, None).expect("pytest");
+        assert_eq!(spec.language, Language::Python);
+        assert_eq!(spec.setup, vec!["pip install --no-cache-dir pytest"]);
+        let spec_empty = propose("o/pyapp", &root, Some("")).expect("pytest");
+        assert_eq!(spec_empty.setup, vec!["pip install --no-cache-dir pytest"]);
+    }
+
+    #[test]
+    fn rejects_python_repo_without_pytest_signal() {
+        assert!(propose("o/pyapp", &["pyproject.toml".into()], None).is_none());
+        assert!(
+            propose(
+                "o/pyapp",
+                &["pyproject.toml".into()],
+                Some("[project]\nname = \"app\"")
+            )
+            .is_none()
+        );
+        assert!(
+            propose(
+                "o/pyapp",
+                &["requirements.txt".into()],
+                Some("flask==3.0.0")
+            )
+            .is_none()
+        );
     }
 }

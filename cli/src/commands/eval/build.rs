@@ -27,7 +27,10 @@ pub fn spec_detect(store: &Store, repo_dir: &Path) -> Result<EnvSpec> {
     } else if root.iter().any(|f| f == "package.json") {
         repo.file_at("HEAD", "package.json").ok().flatten()
     } else {
-        None
+        ["pyproject.toml", "requirements.txt", "pytest.ini"]
+            .iter()
+            .find(|&&name| root.iter().any(|f| f == name))
+            .and_then(|name| repo.file_at("HEAD", name).ok().flatten())
     };
     let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref()).context(
         "only Cargo (Rust) and Vitest (TypeScript/JavaScript) repositories are supported so far",
