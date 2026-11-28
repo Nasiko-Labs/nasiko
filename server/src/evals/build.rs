@@ -42,12 +42,18 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
         Ok(forge) => forge,
         Err(refusal) => bail!("the repository cannot be read: {}", refusal.code()),
     };
-    let Some(scope) = test_scope(&forge, &task).await? else {
-        task.x_nasiko.status = TaskStatus::Rejected;
-        task.x_nasiko.reject_reason =
-            Some("build: no Cargo package owns the task's files, so it has no tests to run".into());
-        store::save_task(&state.db, row.id, &task, "done").await?;
-        return Ok(());
+    let scope = if spec.language == spec::Language::Rust {
+        let Some(scope) = test_scope(&forge, &task).await? else {
+            task.x_nasiko.status = TaskStatus::Rejected;
+            task.x_nasiko.reject_reason = Some(
+                "build: no Cargo package owns the task's files, so it has no tests to run".into(),
+            );
+            store::save_task(&state.db, row.id, &task, "done").await?;
+            return Ok(());
+        };
+        scope
+    } else {
+        Vec::new()
     };
     task.image = build_image(state, &forge, &spec, &task.base_commit, &scope).await?;
     task.eval_script = spec::eval_script(&spec, &scope);

@@ -123,7 +123,11 @@ fn build_task(
         .as_deref()
         .context("the spec has no local_path; re-run `nasiko eval spec detect`")?;
     let repo = Repo::open(Path::new(repo_path))?;
-    let scope = test_scope(&repo, task)?;
+    let scope = if spec.language == spec::Language::Rust {
+        test_scope(&repo, task)?
+    } else {
+        Vec::new()
+    };
     let env_tag = images::env_image_tag(&spec);
     if !containers.image_exists(&env_tag)? {
         let dir = scratch_dir(store, &task.instance_id, "env-image")?;

@@ -73,16 +73,18 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
     }
     // Warm the build of the affected crates at the base commit; a failure here is fine (the
     // gate will report it), it only means the cache is colder.
-    let jobs = if is_cargo(spec) {
-        format!("CARGO_BUILD_JOBS={WARM_BUILD_JOBS} ")
-    } else {
-        String::new()
-    };
-    let _ = writeln!(
-        df,
-        "RUN {jobs}{} || true",
-        spec::with_scope(&spec.build_cmd, scope)
-    );
+    if !spec.build_cmd.trim().is_empty() {
+        let jobs = if is_cargo(spec) {
+            format!("CARGO_BUILD_JOBS={WARM_BUILD_JOBS} ")
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            df,
+            "RUN {jobs}{} || true",
+            spec::with_scope(&spec.build_cmd, scope)
+        );
+    }
     // No `CARGO_NET_OFFLINE` here: the containers that use this image already have no network,
     // and changing that variable after the warm build makes build scripts that watch it (such as
     // `ort-sys`, which downloads ONNX Runtime) run again offline and fail to link.
@@ -201,5 +203,20 @@ mod tests {
         let mut t = rust_spec();
         t.setup.push("cargo build".into());
         assert_ne!(a, task_image_tag(&t, "0123456789abcdef", &["-p a".into()]));
+    }
+
+    #[test]
+    fn task_image_for_vitest_omits_empty_build_step() {
+        let pkg = r#"{"name": "rangotsav", "devDependencies": {"vitest": "^5.1.2"}}"#;
+        let vitest = spec::propose(
+            "o/rangot",
+            &["package.json".into(), "package-lock.json".into()],
+            Some(pkg),
+        )
+        .expect("vitest");
+        let df = task_dockerfile("env:1", &vitest, &[]);
+        assert!(df.contains("RUN npm ci\n"));
+        assert!(!df.contains("|| true"));
+        assert!(df.ends_with("ENV HOME=/root\n"));
     }
 }

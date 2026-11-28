@@ -51,7 +51,7 @@ pub enum Language {
 pub const DEFAULT_RUST_IMAGE: &str = "rust:1-trixie";
 
 /// Default Node toolchain image for TypeScript/JavaScript repositories.
-pub const DEFAULT_NODE_IMAGE: &str = "node:20-slim";
+pub const DEFAULT_NODE_IMAGE: &str = "node:22-bookworm-slim";
 
 /// Proposes a spec from the files at the repo root; `toolchain` is the content of
 /// `rust-toolchain.toml` / `rust-toolchain` for Cargo repos, or `package.json` for Node repos.
@@ -440,7 +440,7 @@ mod tests {
         let root = vec!["package.json".into(), "package-lock.json".into()];
         let spec = propose("o/rangot", &root, Some(RANGOT_PACKAGE_JSON)).expect("vitest");
         assert_eq!(spec.language, Language::TypeScript);
-        assert_eq!(spec.toolchain_image, "node:20-slim");
+        assert_eq!(spec.toolchain_image, "node:22-bookworm-slim");
         assert_eq!(spec.setup, vec!["npm ci"]);
         assert_eq!(spec.build_cmd, "");
         assert_eq!(spec.test_cmd, "npx vitest run --reporter=verbose");
