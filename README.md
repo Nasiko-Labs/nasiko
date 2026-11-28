@@ -23,6 +23,7 @@ See every coding agent your team runs and what it costs. Route it to the models 
 - [Architecture](#architecture)
 - [Quick start](#quick-start)
 - [Coding agents](#coding-agents)
+- [Replay evals](#replay-evals)
 - [Deploy your own agents](#deploy-your-own-agents)
 - [Troubleshooting](#troubleshooting)
 - [Community](#community)
@@ -291,6 +292,27 @@ nasiko connect claude --config my-openai
 it. The key stays encrypted on the server; the harness only gets a short-lived token. Settings are
 per user, so connecting affects every session of that harness on the machine.
 [What `connect` changes](https://docs.nasiko.com/coding-agents/routing).
+
+## Replay evals
+
+Is a cheaper model good enough for your own work? Replay evals turn coding tasks your team
+already finished into a private benchmark, replay them on other models, and report what each
+one solved and what it cost. See [docs/EVALS.md](docs/EVALS.md).
+
+No recorded sessions yet? Build tasks from a Rust repository's own commit history, on your
+machine, with Docker and no model key:
+
+```sh
+nasiko eval local init
+nasiko eval local harvest-commits --repo . --dry-run   # what would become a task, and why not
+nasiko eval local harvest-commits --repo .
+nasiko eval local spec detect --repo .
+nasiko eval local build                                # keeps tasks whose tests fail before the fix and pass after
+```
+
+The run report (`nasiko eval local report <run>`) says more than pass or fail: how sure each
+rate is, whether a model solves a task every time, how its change compares with your fix, and
+how it went about the work.
 
 ## Deploy your own agents
 

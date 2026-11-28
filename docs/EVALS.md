@@ -426,16 +426,126 @@ report says which and why. In JSON the new keys are `consistency`, `tasks`,
 These sections are in the local report only: the server's report shares the resolved rate and
 its range (the same code), not the sections that read the patch and the session.
 
+The report reads in this order: the headline and the model table; **How it worked** (how each
+agent went about the task, read from its session); **What it produced** (works every time,
+scope against your fix); the per-task table with one line per failed attempt and one line of
+sentences per attempt; failure reasons and the by-difficulty table; test tampering as a closing
+note; "Not read". The pass rate says whether the hidden tests passed. "How it worked" is for
+the team that is deciding whether to hand work to a cheaper model and wants to know whether it
+investigated or guessed. Every table there has a row for all attempts whose session was read,
+one for those that resolved their task and one for those that did not, so a habit that goes
+with failure shows. They are signals about method, not verdicts: a correct change can come out
+of a session that reads badly, and the other way round.
+
+A session records only part of what an agent did, so these sections keep three answers apart:
+the session shows it, the session shows the opposite, and *cannot tell*. An attempt that cannot
+be told is counted in its own column and left out of the share; it is never counted as "did
+not".
+
+Some words are used the same way in all of them:
+
+* The agent *opened* a file when its read tool, a shell command that shows files (`cat`,
+  `head`, `tail`, `sed -n`, `wc`, `git diff -- file` and the like) or a search was pointed at
+  it by name, or when it edited it.
+* A search *listed* a file when the output of a contents search the agent ran over files (its
+  search tool, `grep -r`, `rg`, `git grep`), or of `git diff`, `git show` or `git log`, names
+  it. A `grep` that only filters another command's output (`cargo build | grep error`) is not
+  a search of the code, and the output of a build or test run never counts.
+* A command *named* a file when it writes the path out in full without being a program known
+  to show files: a script given the path, `ls`. Commands that only change or remove a file
+  (`rm`, `mv`, `git checkout`, `sed -i`, a redirect into it, an `echo` that mentions it) do
+  not count at all.
+* *Cannot tell*: a command may have shown the file without naming it. A viewer or search
+  pointed at a glob that covers it (`cat src/*.rs`), fed by `$(…)`, backticks or `xargs`, or a
+  script handed to an interpreter through a heredoc.
+* An *edit* is a call of one of the agent's edit tools (`edit`, `write`, `apply_patch`). A file
+  *was already there* when a patch (the attempt's or your fix) changes it, when the edit tool
+  says so, or when the agent's read tool opened it before the edit. A file is *the agent's own*
+  when its patch adds it or the edit tool says it made it; later edits to it are edits to its
+  own file. Where nothing says (a whole-file write the session does not mark, to a file that
+  is in no patch), the file is taken as a scratch file, not as existing code.
+* A *build or test command* is `cargo test`, `nextest`, `build`, `check` or `clippy` (also as
+  `cargo t`, behind `cd x &&`, `timeout 60`, `VAR=value`, `uv run`, `poetry run`, `npx`, or
+  inside `bash -c "…"`), `pytest`, `python -m pytest`, `python -m unittest`, `tox`, `nox`,
+  `go test`, `go build`, `go vet`, `npm test`, `npm run test`, `yarn test`, `pnpm test`,
+  `bun test`, `jest`, `vitest`, `mocha`, `make test`, `make check`, `mvn test`, `gradle test`,
+  `dotnet test`, `ctest`, `rspec`, or the spec's own build or test command. A command line
+  that only mentions one (an `echo`, a commit message, a `grep`, a heredoc body, `--help`)
+  does not count, nor does one that only lists tests (`pytest --collect-only`, `tox -l`).
+  `cargo test --no-run` and `cargo test -- --list` compile the code and count as a build. A
+  command that did not start (exit status 126 or 127, or "command not found" in its output) is
+  not a run.
+
 | Section | What it tells a team | How it is computed |
 |---|---|---|
 | Resolved (95% range) | How sure the number is. Ten of ten is "100%, somewhere between 72% and 100%", not "100% to 100%". | A Wilson score interval. Each task counts once, by its first attempt, in the resolved rate, the match rate and the by-difficulty table; three attempts on ten tasks are ten tasks, not thirty. Cost and cost per resolved still cover every attempt (all attempts' cost divided by the attempts that resolved), and so do the failure counts. A task whose first attempt failed on the sandbox (`infra_error`) counts as not resolved; the report names those tasks under the model table so a flaky sandbox is not read as a weak model. |
+| How it worked: where it looked | Whether the agent ever looked where your team's fix is. "No look shown" and "looked but did not change it" are different failures: the first is about finding the place, the second about what to do there. | For each file your fix changed that was already there (files your fix adds, test files and lock files are left out): the attempt's final patch changes it too; or the agent looked at it (opened it, a search listed it, or a command named it) and left it unchanged; or a command may have shown it (cannot tell); or the session shows no look at it. Files it looked at without ever opening them are counted apart, because one broad search lists many files. Per model: the attempts compared, the share of them that looked at every such file (attempts that cannot be told left out), and how many files fall in each group. |
+| How it worked: searched for what it changed | The nearest a session comes to "checked who uses a thing before changing it". | A shared item is a `pub` function, struct, enum, trait, constant, static, type alias or field (`pub(crate)` too) in a Rust file that is not a test, whose declaration the attempt's graded patch removes or changes. The declaration is its line up to the body (`{`) or the end (`;`), white space apart, so a line that only moved, was reformatted or changed in its body is not counted; an item is counted per file. "Searched for" means that at any point of the session the agent ran a contents search whose pattern holds the item's name as a whole word and that reached beyond the file declaring it (its search tool, or `grep`, `rg`, `ag`, `ack`, `git grep` over files). Per model: the patches with Rust code (the ones read), the attempts that changed a shared item, the share of them that searched for the name of every one, and the items changed and searched for. |
+| How it worked: how widely, and when | Whether it explored before it started editing, or edited first and looked later. | Distinct files opened by name and distinct files edited, as medians per model, and the share of its looking steps (opening, listing, searching) that came before its first edit. |
+| Ran the build or tests before changing code | The nearest a session comes to "saw the problem before changing anything": whether it ran anything before changing code, and whether what it ran failed. | Whether a build or test command ran before the agent's first edit to code that was already there. Not that first change: writing or adjusting a file of its own (a reproduction), a file outside the repository, an edit under a test path, and an edit that removes nothing and adds only Rust tests (every item it adds stands behind `#[test]`, `#[tokio::test]`, `#[rstest]`, `#[cfg(test)]`). A whole-file write over an existing file is always a change. "Showed a failure": the run was the last command of its line and the line's exit status is a failing one; or, where the status is another command's (a pipe, `;`, `||`, `&`, `$(…)`), the output the session kept holds failure text (`FAILED`, `--- FAIL`, a line starting with `error:` or `error[E…]:`, a Python traceback, "1 failed"). A run stopped at a time limit (exit 124, 137, 143, or opencode's own timeout note) is "cut off", neither. |
+| Guessed and redid | How directly it got to its change: written once, or written, thrown away and written again. | Lines added over all the agent's edits to files inside the repository that are not test files, divided by the lines its patch as handed in adds to such files. A test written inside a source file is in both counts (grading undoes it, so the handed-in patch is used, not the graded one). 1.0 is "wrote it once". An attempt that wrote lines and kept none has no ratio; it is counted in its own column and together with those above 2.0. Per model, over the attempts that edited with edit tools: the median ratio, the share above 2.0 or with nothing kept, the attempts that kept nothing, and the attempts that edited a file that is not in the patch they handed in. |
+| Tested its own fix before saying done | Whether the agent ran the build or the tests after its last edit, or handed in unverified work. | The last edit to a file inside the repository and whether a later shell command ran a build or test command. Per model, the share of attempts with edit-tool calls that did, and those that never ran one. Attempts that changed files with no edit-tool call are counted apart as "cannot tell". |
+| Read before changing | Whether it edited files it had not looked at. Expect it to read high for every model: opencode's own edit tool tells the model to read a file before editing it. | For each file that was already there and that the agent edited: had it opened the file, or had a search listed it, before its first edit to it. A file a command only named or may have shown is "cannot tell". Files the agent made itself do not count. Per model: the attempts that edited existing files, the share that looked at every such file first (attempts that cannot be told left out), the files edited with no look shown, and the files that cannot be told. |
 | Works every time | Whether a model solves a task reliably or only on a lucky run. | Needs more than one attempt per task (`run --attempts 3`). Per model: the share of tasks solved in every attempt, in at least one, and in some but not all, each with its range, and the "sometimes" tasks by id. Tasks with an attempt lost to the sandbox are named, because that attempt counts as not solved. With one attempt per task the section says it cannot tell. |
-| Test tampering | Whether the model changed tests that were already there to get to green. | Read from the patch as the agent handed it in, before grading drops its test changes. Each attempt gets one verdict. *Removed or disabled tests*: a test file or test function deleted or renamed, a test that lost its test attribute or became a plain function, or `#[ignore]`, `#[should_panic]` or a `#[cfg]` gate put on an existing test or test module. *Edited existing tests*: any other change to existing test code or to an existing file under a test path (fixtures, snapshots), including lines added inside an existing test, with the files named. Otherwise *no change to existing tests seen*. Per model, the share of attempts with each, the assert lines deleted and not replaced in the same changed block, and how many flagged attempts touched only test files your own commit changed too (there the task itself needed the tests updated). New test files and new test functions are listed apart as "wrote its own tests" and are never tampering. This is not part of the score. |
 | Scope against your fix | What a passing change looks like next to the one your team made: same files or others, similar size or several times larger. | The graded patch against the task's real fix, test files and lock files (`Cargo.lock`, `package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `go.sum`, `poetry.lock`, `uv.lock`, `Gemfile.lock`) left out of both: files both touched (a file the model also renamed still counts), files only the model touched, files only your fix touched, and added plus removed lines of each. Per model, split into resolved and not resolved: the share that touched a file your fix touched, the median size ratio, the share with extra files, with left-out files, and more than 3x the size. It says "differs", not "wrong": another correct fix can touch other files. Attempts with no code change are left out. |
-| Checked its own work | Whether the agent ran the build or the tests after its last edit, or handed in unverified work. | Read from opencode's session export: the last file edit (the `edit`, `write`, `multiedit`, `patch` and `apply_patch` tools) and whether a later shell command ran `cargo test`, `nextest`, `build`, `check` or `clippy` (also as `cargo t`, behind `cd x &&`, `timeout 60`, `VAR=value` or inside `bash -c "…"`) or the spec's own build or test command. A command line that only mentions one (an `echo`, a commit message, a `grep`, a heredoc body, `--help`) does not count. Per model, the share of attempts with edit-tool calls that did. Attempts that changed files with no edit-tool call are counted apart as "cannot tell". |
 | Per task | Which tasks each model solves, at a glance. | One row per task, one column per model, each cell the attempts that resolved it out of the attempts made (`2/3`), with `T` when an attempt touched existing tests in a file your commit left alone, `t` when it touched only test files your commit changed too, and `L` when a change was more than 3x the size of your fix. |
+| Failed attempts: what the session shows | A likely story for each attempt that did not resolve its task, to check against its session. | One line per failed attempt with the first three of these that apply, each worded as what the session shows: no look at a file your fix changed (or a look at one without a change to it, or one seen only in a search result and never opened); no search for the name of a shared item it changed; no build or test run before its first change to existing code; no look at a file before editing it; more than twice the lines written than kept, or none kept; no build or test run after its last edit. What cannot be told is left out. The line is what stands out, not the reason the attempt failed. |
+| Attempt by attempt | What each attempt's session shows, in words. | One line per attempt whose session was read (the first 20; all are in JSON): one sentence per measure above, in the report's order, for example "The real fix changed 2 file(s); it changed 1 of them; its session shows no look at src/uri/path.rs." A measure that could not be read for the attempt has no sentence. |
+| Test tampering | Whether the model changed tests that were already there to get to green. A closing note, not part of the score. | Read from the patch as the agent handed it in, before grading drops its test changes. Each attempt gets one verdict. *Removed or disabled tests*: a test file or test function deleted or renamed, a test that lost its test attribute or became a plain function, or `#[ignore]`, `#[should_panic]` or a `#[cfg]` gate put on an existing test or test module. *Edited existing tests*: any other change to existing test code or to an existing file under a test path (fixtures, snapshots), including lines added inside an existing test, with the files named. Otherwise *no change to existing tests seen*. Per model, the share of attempts with each, the assert lines deleted and not replaced in the same changed block, and how many flagged attempts touched only test files your own commit changed too (there the task itself needed the tests updated). New test files and new test functions are listed apart as "wrote its own tests" and are never tampering. |
+
+In JSON every attempt carries its own figures and evidence under `signals.attempts[]`:
+`method.fix_files` (the paths in each group: `changed`, `looked_not_changed`, `never_opened`,
+`cannot_tell`, `never_looked`), `method.shared_items` (each item, its file, whether its name
+was searched for; `null` for a patch without Rust code), `method.breadth`, `method.first_run`
+(`ran_before_first_change`, `outcome`: `showed_failure`, `no_failure_seen`, `cut_off` or
+`not_shown`, the command, and how many commands did not start), `method.rework` (lines written
+and kept, the ratio, whether the graded patch had to stand in for the handed-in one),
+`method.blind_edits`, `self_check`, the sentences under `how_it_worked`, and `story` for a
+failed attempt. Per model, `signals.models[].method` has the groups `all`, `resolved` and
+`not_resolved`, and `self_check_by_outcome` the same split.
 
 Limits of these checks, so nobody reads more into them than is there:
+
+* "How it worked" reads the session opencode exports after a run. The reader was written from
+  the opencode release Nasiko pins (the types of its SDK package and the tool code bundled in
+  its binary), and has not yet been run on an export from a real replay; the report says so
+  above its tables. A session it cannot make sense of is listed under "Not read" and left out,
+  never read as "did nothing": one that is not JSON, one where no tool call could be read, one
+  whose shell calls or whose edit calls all lack the input they need, and one that shows no
+  step at all although the attempt changed files. A search call it cannot read next to others
+  it can is counted as an unread call, and a call cut off while it ran is never taken as an
+  unknown format.
+* It sees only what the session records, and a shell command is read by its words, not run. A
+  file the agent read through a script that does not name it reads as "no look shown". "Looked
+  at" is generous on purpose (a search that listed the file counts), which is why the files
+  never opened are shown next to it: one `grep -rn 'fn ' .` lists every file. A file the agent
+  made with a shell command and then edited reads as a file that was already there.
+* A file changed by a shell command (`sed -i`, a redirect) is not an edit. An attempt that only
+  edited that way is left out of "Ran the build or tests before changing code", "Guessed and
+  redid", "Tested its own fix" and "Read before changing"; where it looked and which shared
+  items it changed are still read, because those come from its patch.
+* Shared items are Rust only: a patch without Rust code is shown as not read, never as
+  "changed nothing shared". They are found on the first line of a declaration; a signature
+  spread over several lines is seen only when that line changes. A search for the name does
+  not show that the search found the users or that the agent read them, and a short name
+  (`new`, `len`) is matched by searches made for other reasons.
+* "Showed a failure" is not "reproduced the bug". The failure can be about something else, and
+  an agent that understood the problem by reading the code reads as "did not run first". When
+  a run is behind a pipe only its output is read: output filtered down to nothing
+  (`cargo test | grep FAILED` with no match) reads as "the session does not show how that run
+  ended". A run that follows `cd missing-dir &&` and never started still reads by the line's
+  exit status.
+* "Guessed and redid" counts every line of a whole-file `write`, so a model that rewrites files
+  in full reads high, and scratch files written inside the repository count as written. Under
+  1.0 means part of the change was made another way. When an attempt left no raw patch, the
+  graded patch stands in for the lines kept, and a test written inside a source file then
+  reads as written and not kept ("Not read" says for how many attempts).
+* "Read before changing" says more about opencode than about the model: its edit tool tells
+  the model to read a file first, and an edit the tool turned down is not among the session's
+  steps, so it is not counted as an edit without a look.
+* The split by resolved and not resolved shows which habits go with failure in this run. With a
+  handful of attempts in a group every range is wide (one attempt of one reads "100%, somewhere
+  between 21% and 100%"): that is a reason to open those sessions, not a finding.
 
 * Test tampering reads the diff by Rust's conventions (`#[test]`, `#[tokio::test]`, `#[rstest]`,
   `#[test_case]`, `#[ignore]`, `#[should_panic]`, `#[cfg(..)]`, `assert` macros). It reads text,
@@ -453,11 +563,13 @@ Limits of these checks, so nobody reads more into them than is there:
   report is printed, not as it was when the run was made. Changing `test_paths` changes these
   sections for old runs too.
 * Scope compares files and line counts, not meaning. A larger change can be the better one.
-* Checked its own work sees an edit only when the agent used an edit tool, does not know whether
-  the command passed, and does not recognise a test script or `make` target the spec does not
-  name. It relies on the shape of opencode's export (`tool` parts with `state.input.command`).
-  If attempts changed files and no edit-tool call shows, "Not read" says so and lists the tool
-  names the sessions did call; if that is every attempt, do not rely on the section.
-* `report.json` names, per attempt, the files of the real fix (`signals.attempts[].scope`). Treat
+* "Tested its own fix" does not know whether the command passed, and does not recognise a test
+  script or `make` target of another name unless the spec names it; such an attempt reads as
+  "never ran them". Every edit inside the repository counts as an edit, also a note the agent
+  wrote there after its last test run. If attempts changed files and no edit-tool call shows,
+  "Not read" says so and lists the tool names the sessions did call; if that is every attempt,
+  do not rely on "How it worked" for that run.
+* `report.json` names, per attempt, the files of the real fix (`signals.attempts[].scope` and
+  `.method.fix_files`). Treat
   it like the dataset itself: do not put it where a model under test can read it.
 * With few tasks every range is wide. That is the honest answer, not a defect of the report.

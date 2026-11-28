@@ -1,6 +1,7 @@
 //! Reads what a finished run left on disk beyond pass or fail, for the report: each attempt's
 //! raw patch (did it touch existing tests), its graded patch next to the real fix (scope), and
-//! the agent's session export (did it check its work).
+//! the agent's session export (how it worked: where it looked, what it ran and when, how much
+//! it rewrote, whether it tested its change).
 //!
 //! Everything is computed at report time, so it also works on runs made before these sections
 //! existed. A file that is missing or unreadable is never guessed at: the attempt is left out
@@ -10,11 +11,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use nasiko_evals::method::{self, Evidence, Method, MethodSummary};
 use nasiko_evals::scope::{self, ScopeDiff, ScopeSummary};
-use nasiko_evals::selfcheck::{self, EDIT_TOOLS, SelfCheck, SelfCheckSummary};
+use nasiko_evals::selfcheck::{self, SelfCheck, SelfCheckSummary};
 use nasiko_evals::spec::EnvSpec;
 use nasiko_evals::tamper::{self, TamperReport, TamperSummary, TamperVerdict};
-use nasiko_evals::{FileDiff, SessionSource, TaskInstance, TestPathRules, agent, diff};
+use nasiko_evals::trace::{self, Trace};
+use nasiko_evals::{FileDiff, SessionSource, TaskInstance, TestPathRules, agent, diff, story};
 use serde::Serialize;
 
 use crate::commands::eval::dataset;
@@ -40,6 +43,13 @@ pub struct AttemptSignals {
     /// `None` also when the attempt handed in no code change: there is nothing to compare.
     pub scope: Option<ScopeDiff>,
     pub self_check: Option<SelfCheck>,
+    /// How the agent worked, read from its session. `None` without a readable session.
+    pub method: Option<Method>,
+    /// One plain sentence per measure of how it worked that could be read.
+    pub how_it_worked: Vec<String>,
+    /// For an attempt that did not resolve its task and left a readable session: what stands
+    /// out in how it worked, as one line. A likely story, not the reason it failed.
+    pub story: Option<String>,
 }
 
 impl AttemptSignals {
@@ -80,6 +90,16 @@ pub struct ModelSignals {
     /// Attempts whose patch held build files (lock files) that were left out of the comparison.
     pub with_build_files: u32,
     pub self_check: SelfCheckSummary,
+    /// [`Self::self_check`] split by whether the attempt resolved its task.
+    pub self_check_by_outcome: ByOutcome<SelfCheckSummary>,
+    pub method: MethodSummary,
+}
+
+/// A figure for the attempts that resolved their task and for those that did not.
+#[derive(Debug, Clone, Serialize)]
+pub struct ByOutcome<T> {
+    pub resolved: T,
+    pub not_resolved: T,
 }
 
 /// Everything the report shows beyond the grades.
@@ -140,9 +160,15 @@ fn summarise(model: &str, attempts: &[AttemptSignals]) -> ModelSignals {
         .iter()
         .filter_map(|a| Some((a.resolved, a.scope.as_ref()?)))
         .collect();
-    let checks: Vec<(&SelfCheck, bool)> = mine
+    let checks_of = |resolved: Option<bool>| -> Vec<(&SelfCheck, bool)> {
+        mine.iter()
+            .filter(|a| resolved.is_none_or(|wanted| a.resolved == wanted))
+            .filter_map(|a| Some((a.self_check.as_ref()?, a.handed_in_patch)))
+            .collect()
+    };
+    let methods: Vec<(bool, &Method)> = mine
         .iter()
-        .filter_map(|a| Some((a.self_check.as_ref()?, a.handed_in_patch)))
+        .filter_map(|a| Some((a.resolved, a.method.as_ref()?)))
         .collect();
     let with_build_files = scopes
         .iter()
@@ -154,7 +180,12 @@ fn summarise(model: &str, attempts: &[AttemptSignals]) -> ModelSignals {
         tamper: tamper::summarise(&tampers),
         scope: scope::summarise(&scopes),
         with_build_files: with_build_files as u32,
-        self_check: selfcheck::summarise(&checks),
+        self_check: selfcheck::summarise(&checks_of(None)),
+        self_check_by_outcome: ByOutcome {
+            resolved: selfcheck::summarise(&checks_of(Some(true))),
+            not_resolved: selfcheck::summarise(&checks_of(Some(false))),
+        },
+        method: method::summarise(&methods),
     }
 }
 
@@ -181,15 +212,47 @@ fn edit_tool_gap(attempts: &[AttemptSignals]) -> Option<String> {
         format!("Other tools their sessions called: {}", names.join(", "))
     };
     let verdict = if unseen.len() == with_session {
-        "That is every attempt with a session, so the session format is probably not the one this report knows: do not rely on \"Checked its own work\" for this run."
+        "That is every attempt with a session, so the session format is probably not the one this report knows: do not rely on \"How it worked\" for this run."
     } else {
-        "They are counted under \"Changed files another way\", not as unchecked."
+        "They are counted under \"Changed files another way\", not as untested, and are left out of the figures that need the order of edits."
     };
     Some(format!(
         "{} attempt(s) changed files although their session shows no call of an edit tool this report knows ({}). {tools_seen}. {verdict}",
         unseen.len(),
-        EDIT_TOOLS.join(", "),
+        trace::edit_tools().join(", "),
     ))
+}
+
+/// What an attempt's session shows of how the agent worked; all empty without a session.
+#[derive(Default)]
+struct Working {
+    self_check: Option<SelfCheck>,
+    method: Option<Method>,
+    sentences: Vec<String>,
+    story: Option<String>,
+}
+
+impl Working {
+    /// Measures the agent's steps.
+    fn read(trace: &Trace, evidence: &Evidence) -> Self {
+        let self_check = selfcheck::of_trace(trace, evidence.own_commands);
+        let method = method::measure(trace, evidence);
+        Self {
+            sentences: method.sentences(Some(&self_check)),
+            story: None,
+            self_check: Some(self_check),
+            method: Some(method),
+        }
+    }
+
+    /// Adds the story of an attempt that did not resolve its task.
+    fn with_story(mut self) -> Self {
+        self.story = self
+            .method
+            .as_ref()
+            .map(|method| story::story(method, self.self_check.as_ref()));
+        self
+    }
 }
 
 /// Reads attempts one by one, remembering the dataset, each repository's spec, and what was
@@ -206,6 +269,8 @@ struct Reader<'a> {
     without_graded_patch: u32,
     without_code_change: u32,
     without_session: u32,
+    /// Attempts whose session has tool calls that could not be read.
+    with_unread_calls: u32,
     /// Problems with one attempt's files.
     unreadable: Vec<String>,
 }
@@ -231,6 +296,7 @@ impl<'a> Reader<'a> {
             without_graded_patch: 0,
             without_code_change: 0,
             without_session: 0,
+            with_unread_calls: 0,
             unreadable: Vec::new(),
         }
     }
@@ -266,21 +332,44 @@ impl<'a> Reader<'a> {
             .as_ref()
             .map(|files| tamper::inspect(files, &rules).with_real_commit(&real_test_changes));
         let handed_in_patch = raw.as_ref().is_some_and(|files| !files.is_empty());
-        let scope = task.as_ref().and_then(|t| {
-            let fix = self.task_diff(t, "real fix", &t.patch);
-            let model = self.graded_patch(dir, &label, raw, &rules)?;
-            self.scope(t, &model, &fix)
-        });
-        let self_check = self.self_check(dir, &label, spec.as_ref());
+        let fix = task
+            .as_ref()
+            .map(|t| self.task_diff(t, "real fix", &t.patch));
+        let graded = self.graded_patch(dir, &label, raw.as_deref(), &rules);
+        let scope = match (&task, &fix, &graded) {
+            (Some(task), Some(fix), Some(model)) => self.scope(task, model, fix),
+            _ => None,
+        };
+        let own_commands = selfcheck::spec_commands(spec.as_ref());
+        let evidence = Evidence {
+            fix: fix.as_deref(),
+            graded: graded.as_deref(),
+            handed_in: raw.as_deref(),
+            rules: &rules,
+            own_commands: &own_commands,
+        };
+        let resolved = record.grade.resolved;
+        let working = self
+            .trace(dir, &label, raw.as_deref())
+            .map(|trace| Working::read(&trace, &evidence))
+            .unwrap_or_default();
+        let working = if resolved {
+            working
+        } else {
+            working.with_story()
+        };
         AttemptSignals {
             instance_id: record.instance_id.clone(),
             model: record.model.clone(),
             attempt: record.attempt,
-            resolved: record.grade.resolved,
+            resolved,
             handed_in_patch,
             tamper,
             scope,
-            self_check,
+            self_check: working.self_check,
+            method: working.method,
+            how_it_worked: working.sentences,
+            story: working.story,
         }
     }
 
@@ -355,7 +444,7 @@ impl<'a> Reader<'a> {
         &mut self,
         dir: &Path,
         label: &str,
-        raw: Option<Vec<FileDiff>>,
+        raw: Option<&[FileDiff]>,
         rules: &TestPathRules,
     ) -> Option<Vec<FileDiff>> {
         let graded = match fs::read_to_string(dir.join(GRADED_PATCH_FILE)) {
@@ -363,7 +452,7 @@ impl<'a> Reader<'a> {
                 Ok(files) => Some(files),
                 Err(e) => {
                     self.unreadable.push(format!(
-                        "{label}: {GRADED_PATCH_FILE}: {e}; the raw patch without its test files was compared instead"
+                        "{label}: {GRADED_PATCH_FILE}: {e}; the raw patch without its test files was used instead"
                     ));
                     None
                 }
@@ -373,7 +462,7 @@ impl<'a> Reader<'a> {
                 None
             }
         };
-        graded.or_else(|| raw.map(|files| diff::without_tests(files, rules)))
+        graded.or_else(|| raw.map(|files| diff::without_tests(files.to_vec(), rules)))
     }
 
     /// The model's change next to the real fix; `None` when either has nothing to compare.
@@ -398,25 +487,29 @@ impl<'a> Reader<'a> {
         Some(scope)
     }
 
-    fn self_check(&mut self, dir: &Path, label: &str, spec: Option<&EnvSpec>) -> Option<SelfCheck> {
+    /// The agent's steps, from its session export. An export that is missing, not JSON or not
+    /// laid out the way the reader knows is said and read as nothing. So is one that shows no
+    /// step at all for an attempt whose patch as handed in (`raw`) changes files: the steps
+    /// are there, in a form this reader does not see.
+    fn trace(&mut self, dir: &Path, label: &str, raw: Option<&[FileDiff]>) -> Option<Trace> {
         let Ok(export) = fs::read_to_string(dir.join("out").join(agent::EXPORT_FILE)) else {
             self.without_session += 1;
             return None;
         };
-        match selfcheck::inspect(&export, &selfcheck::spec_commands(spec)) {
-            Ok(Some(check)) => Some(check),
-            Ok(None) => {
-                self.unreadable.push(format!(
-                    "{label}: the session export lists shell calls without their commands"
-                ));
-                None
+        let changed_files = raw.is_some_and(|files| !files.is_empty());
+        let problem = match trace::read_opencode_export(&export) {
+            Ok(trace) if trace.steps.is_empty() && changed_files => {
+                "it shows no tool call this report reads, yet the attempt changed files".into()
             }
-            Err(e) => {
-                self.unreadable
-                    .push(format!("{label}: session export: {e}"));
-                None
+            Ok(trace) => {
+                self.with_unread_calls += u32::from(trace.unread_calls > 0);
+                return Some(trace);
             }
-        }
+            Err(e) => e.to_string(),
+        };
+        self.unreadable
+            .push(format!("{label}: session export: {problem}"));
+        None
     }
 
     fn gaps(self) -> Vec<String> {
@@ -430,11 +523,11 @@ impl<'a> Reader<'a> {
         let counted = [
             (
                 self.without_raw_patch,
-                "left no raw patch (the agent did not get as far as saving one) and are left out of the test-tampering figures",
+                "left no raw patch (the agent did not get as far as saving one) and are left out of the test-tampering figures; where they have a graded patch, \"Guessed and redid\" counts the lines they kept from it, so a test they wrote inside a source file reads as written and not kept",
             ),
             (
                 self.without_graded_patch,
-                "had no graded patch on disk; their raw patch without its test files was compared with the real fix instead",
+                "had no graded patch on disk; their raw patch without its test files was used in its place",
             ),
             (
                 self.without_code_change,
@@ -442,7 +535,11 @@ impl<'a> Reader<'a> {
             ),
             (
                 self.without_session,
-                "left no session export and are left out of the checked-its-work figures",
+                "left no session export and are left out of everything under \"How it worked\"",
+            ),
+            (
+                self.with_unread_calls,
+                "have tool calls in their session that lack the input this report reads (a call cut off while it ran, or a search in a form this report does not know); those calls are missing from the figures under \"How it worked\"",
             ),
         ];
         for (count, what) in counted {
