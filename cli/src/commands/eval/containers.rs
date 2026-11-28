@@ -106,6 +106,9 @@ pub struct DockerCli {
     bin: String,
 }
 
+/// Maps `host.docker.internal` to the host inside a service container, on every daemon.
+const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
+
 /// How often a running job's time and disk use are checked.
 const POLL: Duration = Duration::from_secs(5);
 /// Disk use is read every this many polls (`docker ps --size` is slow).
@@ -317,6 +320,11 @@ impl Containers for DockerCli {
             svc.name.clone(),
             "--label".into(),
             format!("{LABEL_KEY}={}", svc.label),
+            // The gateway reaches the router on the host as `host.docker.internal`
+            // (`gateway::upstream_from_container`). Docker Desktop defines that name; Docker
+            // Engine on Linux only does when asked, so without this every agent call failed.
+            "--add-host".into(),
+            HOST_GATEWAY.into(),
         ];
         for m in &svc.mounts {
             let mode = if m.read_only { ":ro" } else { "" };

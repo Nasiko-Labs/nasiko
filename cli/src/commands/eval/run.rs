@@ -343,6 +343,7 @@ impl ModelRun<'_> {
         fs::create_dir_all(&in_dir)?;
         let _ = fs::remove_dir_all(&out_dir);
         fs::create_dir_all(&out_dir)?;
+        writable_by_container(&out_dir)?;
         let agent_cfg = opencode::config_json(&AgentConfig {
             context_tokens: self.config.context_tokens,
             output_tokens: self.config.output_tokens,
@@ -637,6 +638,21 @@ fn original_cost(store: &Store, router: &RouterClient, id: &str) -> Result<Optio
         total += priced.cost_usd;
     }
     Ok(Some(total))
+}
+
+/// Lets the agent container write its outputs into `dir`. The container runs as root with every
+/// capability dropped, so it cannot write a folder owned by this user with mode 0755 on a Docker
+/// daemon that enforces bind-mount permissions (native Linux; Docker Desktop does not, which hid
+/// this). `dir` is the attempt's own output folder; its inputs stay in a read-only mount.
+fn writable_by_container(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o777))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 /// `preds.jsonl` in SWE-bench's predictions format, so the public grader can re-check a run.
