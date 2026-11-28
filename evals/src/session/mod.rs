@@ -100,14 +100,7 @@ impl SessionRecord {
             .edits
             .iter()
             .filter(|e| after.is_none_or(|a| e.at > a))
-            .filter(|e| {
-                repo_roots.iter().any(|r| {
-                    let root = format!("{}/", r.trim_end_matches('/'));
-                    e.path
-                        .strip_prefix(&root)
-                        .is_some_and(|rel| files.iter().any(|f| f == rel))
-                })
-            })
+            .filter(|e| repo_relative(&e.path, repo_roots).is_some_and(|rel| files.contains(&rel)))
             .map(|e| e.at)
             .min()?;
         self.user_messages
@@ -160,20 +153,42 @@ impl SessionRecord {
     /// root are dropped. A repo can have several roots: its main folder and its `git worktree`s,
     /// which share one history, and a session may edit any of them.
     pub fn edited_paths_in(&self, repo_roots: &[String]) -> Vec<String> {
-        let roots: Vec<String> = repo_roots
-            .iter()
-            .map(|r| format!("{}/", r.trim_end_matches('/')))
-            .collect();
         let mut paths: Vec<String> = self
             .edits
             .iter()
-            .filter_map(|e| roots.iter().find_map(|r| e.path.strip_prefix(r.as_str())))
-            .map(str::to_string)
+            .filter_map(|e| repo_relative(&e.path, repo_roots))
             .collect();
         paths.sort();
         paths.dedup();
         paths
     }
+}
+
+/// `path` relative to whichever of `roots` holds it, with `/` separators as git writes them;
+/// `None` outside every root. A session run on Windows records `C:\Users\me\repo\src\a.ts` under
+/// the root `C:\Users\me\repo`: both are read with `/` for `\`, and the drive letter in either
+/// case, or no Windows session could ever be matched to its commits.
+fn repo_relative(path: &str, roots: &[String]) -> Option<String> {
+    let path = comparable(path);
+    roots.iter().find_map(|root| {
+        let root = format!("{}/", comparable(root).trim_end_matches('/'));
+        path.strip_prefix(&root).map(str::to_string)
+    })
+}
+
+/// A Windows path (`C:\…`, `c:/…`, `\\server\share\…`) with `/` separators and an upper-case
+/// drive letter; any other path as it is, since `\` is an ordinary character in a Unix name.
+fn comparable(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let has_drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
+    if !has_drive && !path.starts_with("\\\\") {
+        return path.to_string();
+    }
+    let mut out = path.replace('\\', "/");
+    if has_drive {
+        out[..1].make_ascii_uppercase();
+    }
+    out
 }
 
 /// Most typed messages kept as context for rewriting the request (prompt P1).
@@ -246,4 +261,71 @@ pub enum SessionError {
     NoWorkingFolder,
     #[error("the log has no timestamps")]
     NoTimestamps,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn at(s: &str) -> DateTime<Utc> {
+        s.parse().expect("timestamp")
+    }
+
+    fn session_editing(paths: &[&str]) -> SessionRecord {
+        SessionRecord {
+            session_id: "s".into(),
+            source: SessionSource::ClaudeCode,
+            cwd: r"C:\Users\me\repo".into(),
+            git_branch: None,
+            git_branches: Vec::new(),
+            started_at: at("2026-11-19T10:00:00Z"),
+            ended_at: at("2026-11-19T11:00:00Z"),
+            user_messages: vec![UserMessage {
+                at: at("2026-11-19T10:00:00Z"),
+                text: "Fix the fallback".into(),
+            }],
+            edits: paths
+                .iter()
+                .map(|p| FileEdit {
+                    at: at("2026-11-19T10:05:00Z"),
+                    path: p.to_string(),
+                    added_lines: Vec::new(),
+                })
+                .collect(),
+            usage: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_windows_session_s_edits_are_found_in_its_repo_with_git_separators() {
+        let s = session_editing(&[
+            r"C:\Users\me\repo\server\src\llm.ts",
+            r"c:\Users\me\repo\server\test\llm.test.ts",
+            r"C:\Users\me\other\notes.md",
+        ]);
+        let roots = vec![r"C:\Users\me\repo".to_string()];
+        assert_eq!(
+            s.edited_paths_in(&roots),
+            vec!["server/src/llm.ts", "server/test/llm.test.ts"]
+        );
+        let files = vec!["server/src/llm.ts".to_string()];
+        assert_eq!(
+            s.task_start(&roots, &files),
+            Some(at("2026-11-19T10:00:00Z"))
+        );
+    }
+
+    #[test]
+    fn a_folder_that_only_starts_like_the_root_is_outside_it() {
+        let s = session_editing(&[r"C:\Users\me\repo-old\a.ts", "/srv/repo2/a.rs"]);
+        let roots = vec![r"C:\Users\me\repo".to_string(), "/srv/repo".to_string()];
+        assert!(s.edited_paths_in(&roots).is_empty());
+    }
+
+    #[test]
+    fn unix_paths_are_matched_as_before_and_keep_their_backslashes() {
+        let s = session_editing(&["/srv/repo/src/a.rs", r"/srv/repo/odd\name.rs"]);
+        let roots = vec!["/srv/repo/".to_string()];
+        assert_eq!(s.edited_paths_in(&roots), vec!["odd\\name.rs", "src/a.rs"]);
+    }
 }
