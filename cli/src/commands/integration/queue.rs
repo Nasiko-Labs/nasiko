@@ -407,6 +407,9 @@ pub(super) fn atomic_owner_write(path: &Path, bytes: &[u8]) -> Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
+        // Persisting the rename means syncing the directory on Unix. Windows cannot open a
+        // directory as a file (Access is denied); NTFS journals the rename itself.
+        #[cfg(unix)]
         File::open(parent)?.sync_all()?;
         Ok(())
     })();
@@ -517,6 +520,18 @@ mod tests {
 
         remove(&path).unwrap();
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn atomic_owner_write_replaces_an_existing_file_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("imported.json");
+
+        atomic_owner_write(&path, b"first").unwrap();
+        atomic_owner_write(&path, b"second").unwrap();
+
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[cfg(unix)]
