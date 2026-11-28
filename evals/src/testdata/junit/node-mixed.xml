@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<testsuites>
+	<testcase name="top level passes" time="0.001365" classname="test"/>
+	<testcase name="top level fails" time="0.000590" classname="test" failure="Expected values to be strictly equal:1 !== 2">
+		<failure type="testCodeFailure" message="Expected values to be strictly equal:1 !== 2">
+[Error [ERR_TEST_FAILURE]: Expected values to be strictly equal:
+
+1 !== 2
+] {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 2
+  
+      at TestContext.&lt;anonymous> (file:///work/mixed.test.mjs:4:40)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1062:25)
+      at Test.processPendingSubtests (node:internal/test_runner/test:752:18)
+      at Test.postRun (node:internal/test_runner/test:1191:19)
+      at Test.run (node:internal/test_runner/test:1119:12)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:332:3) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 2,
+    operator: 'strictEqual'
+  }
+}
+		</failure>
+	</testcase>
+	<testcase name="skipped one" time="0.000072" classname="test">
+		<skipped type="skipped" message="not on ci"/>
+	</testcase>
+	<testcase name="todo one" time="0.000066" classname="test">
+		<skipped type="todo" message="true"/>
+	</testcase>
+	<testsuite name="outer" time="0.000856" disabled="0" errors="0" tests="2" failures="1" skipped="1" hostname="host">
+		<testsuite name="inner" time="0.000326" disabled="0" errors="0" tests="2" failures="1" skipped="0" hostname="host">
+			<testcase name="nested passes" time="0.000095" classname="test"/>
+			<testcase name="nested fails" time="0.000067" classname="test" failure="boom &lt;x>">
+				<failure type="testCodeFailure" message="boom &lt;x>">
+Error [ERR_TEST_FAILURE]: boom &lt;x>
+    at async Promise.all (index 0)
+    at async Promise.all (index 0) {
+  code: 'ERR_TEST_FAILURE',
+  failureType: 'testCodeFailure',
+  cause: Error: boom &lt;x>
+      at TestContext.&lt;anonymous> (file:///work/mixed.test.mjs:10:38)
+      at Test.runInAsyncScope (node:async_hooks:214:14)
+      at Test.run (node:internal/test_runner/test:1062:25)
+      at Suite.processPendingSubtests (node:internal/test_runner/test:752:18)
+      at Test.postRun (node:internal/test_runner/test:1191:19)
+      at Test.run (node:internal/test_runner/test:1119:12)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1466:7)
+      at async Promise.all (index 0)
+      at async Suite.run (node:internal/test_runner/test:1466:7)
+}
+				</failure>
+			</testcase>
+		</testsuite>
+		<testcase name="same name" time="0.000174" classname="test"/>
+	</testsuite>
+	<testcase name="same name" time="0.000106" classname="test"/>
+	<!-- tests 8 -->
+	<!-- suites 2 -->
+	<!-- pass 4 -->
+	<!-- fail 2 -->
+	<!-- cancelled 0 -->
+	<!-- skipped 1 -->
+	<!-- todo 1 -->
+	<!-- duration_ms 82.0771 -->
+</testsuites>

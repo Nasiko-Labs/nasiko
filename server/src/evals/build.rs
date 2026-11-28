@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use nasiko_evals::gate::{self, GateRuns, GateVerdict, RunOutcome};
-use nasiko_evals::spec::{self, EXIT_BUILD, EXIT_MODEL_PATCH, EXIT_TEST_PATCH, EnvSpec};
+use nasiko_evals::spec::{self, EXIT_BUILD, EXIT_MODEL_PATCH, EXIT_TEST_PATCH, EnvSpec, Language};
 use nasiko_evals::{TaskInstance, TaskStatus, diff, images, testlog};
 use nasiko_runtime::{BatchFile, BatchJob, BatchLimits, BatchNetwork, BatchOutcome, BatchRunner};
 use serde_json::json;
@@ -42,10 +42,9 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
         Ok(forge) => forge,
         Err(refusal) => bail!("the repository cannot be read: {}", refusal.code()),
     };
-    let Some(scope) = test_scope(&forge, &task).await? else {
+    let Some(scope) = test_scope(&forge, &task, spec.language).await? else {
         task.x_nasiko.status = TaskStatus::Rejected;
-        task.x_nasiko.reject_reason =
-            Some("build: no Cargo package owns the task's files, so it has no tests to run".into());
+        task.x_nasiko.reject_reason = Some(spec::no_scope_reason(spec.language).into());
         store::save_task(&state.db, row.id, &task, "done").await?;
         return Ok(());
     };
@@ -119,14 +118,18 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
     Ok(())
 }
 
-/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
-/// ([`spec::task_test_scope`]); `None` when no package owns them.
-async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Option<Vec<String>>> {
+/// The task's test scope, from the packages owning the files the fix and its tests change
+/// ([`spec::scope_of`]); `None` when nothing can be run for it.
+async fn test_scope(
+    forge: &Forge,
+    task: &TaskInstance,
+    language: Language,
+) -> Result<Option<Vec<String>>> {
     let mut files = Vec::new();
     for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
             if let Some((package, manifest)) = forge
-                .cargo_package_of(&task.x_nasiko.gold_commit, file.path())
+                .package_of(&task.x_nasiko.gold_commit, file.path(), language)
                 .await?
             {
                 files.push(spec::OwnedFile {
@@ -138,7 +141,7 @@ async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Option<Vec<Str
             }
         }
     }
-    Ok(spec::task_test_scope(&files))
+    Ok(spec::scope_of(language, &files))
 }
 
 /// The task image: the env and task recipes in one Dockerfile, with the repository at

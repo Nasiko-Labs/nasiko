@@ -95,23 +95,22 @@ fn summarise_model(
     control_cost: &BTreeMap<&str, f64>,
 ) -> ModelSummary {
     let mine: Vec<&AttemptRecord> = records.iter().filter(|r| r.model == model).collect();
-    let hits: Vec<bool> = mine.iter().map(|r| r.grade.resolved).collect();
+    let resolved = mine.iter().filter(|r| r.grade.resolved).count();
     let matched: Vec<bool> = first_attempts(records, model)
         .iter()
         .filter(|r| control_wins.get(r.instance_id.as_str()) == Some(&true))
         .map(|r| r.grade.resolved)
         .collect();
-    let mut by_level: BTreeMap<String, Vec<bool>> = BTreeMap::new();
+    let mut by_level: BTreeMap<String, Vec<&AttemptRecord>> = BTreeMap::new();
     for r in &mine {
         let key = r.difficulty.map(level).unwrap_or("unknown").to_string();
-        by_level.entry(key).or_default().push(r.grade.resolved);
+        by_level.entry(key).or_default().push(r);
     }
     let mut failures = BTreeMap::new();
     for f in mine.iter().filter_map(|r| r.grade.failure) {
         *failures.entry(failure_name(f).to_string()).or_insert(0) += 1;
     }
     let cost_usd: f64 = mine.iter().filter_map(|r| r.cost_usd).sum();
-    let resolved = hits.iter().filter(|h| **h).count();
     let (mut mine_vs_orig, mut orig) = (0.0, 0.0);
     for r in first_attempts(records, model) {
         if let (Some(c), Some(o)) = (r.cost_usd, r.original_cost_usd) {
@@ -130,14 +129,17 @@ fn summarise_model(
         model: model.to_string(),
         is_control,
         attempts: mine.len() as u32,
-        resolved: rate(&hits),
+        resolved: rate_by_task(&by_task(mine.iter().copied())),
         match_rate: (!is_control && !matched.is_empty()).then(|| rate(&matched)),
         cost_usd,
         cost_per_resolved: (resolved > 0).then(|| cost_usd / resolved as f64),
         saving_vs_control: (!is_control && control_on_shared > 0.0)
             .then(|| 1.0 - mine_on_shared / control_on_shared),
         saving_vs_original: (orig > 0.0).then(|| 1.0 - mine_vs_orig / orig),
-        by_level: by_level.iter().map(|(k, v)| (k.clone(), rate(v))).collect(),
+        by_level: by_level
+            .iter()
+            .map(|(k, v)| (k.clone(), rate_by_task(&by_task(v.iter().copied()))))
+            .collect(),
         failures,
         unpriced_attempts: mine.iter().filter(|r| r.cost_usd.is_none()).count() as u32,
     }
@@ -156,10 +158,21 @@ fn failure_name(f: FailureClass) -> &'static str {
     }
 }
 
-/// The share of `true`s, with a bootstrap 95% range.
+/// The share of `true`s, with a bootstrap 95% range; each `true` or `false` independent of the
+/// others (one attempt per task).
 pub fn rate(hits: &[bool]) -> Rate {
-    let n = hits.len();
-    if n == 0 {
+    let tasks: Vec<Vec<bool>> = hits.iter().map(|h| vec![*h]).collect();
+    rate_by_task(&tasks)
+}
+
+/// The share of attempts that resolved, with a 95% range from a bootstrap over *tasks*: each
+/// round draws tasks, and a drawn task brings all its attempts. Two attempts at one task are
+/// not two independent samples (a task a model can solve it mostly solves again), so drawing
+/// attempts one by one would give a range too narrow for the tasks it rests on. With one
+/// attempt per task this is the plain bootstrap of [`rate`]; `n` is the attempts counted.
+pub fn rate_by_task(tasks: &[Vec<bool>]) -> Rate {
+    let attempts: usize = tasks.iter().map(Vec::len).sum();
+    if attempts == 0 {
         return Rate {
             value: 0.0,
             low95: 0.0,
@@ -167,22 +180,64 @@ pub fn rate(hits: &[bool]) -> Rate {
             n: 0,
         };
     }
-    let value = hits.iter().filter(|h| **h).count() as f64 / n as f64;
+    let wins = |task: &Vec<bool>| task.iter().filter(|h| **h).count();
+    let value = tasks.iter().map(wins).sum::<usize>() as f64 / attempts as f64;
     let mut rng = SplitMix64(BOOTSTRAP_SEED);
     let mut samples: Vec<f64> = (0..BOOTSTRAP_ROUNDS)
         .map(|_| {
-            let wins = (0..n).filter(|_| hits[rng.below(n)]).count();
-            wins as f64 / n as f64
+            let (mut won, mut tried) = (0, 0);
+            for _ in 0..tasks.len() {
+                let task = &tasks[rng.below(tasks.len())];
+                won += wins(task);
+                tried += task.len();
+            }
+            if tried == 0 {
+                0.0
+            } else {
+                won as f64 / tried as f64
+            }
         })
         .collect();
     samples.sort_by(f64::total_cmp);
     let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+    let (low95, high95) = match (at(0.025), at(0.975)) {
+        // Every task came out the same (all solved, none solved), so every resampling does too
+        // and the bootstrap says "0%–0%": certainty the data does not have. One task that
+        // failed is consistent with a true rate far above zero. Fall back to the Wilson score
+        // interval over the number of tasks, which stays honest at 0/n and n/n.
+        (low, high) if low == high => wilson95(value, tasks.len()),
+        range => range,
+    };
     Rate {
         value,
-        low95: at(0.025),
-        high95: at(0.975),
-        n: n as u32,
+        low95,
+        high95,
+        n: attempts as u32,
     }
+}
+
+/// The normal quantile of a two-sided 95% interval.
+const Z95: f64 = 1.959_964;
+
+/// The Wilson score 95% interval of a share `p` observed over `n` independent samples.
+fn wilson95(p: f64, n: usize) -> (f64, f64) {
+    let n = n as f64;
+    let z2 = Z95 * Z95;
+    let centre = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let half = Z95 * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / (1.0 + z2 / n);
+    ((centre - half).max(0.0), (centre + half).min(1.0))
+}
+
+/// Each task's attempts' outcomes, keyed by task, for [`rate_by_task`].
+fn by_task<'a>(records: impl Iterator<Item = &'a AttemptRecord>) -> Vec<Vec<bool>> {
+    let mut tasks: BTreeMap<&str, Vec<bool>> = BTreeMap::new();
+    for r in records {
+        tasks
+            .entry(r.instance_id.as_str())
+            .or_default()
+            .push(r.grade.resolved);
+    }
+    tasks.into_values().collect()
 }
 
 /// A tiny seeded generator, so reports need no `rand` crate and are repeatable.
@@ -304,5 +359,75 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.low95 <= a.value && a.value <= a.high95);
         assert_eq!(rate(&[]).n, 0);
+    }
+
+    #[test]
+    fn repeated_attempts_do_not_narrow_the_range_below_what_the_tasks_support() {
+        // Five tasks, each solved on both attempts or on neither: ten attempts, but only five
+        // independent outcomes. Their range must be the five tasks' range, not ten attempts'.
+        let tasks: Vec<Vec<bool>> = [true, false, true, true, false]
+            .iter()
+            .map(|h| vec![*h, *h])
+            .collect();
+        let by_task = rate_by_task(&tasks);
+        let as_if_independent = rate(&tasks.concat());
+        let five = rate(&[true, false, true, true, false]);
+        assert!((by_task.value - 0.6).abs() < 1e-9);
+        assert_eq!(by_task.n, 10);
+        assert_eq!((by_task.low95, by_task.high95), (five.low95, five.high95));
+        assert!(
+            as_if_independent.high95 - as_if_independent.low95 < by_task.high95 - by_task.low95,
+            "{as_if_independent:?} vs {by_task:?}"
+        );
+    }
+
+    #[test]
+    fn when_every_task_agrees_the_range_is_not_zero_width() {
+        // One task, failed on both attempts: the bootstrap alone would say 0%-0%.
+        let one_failed = rate_by_task(&[vec![false, false]]);
+        assert_eq!(one_failed.value, 0.0);
+        assert_eq!(one_failed.low95, 0.0);
+        assert!(
+            (one_failed.high95 - 0.793).abs() < 0.001,
+            "{}",
+            one_failed.high95
+        );
+        // Ten tasks all solved: the range reaches below 100%.
+        let all_solved = rate_by_task(&vec![vec![true]; 10]);
+        // Wilson's upper end at 10/10 is 1 exactly in theory, a rounding error below it in f64.
+        assert!(all_solved.high95 > 0.999_999);
+        assert!(all_solved.low95 > 0.6 && all_solved.low95 < 0.75);
+        // More tasks, narrower range.
+        let ten_failed = rate_by_task(&vec![vec![false]; 10]);
+        assert!(ten_failed.high95 < one_failed.high95);
+    }
+
+    #[test]
+    fn a_range_the_bootstrap_can_resolve_is_left_alone() {
+        let hits = [true, false, true, true, false];
+        let r = rate(&hits);
+        assert!(r.low95 < r.value && r.value < r.high95);
+        assert!(r.high95 <= 1.0 && r.low95 >= 0.0);
+    }
+
+    #[test]
+    fn one_attempt_per_task_gives_the_plain_bootstrap() {
+        let hits = [true, false, true, true, false, false, true];
+        let tasks: Vec<Vec<bool>> = hits.iter().map(|h| vec![*h]).collect();
+        assert_eq!(rate_by_task(&tasks), rate(&hits));
+    }
+
+    #[test]
+    fn a_models_resolved_rate_counts_every_attempt_but_draws_by_task() {
+        let mut second = rec("a", "flint", true, 0.0);
+        second.attempt = 2;
+        let records = vec![
+            rec("a", "flint", true, 0.0),
+            second,
+            rec("b", "flint", false, 0.0),
+        ];
+        let s = summarise(&records, "none");
+        assert_eq!(s[0].resolved.n, 3);
+        assert!((s[0].resolved.value - 2.0 / 3.0).abs() < 1e-9);
     }
 }

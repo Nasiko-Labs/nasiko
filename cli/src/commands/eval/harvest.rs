@@ -177,7 +177,9 @@ fn save_task(
     linked: harvest::Linked,
 ) -> Result<Option<String>> {
     let (base, gold) = (linked.first().parent.clone(), linked.last().sha.clone());
-    let mut split = harvest::split(&repo.diff(&base, &gold)?)?;
+    let spec = super::build::spec_or_proposed(store, repo).ok();
+    let (rules, language) = harvest::split_rules(spec.as_ref());
+    let mut split = harvest::split_by(&repo.diff(&base, &gold)?, &rules)?;
     let mut versions = BTreeMap::new();
     for path in harvest::inline_test_paths(&split) {
         versions.insert(
@@ -189,7 +191,7 @@ fn save_task(
         );
     }
     harvest::split_inline_rust_tests(&mut split, &versions)?;
-    if !harvest::has_tests(&split) {
+    if !harvest::has_tests_in(&split, language) {
         return Ok(None);
     }
     let task = harvest::draft_task(&repo.full_name(), &linked, split);

@@ -7,7 +7,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use nasiko_evals::CommitFacts;
-use nasiko_evals::remote::{package_name, trailers};
+use nasiko_evals::remote::trailers;
+use nasiko_evals::spec::{self, Language};
 use nasiko_github::GitHubService;
 use uuid::Uuid;
 
@@ -190,15 +191,17 @@ impl Forge {
             .archive_bytes)
     }
 
-    /// The Cargo package owning `path` at `git_ref`, and its `Cargo.toml`: the nearest one above it.
-    pub async fn cargo_package_of(
+    /// The package owning `path` at `git_ref`, and its manifest (`Cargo.toml`, `package.json`):
+    /// the nearest one above it.
+    pub async fn package_of(
         &self,
         git_ref: &str,
         path: &str,
+        language: Language,
     ) -> Result<Option<(String, String)>> {
-        for manifest in nasiko_evals::spec::manifests_above(path) {
+        for manifest in spec::manifests_above(path, language.manifest_file()) {
             if let Some(text) = self.file_at(git_ref, &manifest).await? {
-                return Ok(package_name(&text).map(|name| (name, manifest)));
+                return Ok(spec::package_name(language, &text).map(|name| (name, manifest)));
             }
         }
         Ok(None)

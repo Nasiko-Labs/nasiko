@@ -343,6 +343,7 @@ impl ModelRun<'_> {
         fs::create_dir_all(&in_dir)?;
         let _ = fs::remove_dir_all(&out_dir);
         fs::create_dir_all(&out_dir)?;
+        writable_by_container(&out_dir)?;
         let agent_cfg = opencode::config_json(&AgentConfig {
             context_tokens: self.config.context_tokens,
             output_tokens: self.config.output_tokens,
@@ -639,6 +640,21 @@ fn original_cost(store: &Store, router: &RouterClient, id: &str) -> Result<Optio
     Ok(Some(total))
 }
 
+/// Lets the agent container write its outputs into `dir`. The container runs as root with every
+/// capability dropped, so it cannot write a folder owned by this user with mode 0755 on a Docker
+/// daemon that enforces bind-mount permissions (native Linux; Docker Desktop does not, which hid
+/// this). `dir` is the attempt's own output folder; its inputs stay in a read-only mount.
+fn writable_by_container(dir: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o777))?;
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}
+
 /// `preds.jsonl` in SWE-bench's predictions format, so the public grader can re-check a run.
 fn write_predictions(store: &Store, run_dir: &Path) -> Result<()> {
     let mut lines = String::new();
@@ -660,6 +676,20 @@ fn write_predictions(store: &Store, run_dir: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The agent runs as root with every capability dropped: on a daemon that enforces
+    /// bind-mount permissions it can write only a folder open to everyone.
+    #[cfg(unix)]
+    #[test]
+    fn the_attempt_output_folder_is_writable_by_the_agent_container() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = dir.path().join("out");
+        fs::create_dir_all(&out).expect("out");
+        writable_by_container(&out).expect("permissions");
+        let mode = fs::metadata(&out).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o777);
+    }
 
     #[test]
     fn a_model_that_built_the_dataset_is_not_tested_on_it() {

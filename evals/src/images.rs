@@ -41,7 +41,7 @@ const WARM_BUILD_JOBS: u32 = 2;
 pub fn env_dockerfile(spec: &EnvSpec) -> String {
     let mut packages = vec!["git", "ca-certificates", "curl", "ripgrep"];
     packages.extend(spec.system_packages.iter().map(String::as_str));
-    let cargo = if is_cargo(spec) { CARGO_LEAN_ENV } else { "" };
+    let language = language_env(spec);
     format!(
         "FROM {toolchain}\n\
          RUN apt-get update \\\n    && apt-get install -y --no-install-recommends {packages} \\\n    && rm -rf /var/lib/apt/lists/*\n\
@@ -50,12 +50,38 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
          COPY --from={NODE_IMAGE} /usr/local/lib/node_modules /usr/local/lib/node_modules\n\
          RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \\\n    && npm install -g opencode-ai@{version} && npm cache clean --force\n\
          ENV OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \\\n    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \\\n    OPENCODE_DISABLE_PROJECT_CONFIG=1\n\
-         {cargo}",
+         {language}",
         toolchain = spec.toolchain_image,
         packages = packages.join(" "),
         version = opencode_version(),
     )
 }
+
+/// The env image's last, language-specific lines.
+fn language_env(spec: &EnvSpec) -> String {
+    match spec.language {
+        spec::Language::Rust => CARGO_LEAN_ENV.to_string(),
+        spec::Language::Node => format!(
+            "{NODE_ENV}RUN printf '%s\\n' {excludes} > /etc/gitignore-eval \\\n    \
+             && git config --system core.excludesFile /etc/gitignore-eval\n",
+            excludes = NODE_GIT_EXCLUDES
+                .iter()
+                .map(|p| format!("'{p}'"))
+                .collect::<Vec<_>>()
+                .join(" "),
+        ),
+    }
+}
+
+/// Corepack fetching the pinned package manager without asking, and no update checks.
+const NODE_ENV: &str = "ENV COREPACK_ENABLE_DOWNLOAD_PROMPT=0 NPM_CONFIG_UPDATE_NOTIFIER=false \
+                        CI=true\n";
+
+/// What git ignores in Node images. The install writes `node_modules` inside `/testbed`, after
+/// the base commit; a repo that does not ignore it itself would otherwise have the agent's
+/// `git add -A` put every installed package in its patch, which would then not apply in the
+/// grader, where the image already holds them.
+const NODE_GIT_EXCLUDES: [&str; 3] = ["node_modules/", ".pnpm-store/", "*.tsbuildinfo"];
 
 /// `source.tar` (the repo at the base commit: a `git archive`, or the forge's tarball, either
 /// unpacked into the build root) sits next to this Dockerfile.
@@ -68,8 +94,9 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
          RUN tar -xf /tmp/source.tar -C /testbed && rm /tmp/source.tar\n\
          RUN git init -q && git add -A \\\n    && git -c user.name=eval -c user.email=eval@nasiko.local commit -qm base \\\n    && git config --global --add safe.directory /testbed\n"
     );
+    // Setup takes the scope too: a Node task installs only the package it tests.
     for cmd in &spec.setup {
-        let _ = writeln!(df, "RUN {cmd}");
+        let _ = writeln!(df, "RUN {}", spec::with_scope(cmd, scope));
     }
     // Warm the build of the affected crates at the base commit; a failure here is fine (the
     // gate will report it), it only means the cache is colder.
@@ -175,6 +202,23 @@ mod tests {
         let env = env_dockerfile(&rust_spec());
         assert!(env.contains("CARGO_INCREMENTAL=0"));
         assert!(env.contains("CARGO_PROFILE_TEST_DEBUG=0"));
+    }
+
+    #[test]
+    fn node_images_install_the_tested_package_and_keep_node_modules_out_of_patches() {
+        let s = spec::propose("o/r", &["package.json".into()], None).expect("node");
+        let env = env_dockerfile(&s);
+        assert!(env.starts_with("FROM node:22-bookworm\n"));
+        assert!(env.contains("'node_modules/'"));
+        assert!(env.contains("git config --system core.excludesFile"));
+        assert!(!env.contains("CARGO_"));
+        let scope = ["'server'".to_string(), "'test/a.test.ts'".to_string()];
+        let task = task_dockerfile("env:1", &s, &scope);
+        assert!(task.contains("RUN set -- 'server' 'test/a.test.ts'; cd \"$1\""));
+        assert!(task.contains("pnpm install --frozen-lockfile"));
+        assert!(!task.contains("CARGO_BUILD_JOBS"));
+        // The install runs after the base commit: what it writes is untracked, so ignored.
+        assert!(task.find("git init -q") < task.find("pnpm install"));
     }
 
     #[test]

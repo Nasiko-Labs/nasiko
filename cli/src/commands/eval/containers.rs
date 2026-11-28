@@ -106,6 +106,34 @@ pub struct DockerCli {
     bin: String,
 }
 
+/// Maps `host.docker.internal` to the host inside a service container, on every daemon.
+const HOST_GATEWAY: &str = "host.docker.internal:host-gateway";
+
+/// The `docker run` arguments that start a long-running service container (the eval gateway).
+fn service_args(svc: &ServiceSpec) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "run".into(),
+        "-d".into(),
+        "--name".into(),
+        svc.name.clone(),
+        "--label".into(),
+        format!("{LABEL_KEY}={}", svc.label),
+        // The gateway reaches the router on the host as `host.docker.internal`
+        // (`gateway::upstream_from_container`). Docker Desktop defines that name; Docker Engine
+        // on Linux only does when asked, so without this every agent call failed.
+        "--add-host".into(),
+        HOST_GATEWAY.into(),
+    ];
+    for m in &svc.mounts {
+        let mode = if m.read_only { ":ro" } else { "" };
+        args.push("-v".into());
+        args.push(format!("{}:{}{mode}", m.host.display(), m.container));
+    }
+    args.push(svc.image.clone());
+    args.extend(svc.cmd.iter().cloned());
+    args
+}
+
 /// How often a running job's time and disk use are checked.
 const POLL: Duration = Duration::from_secs(5);
 /// Disk use is read every this many polls (`docker ps --size` is slow).
@@ -310,21 +338,7 @@ impl Containers for DockerCli {
 
     fn start_service(&self, svc: &ServiceSpec) -> Result<()> {
         let _ = self.run(&["rm", "-f", &svc.name]);
-        let mut args: Vec<String> = vec![
-            "run".into(),
-            "-d".into(),
-            "--name".into(),
-            svc.name.clone(),
-            "--label".into(),
-            format!("{LABEL_KEY}={}", svc.label),
-        ];
-        for m in &svc.mounts {
-            let mode = if m.read_only { ":ro" } else { "" };
-            args.push("-v".into());
-            args.push(format!("{}:{}{mode}", m.host.display(), m.container));
-        }
-        args.push(svc.image.clone());
-        args.extend(svc.cmd.iter().cloned());
+        let args = service_args(svc);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.run(&refs)?;
         for net in &svc.networks {
@@ -428,6 +442,29 @@ pub mod tests {
         fn remove_labelled(&self, _: Option<&str>) -> Result<usize> {
             Ok(0)
         }
+    }
+
+    #[test]
+    fn the_gateway_can_reach_the_host_on_a_linux_daemon_too() {
+        let args = service_args(&ServiceSpec {
+            name: "nasiko-eval-gw".into(),
+            image: "nginx:1.27-alpine".into(),
+            cmd: vec!["nginx".into()],
+            networks: vec!["eval-net".into()],
+            mounts: Vec::new(),
+            label: "run-1".into(),
+        });
+        let host = args
+            .iter()
+            .position(|a| a == "--add-host")
+            .expect("--add-host");
+        assert_eq!(args[host + 1], "host.docker.internal:host-gateway");
+        let image = args
+            .iter()
+            .position(|a| a == "nginx:1.27-alpine")
+            .expect("image");
+        // An option after the image would be passed to nginx, not to docker.
+        assert!(host < image);
     }
 
     #[test]

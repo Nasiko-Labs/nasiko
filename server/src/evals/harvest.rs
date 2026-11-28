@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use nasiko_evals::harvest::{self, FileVersions, Linked, Outcome};
 use nasiko_evals::link;
+use nasiko_evals::spec::Language;
 use nasiko_evals::{TaskSource, TaskStatus};
 use serde_json::json;
 
@@ -136,7 +137,10 @@ async fn draft_and_insert(
         return Err(skipped(Outcome::NoMatch.label()));
     }
     let gold = linked.last().sha.clone();
-    let mut split = harvest::split(&forge.diff(&base, &gold).await?).context("unreadable diff")?;
+    let spec = store::spec(db, user, &forge.repo).await?;
+    let (rules, language) = harvest::split_rules(spec.as_ref());
+    let mut split =
+        harvest::split_by(&forge.diff(&base, &gold).await?, &rules).context("unreadable diff")?;
     let mut versions = BTreeMap::new();
     for path in harvest::inline_test_paths(&split) {
         versions.insert(
@@ -148,7 +152,7 @@ async fn draft_and_insert(
         );
     }
     harvest::split_inline_rust_tests(&mut split, &versions).context("unreadable diff")?;
-    if !harvest::has_tests(&split) {
+    if !harvest::has_tests_in(&split, language) {
         return Err(skipped(Outcome::NoTests.label()));
     }
     let mut task = harvest::draft_task(&forge.repo, linked, split);
@@ -157,11 +161,12 @@ async fn draft_and_insert(
     }
     let commits: Vec<&nasiko_evals::CommitFacts> = linked.commits.iter().collect();
     let source = TaskSource::new(session, &linked.slice, &commits);
-    let spec = store::spec(db, user, &forge.repo).await?;
     let stage = if spec.is_none() {
         task.x_nasiko.status = TaskStatus::Rejected;
-        task.x_nasiko.reject_reason =
-            Some("unsupported: only Cargo (Rust) repositories can be built so far".into());
+        task.x_nasiko.reject_reason = Some(
+            "unsupported: only Cargo (Rust) and Node (JavaScript, TypeScript) repositories can be built so far"
+                .into(),
+        );
         "done"
     } else if dataset.rewriter_config_id.is_some() {
         "rewrite"
@@ -217,7 +222,8 @@ async fn ensure_spec(state: &AppState, user: uuid::Uuid, forge: &Forge) -> Resul
     let head = forge.default_branch.as_str();
     let root = forge.root_files(head).await?;
     let mut toolchain = None;
-    for name in ["rust-toolchain.toml", "rust-toolchain"] {
+    let pins = Language::detect(&root).map_or(&[][..], Language::toolchain_files);
+    for name in pins {
         if root.iter().any(|f| f == name) {
             toolchain = forge.file_at(head, name).await?;
             break;

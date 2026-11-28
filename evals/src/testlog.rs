@@ -4,19 +4,27 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::junit;
+
+pub use crate::junit::{JUNIT_BEGIN, JUNIT_END, JUNIT_FILE};
+
 /// Which test runner wrote the output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum LogParserKind {
     Cargo,
+    /// JUnit XML reports between [`JUNIT_BEGIN`] and [`JUNIT_END`] ([`crate::junit`]): what
+    /// node:test, vitest, jest-junit and pytest's `--junitxml` all write.
+    Junit,
 }
 
 impl LogParserKind {
     /// The matching parser's name in SWE-bench (`log_parser` field), so the public grader can
-    /// re-check a dataset.
+    /// re-check a dataset. SWE-bench has no JUnit parser; `parse_log_junit` names this one.
     pub fn swebench_name(self) -> &'static str {
         match self {
             LogParserKind::Cargo => "parse_log_cargo",
+            LogParserKind::Junit => "parse_log_junit",
         }
     }
 }
@@ -29,13 +37,15 @@ pub enum TestStatus {
     Ignored,
 }
 
-/// Test name → status. Names are prefixed with their test binary (`crate::path::test`), since
-/// two binaries can hold tests of the same name.
+/// Test name → status. Cargo names are prefixed with their test binary (`crate::path::test`),
+/// since two binaries can hold tests of the same name; JUnit names with their test file and
+/// suites (`test/finch.test.ts::outer::inner::falls back`).
 pub type TestResults = BTreeMap<String, TestStatus>;
 
 pub fn parse(kind: LogParserKind, output: &str) -> TestResults {
     match kind {
         LogParserKind::Cargo => parse_cargo(output),
+        LogParserKind::Junit => junit::parse(output),
     }
 }
 

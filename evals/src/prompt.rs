@@ -4,11 +4,12 @@
 use serde::Deserialize;
 
 use crate::instance::{Difficulty, TaskInstance};
+use crate::node;
 use crate::session::TaskSource;
-use crate::spec::{self, EnvSpec};
+use crate::spec::{self, EnvSpec, Language};
 
 /// Recorded with every run, so a result can be traced to the exact wording.
-pub const PROMPT_VERSION: &str = "2026-11-24.2";
+pub const PROMPT_VERSION: &str = "2026-11-28.1";
 
 /// A system + user message pair.
 #[derive(Debug, Clone, PartialEq)]
@@ -228,10 +229,32 @@ Rules:
 
 /// Prompt P4: the replayed agent's task (the user message; opencode adds its own system prompt).
 pub fn agent_task_prompt(task: &TaskInstance, spec: &EnvSpec) -> String {
-    let scope = &task.x_nasiko.test_scope;
+    let (build_cmd, test_cmd) = agent_commands(task, spec);
     P4.replace("{problem_statement}", &task.problem_statement)
-        .replace("{build_cmd}", &spec::with_scope(&spec.build_cmd, scope))
-        .replace("{test_cmd}", &spec::with_scope(&spec.test_cmd, scope))
+        .replace("{build_cmd}", &build_cmd)
+        .replace("{test_cmd}", &test_cmd)
+}
+
+/// The build and test commands the agent is shown. For Node these are never the graded
+/// commands: those name the hidden test files and the markers around the reports the grader
+/// reads, and an agent that knew the markers could print a report of its own. It is told the
+/// package to work in, and the package's own scripts.
+fn agent_commands(task: &TaskInstance, spec: &EnvSpec) -> (String, String) {
+    let scope = &task.x_nasiko.test_scope;
+    match spec.language {
+        Language::Rust => (
+            spec::with_scope(&spec.build_cmd, scope),
+            spec::with_scope(&spec.test_cmd, scope),
+        ),
+        Language::Node => {
+            let package = node::scope_package(scope).unwrap_or_else(|| ".".into());
+            let in_package = |cmd: &str| format!("cd /testbed/{package} && {cmd}");
+            (
+                in_package(node::AGENT_BUILD_CMD),
+                in_package(node::AGENT_TEST_CMD),
+            )
+        }
+    }
 }
 
 /// The first `{ … }` object in a reply, also when wrapped in a code fence or prose.
@@ -286,6 +309,30 @@ mod tests {
         );
         let bad = "{\"clarity\":7,\"test_validity\":0,\"effort\":\"<15 min fix\"}";
         assert!(parse_screen_reply("m", bad).is_err());
+    }
+
+    #[test]
+    fn the_node_agent_is_never_shown_the_hidden_tests_or_the_report_markers() {
+        let spec = spec::propose("o/r", &["package.json".into()], None).expect("node");
+        let task: TaskInstance = serde_json::from_value(serde_json::json!({
+            "instance_id": "r__1", "repo": "o/r", "base_commit": "a",
+            "environment_setup_commit": "a", "version": "1",
+            "created_at": "2026-11-01T00:00:00Z", "problem_statement": "Fix the fallback.",
+            "hints_text": "", "patch": "", "test_patch": "", "FAIL_TO_PASS": [],
+            "PASS_TO_PASS": [],
+            "x_nasiko": {
+                "status": "verified", "source": "claude-code", "source_session_id": "1",
+                "gold_commit": "b", "link_score": 1.0, "test_source": "commit",
+                "orig": {"model": "m", "usage": {"input": 0, "output": 0, "cache_write": 0, "cache_read": 0, "reasoning": 0}, "user_turns": 1},
+                "test_scope": ["'server'", "'test/hidden_fallback.test.ts'"]
+            }
+        }))
+        .expect("task");
+        let prompt = agent_task_prompt(&task, &spec);
+        assert!(prompt.contains("tests: cd /testbed/server && npm test"));
+        assert!(!prompt.contains("hidden_fallback"));
+        assert!(!prompt.contains(crate::testlog::JUNIT_BEGIN));
+        assert!(!prompt.contains("junit"));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
-use nasiko_evals::remote::{RepoRef, owner_and_name, package_name, trailers};
+use nasiko_evals::remote::{RepoRef, owner_and_name, trailers};
+use nasiko_evals::spec::{self, Language};
 use nasiko_evals::{CommitFacts, diff};
 
 /// One git repository on disk.
@@ -165,13 +166,18 @@ impl Repo {
             .map(|_| ())
     }
 
-    /// The Cargo package that owns `path` at a commit, and its `Cargo.toml`: the `[package]
-    /// name` of the nearest one above it. `None` when there is none (e.g. a root-only workspace
-    /// manifest).
-    pub fn cargo_package_of(&self, sha: &str, path: &str) -> Result<Option<(String, String)>> {
-        for manifest in nasiko_evals::spec::manifests_above(path) {
+    /// The package that owns `path` at a commit, and its manifest (`Cargo.toml`,
+    /// `package.json`): the nearest one above it ([`spec::package_name`]). `None` when there is
+    /// none (e.g. a root-only Cargo workspace manifest).
+    pub fn package_of(
+        &self,
+        sha: &str,
+        path: &str,
+        language: Language,
+    ) -> Result<Option<(String, String)>> {
+        for manifest in spec::manifests_above(path, language.manifest_file()) {
             if let Some(text) = self.file_at(sha, &manifest)? {
-                return Ok(package_name(&text).map(|name| (name, manifest)));
+                return Ok(spec::package_name(language, &text).map(|name| (name, manifest)));
             }
         }
         Ok(None)

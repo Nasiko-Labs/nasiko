@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<testsuites name="vitest tests" tests="8" failures="2" errors="0" time="0.0133957">
+    <testsuite name="mixed.test.mjs" timestamp="2026-11-28T00:00:00.000Z" hostname="host" tests="8" failures="2" errors="0" skipped="2" time="0.0133957">
+        <testcase classname="mixed.test.mjs" name="top level passes" time="0.0006709">
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="top level fails" time="0.0110537">
+            <failure message="expected 1 to be 2 // Object.is equality" type="AssertionError">
+AssertionError: expected 1 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 1
+
+ ❯ mixed.test.mjs:3:43
+            </failure>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="skipped one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="todo one" time="0">
+            <skipped/>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="outer &gt; inner &gt; nested passes" time="0.000161">
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="outer &gt; inner &gt; nested fails" time="0.0002448">
+            <failure message="boom &lt;x&gt;" type="Error">
+Error: boom &lt;x&gt;
+ ❯ mixed.test.mjs:9:38
+            </failure>
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="outer &gt; same name" time="0.0000815">
+        </testcase>
+        <testcase classname="mixed.test.mjs" name="same name" time="0.0000355">
+        </testcase>
+    </testsuite>
+</testsuites>
