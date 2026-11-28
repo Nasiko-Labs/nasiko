@@ -309,7 +309,15 @@ export function EvalsPage({
   const frame = (children: ReactNode) => (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
       <TopBar />
-      <PageHeader title={copy.title} description={copy.description} />
+      <PageHeader
+        title={copy.title}
+        description={copy.description}
+        actions={
+          <Link to="/evals/code-review" {...asButton({ variant: 'outline', size: 'sm' })}>
+            {copy.codeReviewLink}
+          </Link>
+        }
+      />
       {children}
     </div>
   )

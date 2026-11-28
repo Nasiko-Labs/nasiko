@@ -22,6 +22,7 @@ pub mod build;
 pub mod capabilities;
 pub mod catalog;
 pub mod chat;
+pub mod code_review;
 pub mod coding;
 pub mod coding_agent_backlog;
 pub mod coding_agent_ingest_guard;
@@ -403,6 +404,7 @@ where
         .merge(sessions::router())
         .merge(coding_agent_telemetry::router(state.clone()))
         .merge(evals::router())
+        .merge(code_review::router())
         .merge(maf::router(maf_run_limiter, maf_read_limiter))
         .merge(secrets::router())
         .merge(llm_configs::router())

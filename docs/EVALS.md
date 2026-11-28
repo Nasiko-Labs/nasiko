@@ -1,5 +1,10 @@
 # Replay evals
 
+This page covers code *generation* benchmarking. For code *review* benchmarking — importing a
+pull request and comparing how different models review the same diff, graded against
+human-validated reference findings — see
+[proposals/evals/CODE_REVIEW_EVALS.md](proposals/evals/CODE_REVIEW_EVALS.md).
+
 Replay evals turn coding tasks your team already finished with Claude Code into a private,
 SWE-bench-Verified-style benchmark, replay them on other models through the opencode agent,
 and report which tasks those models solve just as well and what they cost.

@@ -31,5 +31,6 @@ pub(crate) mod http;
 
 pub use config::GitHubConfig;
 pub use error::{Error, Result};
+pub use history::{PullRequestDetail, PullRequestRef};
 pub use models::{AccessToken, CloneArchive, GitHubRepo, GitHubUser, OAuthStateClaims};
 pub use service::GitHubService;

@@ -79,6 +79,22 @@ impl CommitDetail {
     }
 }
 
+/// One pull request's identifying commits, read for code-review evals: the diff and touched
+/// files come from `compare_diff`/`file_at` at `head.sha`, same as any other ref.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequestDetail {
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub base: PullRequestRef,
+    pub head: PullRequestRef,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PullRequestRef {
+    pub sha: String,
+}
+
 #[derive(Deserialize)]
 struct ListedCommit {
     sha: String,
@@ -212,6 +228,20 @@ impl GitHubService {
         }
     }
 
+    /// One pull request: its number, title and base/head commits.
+    #[instrument(skip(self, token))]
+    pub async fn pull_request(
+        &self,
+        token: &str,
+        repo: &str,
+        number: u64,
+    ) -> Result<PullRequestDetail> {
+        validate_repo_full_name(repo)?;
+        self.api_client
+            .get_authed(&format!("/repos/{repo}/pulls/{number}"), token)
+            .await
+    }
+
     /// Names of the files and folders at the repository's root at `git_ref`.
     #[instrument(skip(self, token))]
     pub async fn root_files(&self, token: &str, repo: &str, git_ref: &str) -> Result<Vec<String>> {
@@ -272,6 +302,20 @@ mod tests {
         assert!(encode_path("a//b").is_err());
         assert!(validate_ref("main..evil").is_err());
         assert!(validate_ref("0123abcd").is_ok());
+    }
+
+    #[test]
+    fn a_pull_request_reply_gives_its_base_and_head_shas() {
+        let pr: PullRequestDetail = serde_json::from_value(serde_json::json!({
+            "number": 42,
+            "title": "Fix the thing",
+            "html_url": "https://github.com/o/r/pull/42",
+            "base": {"sha": "aaa"},
+            "head": {"sha": "bbb"}
+        }))
+        .unwrap();
+        assert_eq!(pr.base.sha, "aaa");
+        assert_eq!(pr.head.sha, "bbb");
     }
 
     #[test]
