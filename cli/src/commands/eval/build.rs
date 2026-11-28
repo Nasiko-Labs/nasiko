@@ -20,11 +20,18 @@ pub fn spec_detect(store: &Store, repo_dir: &Path) -> Result<EnvSpec> {
     let repo = Repo::open(repo_dir)?;
     let slug = repo.slug();
     let root = repo.root_files("HEAD")?;
-    let toolchain = ["rust-toolchain.toml", "rust-toolchain"]
-        .iter()
-        .find_map(|f| repo.file_at("HEAD", f).ok().flatten());
-    let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref())
-        .context("only Cargo (Rust) repositories are supported so far")?;
+    let toolchain = if root.iter().any(|f| f == "Cargo.toml") {
+        ["rust-toolchain.toml", "rust-toolchain"]
+            .iter()
+            .find_map(|f| repo.file_at("HEAD", f).ok().flatten())
+    } else if root.iter().any(|f| f == "package.json") {
+        repo.file_at("HEAD", "package.json").ok().flatten()
+    } else {
+        None
+    };
+    let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref()).context(
+        "only Cargo (Rust) and Vitest (TypeScript/JavaScript) repositories are supported so far",
+    )?;
     spec.local_path = Some(repo.root().to_string_lossy().into_owned());
     store.save_spec(&slug, &spec)?;
     Ok(spec)

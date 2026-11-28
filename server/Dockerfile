@@ -56,7 +56,7 @@ COPY --from=ui /ui/oss/app/dist ./ui/oss/app/dist
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p nasiko-server && \
+    cargo build --release -j 1 -p nasiko-server && \
     cp target/release/nasiko-server /nasiko-server
 
 # ── Stage 3: runtime ────────────────────────────────────────────────────────

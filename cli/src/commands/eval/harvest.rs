@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use nasiko_evals::TestPathRules;
 pub use nasiko_evals::harvest::Outcome;
 use nasiko_evals::harvest::{self, FileVersions};
 use nasiko_evals::link::{self, LinkDecision};
@@ -177,7 +178,13 @@ fn save_task(
     linked: harvest::Linked,
 ) -> Result<Option<String>> {
     let (base, gold) = (linked.first().parent.clone(), linked.last().sha.clone());
-    let mut split = harvest::split(&repo.diff(&base, &gold)?)?;
+    let diff = repo.diff(&base, &gold)?;
+    let mut split = match store.load_spec(&repo.slug())? {
+        Some(spec) => {
+            harvest::split_with_rules(&diff, &TestPathRules::from_globs(&spec.test_paths))?
+        }
+        None => harvest::split(&diff)?,
+    };
     let mut versions = BTreeMap::new();
     for path in harvest::inline_test_paths(&split) {
         versions.insert(
