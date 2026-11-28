@@ -108,6 +108,24 @@ pub fn join(files: &[FileDiff]) -> String {
     files.iter().map(|f| f.text.as_str()).collect()
 }
 
+/// Test files of a Cargo workspace: integration tests and `*_test(s).rs` modules.
+pub const RUST_TEST_GLOBS: [&str; 4] = [
+    "**/tests/**",
+    "**/*_test.rs",
+    "**/*_tests.rs",
+    "**/tests.rs",
+];
+
+/// Test files as pytest finds them by default (`test_*.py`, `*_test.py`), the usual test
+/// folders, and `conftest.py`, whose fixtures belong to the tests.
+pub const PYTHON_TEST_GLOBS: [&str; 5] = [
+    "**/tests/**",
+    "**/test/**",
+    "**/test_*.py",
+    "**/*_test.py",
+    "**/conftest.py",
+];
+
 /// Which paths count as test files, written as globs (`**/tests/**`, `**/*_test.rs`).
 #[derive(Debug, Clone)]
 pub struct TestPathRules {
@@ -124,12 +142,22 @@ impl TestPathRules {
 
     /// Default test-path rules for a Rust workspace.
     pub fn rust_default() -> Self {
-        Self::from_globs(&[
-            "**/tests/**".to_string(),
-            "**/*_test.rs".to_string(),
-            "**/*_tests.rs".to_string(),
-            "**/tests.rs".to_string(),
-        ])
+        Self::from_static(&RUST_TEST_GLOBS)
+    }
+
+    /// Test-path rules of every supported language. Harvest splits a commit before the repo's
+    /// spec is known, and the patterns don't clash: no Rust file matches a Python glob.
+    pub fn any_language() -> Self {
+        let globs: Vec<&str> = RUST_TEST_GLOBS
+            .iter()
+            .chain(PYTHON_TEST_GLOBS.iter())
+            .copied()
+            .collect();
+        Self::from_static(&globs)
+    }
+
+    fn from_static(globs: &[&str]) -> Self {
+        Self::from_globs(&globs.iter().map(|g| g.to_string()).collect::<Vec<_>>())
     }
 
     pub fn is_test(&self, path: &str) -> bool {
@@ -248,6 +276,30 @@ new file mode 100644
         assert!(rules.is_test("tests/a.rs"));
         assert!(rules.is_test("oss/x/src/foo_test.rs"));
         assert!(!rules.is_test("oss/x/src/testing.rs"));
+    }
+
+    #[test]
+    fn any_language_rules_find_python_tests_and_keep_rust_ones() {
+        let rules = TestPathRules::any_language();
+        for test in [
+            "tests/test_dur.py",
+            "pkg/tests/helpers.py",
+            "test/fixtures/a.json",
+            "src/pkg/test_parse.py",
+            "src/pkg/parse_test.py",
+            "conftest.py",
+            "oss/cli/tests/a.rs",
+        ] {
+            assert!(rules.is_test(test), "{test}");
+        }
+        for code in [
+            "src/pkg/parse.py",
+            "src/pkg/testing.py",
+            "src/lib.rs",
+            "setup.py",
+        ] {
+            assert!(!rules.is_test(code), "{code}");
+        }
     }
 
     #[test]

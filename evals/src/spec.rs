@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::diff::{FileDiff, PYTHON_TEST_GLOBS, RUST_TEST_GLOBS};
 use crate::testlog::LogParserKind;
 
 /// Build and test settings for one repository.
@@ -41,6 +42,7 @@ pub struct EnvSpec {
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
+    Python,
 }
 
 /// Default Rust toolchain image when the repo pins none. Debian 13 (trixie), not 12: prebuilt
@@ -48,17 +50,117 @@ pub enum Language {
 /// need glibc 2.38+ and GCC 14's C++ runtime.
 pub const DEFAULT_RUST_IMAGE: &str = "rust:1-trixie";
 
+/// Default Python image: Debian 12 (bookworm), the same Debian as the Node image opencode is
+/// copied from, so its `node` binary finds the glibc it was built against.
+pub const DEFAULT_PYTHON_IMAGE: &str = "python:3.12-slim-bookworm";
+
+/// Root files that mark a Python project whose tests pytest can run.
+const PYTHON_MARKERS: [&str; 6] = [
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "pytest.ini",
+    "tox.ini",
+];
+
+/// A Python container builds nothing, so it needs far less memory than a Cargo link step.
+pub const PYTHON_MEMORY_MIB: u32 = 3072;
+
 /// Proposes a spec from the files at the repo root; `toolchain` is the content of
-/// `rust-toolchain.toml` / `rust-toolchain` when present. `None` for unsupported repos.
+/// `rust-toolchain.toml` / `rust-toolchain` when present. Cargo wins when a repo has both, as
+/// its Python files are then usually bindings or scripts. `None` for unsupported repos.
 pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Option<EnvSpec> {
-    if !root_files.iter().any(|f| f == "Cargo.toml") {
-        return None;
+    let has = |name: &str| root_files.iter().any(|f| f == name);
+    if has("Cargo.toml") {
+        return Some(rust_spec(repo, toolchain));
     }
+    if PYTHON_MARKERS.iter().any(|m| has(m)) {
+        return Some(python_spec(repo));
+    }
+    None
+}
+
+/// Installs pytest, the repo's requirement files and the package itself (editable, so the
+/// tests import `/testbed`'s code, patched or not). Each optional step may fail without
+/// stopping the image: the gate then reports a task whose tests cannot run.
+const PYTHON_SETUP: &str = "python -m pip install pytest \
+     && for f in requirements.txt requirements-dev.txt requirements-test.txt \
+     requirements/test.txt requirements/dev.txt; do \
+     if [ -f \"$f\" ]; then python -m pip install -r \"$f\" || true; fi; done \
+     && if [ -f pyproject.toml ] || [ -f setup.py ]; then \
+     python -m pip install -e '.[test,tests,testing,dev]' || python -m pip install -e . || true; fi";
+
+/// Python has no build step; a syntax error in a scoped test file is the closest thing to code
+/// that does not compile. Code the tests import but cannot load shows up as their own failures
+/// instead. Files the run's set-up lacks (the pristine run has none of the new test files) are
+/// skipped; the subshell keeps `exit` from ending the eval script with the wrong code.
+const PYTHON_BUILD: &str =
+    "( for f in {scope}; do [ ! -e \"$f\" ] || python -m compileall -q \"$f\" || exit 1; done )";
+
+/// Runs pytest on the scoped test files present in the tree: pytest refuses to run at all when
+/// one named file is missing, and with none named it would run the whole suite. `-rA` writes one
+/// summary line per test, which `testlog` reads; no cache directory, so a run leaves nothing
+/// behind in `/testbed`.
+const PYTHON_TEST: &str = "( set --; for f in {scope}; do [ ! -e \"$f\" ] || set -- \"$@\" \"$f\"; done; \
+     [ $# -eq 0 ] || python -m pytest -rA --color=no --tb=short -p no:cacheprovider \"$@\" )";
+
+/// What the replayed agent is told to run for Python: the whole suite, never the scope, which
+/// names the hidden test files.
+pub const PYTHON_AGENT_BUILD: &str = "python -m compileall -q .";
+pub const PYTHON_AGENT_TEST: &str = "python -m pytest -q";
+
+fn python_spec(repo: &str) -> EnvSpec {
+    EnvSpec {
+        repo: repo.to_string(),
+        language: Language::Python,
+        toolchain_image: DEFAULT_PYTHON_IMAGE.to_string(),
+        // A C compiler for dependencies that ship no wheel for this Python.
+        system_packages: vec!["build-essential".into()],
+        setup: vec![PYTHON_SETUP.into()],
+        build_cmd: PYTHON_BUILD.into(),
+        test_cmd: PYTHON_TEST.into(),
+        test_paths: PYTHON_TEST_GLOBS.iter().map(|g| g.to_string()).collect(),
+        log_parser: LogParserKind::Pytest,
+        timeout_secs: 1800,
+        memory_mib: PYTHON_MEMORY_MIB,
+        local_path: None,
+    }
+}
+
+/// The pytest scope of a task: the Python test files its test patch leaves in the tree, each
+/// quoted for the shell. `conftest.py` and `__init__.py` hold fixtures, not tests, so they are
+/// not named (pytest loads them anyway). A path with a quote or a newline is left out rather
+/// than risk breaking the script. `None` when no test file is left: nothing could then show the
+/// fix works.
+/// Why a task with no test scope is rejected (Cargo: no package owns its files; Python: its
+/// test patch leaves no test file).
+pub const NO_SCOPE_REASON: &str =
+    "no test file or Cargo package of the task's own, so it has no tests to run";
+
+pub fn python_test_scope(test_files: &[FileDiff]) -> Option<Vec<String>> {
+    let mut scope: Vec<String> = test_files
+        .iter()
+        .filter_map(|f| f.new_path.as_deref())
+        .filter(|p| p.ends_with(".py"))
+        .filter(|p| {
+            let name = p.rsplit('/').next().unwrap_or(p);
+            name != "conftest.py" && name != "__init__.py"
+        })
+        .filter(|p| !p.contains(['\'', '\n']))
+        .map(|p| format!("'{p}'"))
+        .collect();
+    scope.sort();
+    scope.dedup();
+    (!scope.is_empty()).then_some(scope)
+}
+
+fn rust_spec(repo: &str, toolchain: Option<&str>) -> EnvSpec {
     let image = toolchain
         .and_then(rust_channel)
         .map(|v| format!("rust:{v}-trixie"))
         .unwrap_or_else(|| DEFAULT_RUST_IMAGE.to_string());
-    Some(EnvSpec {
+    EnvSpec {
         repo: repo.to_string(),
         language: Language::Rust,
         toolchain_image: image,
@@ -73,17 +175,12 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
         setup: vec!["cargo fetch".into()],
         build_cmd: "cargo test {scope} --no-run".into(),
         test_cmd: "cargo test {scope} --no-fail-fast".into(),
-        test_paths: vec![
-            "**/tests/**".into(),
-            "**/*_test.rs".into(),
-            "**/*_tests.rs".into(),
-            "**/tests.rs".into(),
-        ],
+        test_paths: RUST_TEST_GLOBS.iter().map(|g| g.to_string()).collect(),
         log_parser: LogParserKind::Cargo,
         timeout_secs: 1800,
         memory_mib: DEFAULT_MEMORY_MIB,
         local_path: None,
-    })
+    }
 }
 
 /// A build container's memory limit unless the spec says otherwise.
@@ -323,6 +420,59 @@ mod tests {
             propose("o/r", &["Cargo.toml".into()], Some("channel = \"1.92\"")).expect("rust");
         assert_eq!(spec.toolchain_image, "rust:1.92-trixie");
         assert!(propose("o/r", &["package.json".into()], None).is_none());
+    }
+
+    #[test]
+    fn proposes_pytest_for_python_repos_and_cargo_when_both() {
+        for marker in PYTHON_MARKERS {
+            let spec = propose("o/r", &[marker.into(), "README.md".into()], None).expect(marker);
+            assert_eq!(spec.language, Language::Python, "{marker}");
+            assert_eq!(spec.log_parser, LogParserKind::Pytest);
+            assert_eq!(spec.toolchain_image, DEFAULT_PYTHON_IMAGE);
+            assert!(spec.test_cmd.contains("pytest -rA"));
+        }
+        let both = propose("o/r", &["Cargo.toml".into(), "pyproject.toml".into()], None);
+        assert_eq!(both.expect("rust").language, Language::Rust);
+        assert!(propose("o/r", &["main.py".into()], None).is_none());
+    }
+
+    fn file(old: Option<&str>, new: Option<&str>) -> FileDiff {
+        FileDiff {
+            old_path: old.map(Into::into),
+            new_path: new.map(Into::into),
+            text: String::new(),
+            added: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn python_scope_names_the_test_files_left_quoted_and_sorted() {
+        let files = [
+            file(None, Some("tests/test_b.py")),
+            file(Some("tests/test_a.py"), Some("tests/test_a.py")),
+            file(Some("tests/test_gone.py"), None),
+            file(None, Some("tests/conftest.py")),
+            file(None, Some("tests/__init__.py")),
+            file(None, Some("tests/data/case.json")),
+            file(None, Some("tests/it's.py")),
+        ];
+        assert_eq!(
+            python_test_scope(&files).unwrap(),
+            ["'tests/test_a.py'", "'tests/test_b.py'"]
+        );
+        let fixtures_only = [file(None, Some("tests/conftest.py"))];
+        assert_eq!(python_test_scope(&fixtures_only), None);
+    }
+
+    #[test]
+    fn python_script_checks_syntax_then_runs_pytest_on_the_scope() {
+        let spec = propose("o/r", &["pyproject.toml".into()], None).expect("python");
+        let script = eval_script(&spec, &["'tests/test_a.py'".into()]);
+        let build = script.find("compileall -q \"$f\"").expect("builds");
+        let test = script.find("pytest -rA").expect("tests");
+        assert!(build < test);
+        assert!(script.contains("for f in 'tests/test_a.py'; do"));
+        assert!(script.contains("-p no:cacheprovider \"$@\""));
     }
 
     #[test]

@@ -181,11 +181,12 @@ fn one_task(
     })
 }
 
-/// The linked commits' full diff (`first.parent..last`), split into fix and test files.
+/// The linked commits' full diff (`first.parent..last`), split into fix and test files. The
+/// repo's spec is not known yet here, so every supported language's test paths count.
 pub fn split(full_diff: &str) -> Result<SplitPatch, DiffError> {
     Ok(diff::split_tests(
         diff::parse_unified(full_diff)?,
-        &TestPathRules::rust_default(),
+        &TestPathRules::any_language(),
     ))
 }
 
@@ -263,12 +264,32 @@ pub fn split_inline_rust_tests(
 /// changes are in shared helpers (`tests/common/mod.rs`) or that has none cannot yield a test
 /// that fails before the fix and passes after it. A test file counts when it is an integration
 /// test target (`tests/<name>.rs`, `tests/<name>/main.rs`), lies outside a `tests/` folder (an
-/// inline test module moved here, a `*_test.rs`), or adds a `#[…test…]` attribute.
+/// inline test module moved here, a `*_test.rs`), or adds a `#[…test…]` attribute. A Python
+/// file counts when pytest collects it by name (`test_*.py`, `*_test.py`) or it adds a
+/// `def test_…`; a `conftest.py` or helper module in `tests/` is a helper, as in Rust.
 pub fn has_tests(split: &SplitPatch) -> bool {
-    split
-        .test
-        .iter()
-        .any(|f| !in_tests_folder(f.path()) || is_test_target(f.path()) || adds_test_attr(f))
+    split.test.iter().any(|f| {
+        let path = f.path();
+        if path.ends_with(".py") {
+            return is_pytest_module(path) || adds_python_test(f);
+        }
+        !in_tests_folder(path) || is_test_target(path) || adds_test_attr(f)
+    })
+}
+
+/// A file pytest collects by default: `test_*.py` or `*_test.py`.
+fn is_pytest_module(path: &str) -> bool {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    name.starts_with("test_") || name.ends_with("_test.py")
+}
+
+/// Adds a test function or method: `def test_…` or `async def test_…`.
+fn adds_python_test(file: &FileDiff) -> bool {
+    file.added.iter().any(|line| {
+        let line = line.trim_start();
+        let line = line.strip_prefix("async ").unwrap_or(line);
+        line.starts_with("def test_")
+    })
 }
 
 fn in_tests_folder(path: &str) -> bool {
@@ -616,6 +637,51 @@ mod tests {
             "tests/budgets/helpers.rs",
             "\n",
             "fn h() {}\n"
+        )));
+    }
+
+    #[test]
+    fn python_test_modules_and_new_test_functions_count_helpers_do_not() {
+        let only = |path: &str, old: &str, new: &str| {
+            split(&patch::diff_texts(path, Some(old), new)).expect("splits")
+        };
+        assert!(has_tests(&only(
+            "tests/test_number.py",
+            "import humanize
+",
+            "import humanize
+X = 1
+"
+        )));
+        assert!(has_tests(&only(
+            "src/pkg/parse_test.py",
+            "
+",
+            "A = 1
+"
+        )));
+        assert!(has_tests(&only(
+            "tests/helpers.py",
+            "
+",
+            "async def test_reads():
+    assert True
+"
+        )));
+        assert!(!has_tests(&only(
+            "tests/conftest.py",
+            "
+",
+            "import pytest
+"
+        )));
+        assert!(!has_tests(&only(
+            "tests/helpers.py",
+            "
+",
+            "def make():
+    return 1
+"
         )));
     }
 

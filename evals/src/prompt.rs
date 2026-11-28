@@ -227,11 +227,23 @@ Rules:
 ";
 
 /// Prompt P4: the replayed agent's task (the user message; opencode adds its own system prompt).
+/// A Python task's scope names its hidden test files, so the agent is shown commands over the
+/// whole repo instead.
 pub fn agent_task_prompt(task: &TaskInstance, spec: &EnvSpec) -> String {
     let scope = &task.x_nasiko.test_scope;
+    let (build, test) = match spec.language {
+        spec::Language::Python => (
+            spec::PYTHON_AGENT_BUILD.to_string(),
+            spec::PYTHON_AGENT_TEST.to_string(),
+        ),
+        spec::Language::Rust => (
+            spec::with_scope(&spec.build_cmd, scope),
+            spec::with_scope(&spec.test_cmd, scope),
+        ),
+    };
     P4.replace("{problem_statement}", &task.problem_statement)
-        .replace("{build_cmd}", &spec::with_scope(&spec.build_cmd, scope))
-        .replace("{test_cmd}", &spec::with_scope(&spec.test_cmd, scope))
+        .replace("{build_cmd}", &build)
+        .replace("{test_cmd}", &test)
 }
 
 /// The first `{ … }` object in a reply, also when wrapped in a code fence or prose.

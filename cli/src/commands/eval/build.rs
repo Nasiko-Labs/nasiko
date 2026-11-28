@@ -24,7 +24,7 @@ pub fn spec_detect(store: &Store, repo_dir: &Path) -> Result<EnvSpec> {
         .iter()
         .find_map(|f| repo.file_at("HEAD", f).ok().flatten());
     let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref())
-        .context("only Cargo (Rust) repositories are supported so far")?;
+        .context("only Cargo (Rust) and Python (pytest) repositories are supported so far")?;
     spec.local_path = Some(repo.root().to_string_lossy().into_owned());
     store.save_spec(&slug, &spec)?;
     Ok(spec)
@@ -116,7 +116,7 @@ fn build_task(
         .as_deref()
         .context("the spec has no local_path; re-run `nasiko eval spec detect`")?;
     let repo = Repo::open(Path::new(repo_path))?;
-    let scope = test_scope(&repo, task)?;
+    let scope = test_scope(&repo, &spec, task)?;
     let env_tag = images::env_image_tag(&spec);
     if !containers.image_exists(&env_tag)? {
         let dir = scratch_dir(store, &task.instance_id, "env-image")?;
@@ -165,9 +165,14 @@ fn build_task(
     }))
 }
 
-/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
-/// ([`spec::task_test_scope`]).
-fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
+/// The task's test scope: for Cargo, the packages owning the files the fix and its tests change
+/// ([`spec::task_test_scope`]); for Python, the test files themselves
+/// ([`spec::python_test_scope`]).
+fn test_scope(repo: &Repo, spec: &EnvSpec, task: &TaskInstance) -> Result<Vec<String>> {
+    if spec.language == spec::Language::Python {
+        return spec::python_test_scope(&diff::parse_unified(&task.test_patch)?)
+            .context(spec::NO_SCOPE_REASON);
+    }
     let mut files = Vec::new();
     for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
@@ -183,8 +188,7 @@ fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
             }
         }
     }
-    spec::task_test_scope(&files)
-        .context("no Cargo package owns the task's files, so it has no tests to run")
+    spec::task_test_scope(&files).context(spec::NO_SCOPE_REASON)
 }
 
 /// The three gate set-ups.

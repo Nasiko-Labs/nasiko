@@ -100,14 +100,7 @@ impl SessionRecord {
             .edits
             .iter()
             .filter(|e| after.is_none_or(|a| e.at > a))
-            .filter(|e| {
-                repo_roots.iter().any(|r| {
-                    let root = format!("{}/", r.trim_end_matches('/'));
-                    e.path
-                        .strip_prefix(&root)
-                        .is_some_and(|rel| files.iter().any(|f| f == rel))
-                })
-            })
+            .filter(|e| repo_relative(&e.path, repo_roots).is_some_and(|rel| files.contains(&rel)))
             .map(|e| e.at)
             .min()?;
         self.user_messages
@@ -160,20 +153,27 @@ impl SessionRecord {
     /// root are dropped. A repo can have several roots: its main folder and its `git worktree`s,
     /// which share one history, and a session may edit any of them.
     pub fn edited_paths_in(&self, repo_roots: &[String]) -> Vec<String> {
-        let roots: Vec<String> = repo_roots
-            .iter()
-            .map(|r| format!("{}/", r.trim_end_matches('/')))
-            .collect();
         let mut paths: Vec<String> = self
             .edits
             .iter()
-            .filter_map(|e| roots.iter().find_map(|r| e.path.strip_prefix(r.as_str())))
-            .map(str::to_string)
+            .filter_map(|e| repo_relative(&e.path, repo_roots))
             .collect();
         paths.sort();
         paths.dedup();
         paths
     }
+}
+
+/// `path` relative to whichever of `repo_roots` holds it, with `/` separators; `None` when none
+/// does. A session on Windows records edits as `C:\repo\src\a.py` while its repo root can be
+/// reported as `C:/repo`, so both sides are compared with `/` only; without this, no Windows
+/// session ever had an edit "in the repo" and none could become a task.
+pub fn repo_relative(path: &str, repo_roots: &[String]) -> Option<String> {
+    let path = path.replace('\\', "/");
+    repo_roots.iter().find_map(|root| {
+        let root = format!("{}/", root.replace('\\', "/").trim_end_matches('/'));
+        path.strip_prefix(&root).map(str::to_string)
+    })
 }
 
 /// Most typed messages kept as context for rewriting the request (prompt P1).
@@ -246,4 +246,40 @@ pub enum SessionError {
     NoWorkingFolder,
     #[error("the log has no timestamps")]
     NoTimestamps,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn roots(r: &[&str]) -> Vec<String> {
+        r.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn windows_edits_match_a_root_reported_with_either_separator() {
+        let edit = r"M:\E_backup\humanize\src\humanize\number.py";
+        for root in [
+            "M:/E_backup/humanize",
+            r"M:\E_backup\humanize",
+            "M:/E_backup/humanize/",
+        ] {
+            assert_eq!(
+                repo_relative(edit, &roots(&[root])).as_deref(),
+                Some("src/humanize/number.py"),
+                "{root}"
+            );
+        }
+    }
+
+    #[test]
+    fn unix_edits_and_paths_outside_every_root_are_unchanged() {
+        let r = roots(&["/home/a/repo"]);
+        assert_eq!(
+            repo_relative("/home/a/repo/src/lib.rs", &r).as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(repo_relative("/home/a/repo2/src/lib.rs", &r), None);
+        assert_eq!(repo_relative("/home/a/other/x.py", &r), None);
+    }
 }
