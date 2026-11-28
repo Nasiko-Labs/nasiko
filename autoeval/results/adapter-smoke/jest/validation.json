@@ -1,0 +1,63 @@
+{
+  "before": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke/jest/artifacts/before-1",
+      "duration_seconds": 1.2665737920906395,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests/module.test.js::existing": "passed",
+        "tests/module.test.js::regression": "failed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke/jest/artifacts/before-2",
+      "duration_seconds": 0.8034779580775648,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests/module.test.js::existing": "passed",
+        "tests/module.test.js::regression": "failed"
+      }
+    }
+  ],
+  "expected_tests": [
+    "tests/module.test.js::existing",
+    "tests/module.test.js::regression"
+  ],
+  "fail_to_pass": [
+    "tests/module.test.js::regression"
+  ],
+  "pass_to_pass": [
+    "tests/module.test.js::existing"
+  ],
+  "reference": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke/jest/artifacts/reference-1",
+      "duration_seconds": 1.6668847501277924,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests/module.test.js::existing": "passed",
+        "tests/module.test.js::regression": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke/jest/artifacts/reference-2",
+      "duration_seconds": 0.7140762079507113,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests/module.test.js::existing": "passed",
+        "tests/module.test.js::regression": "passed"
+      }
+    }
+  ],
+  "repetitions": 2,
+  "skipped_tests": [],
+  "status": "verified"
+}

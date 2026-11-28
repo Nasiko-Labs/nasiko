@@ -1,0 +1,25 @@
+FAIL tests/module.test.js
+  ✓ existing (2 ms)
+  ✕ regression (1 ms)
+
+  ● regression
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 1
+    Received: 0
+
+      1 | const {answer} = require('../module');
+      2 | test('existing', () => expect(typeof answer).toBe('function'));
+    > 3 | test('regression', () => expect(answer()).toBe(1));
+        |                                           ^
+      4 |
+
+      at Object.toBe (tests/module.test.js:3:43)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 1 passed, 2 total
+Snapshots:   0 total
+Time:        0.316 s
+Ran all test suites.
+Test results written to: ../eval/out/results.json

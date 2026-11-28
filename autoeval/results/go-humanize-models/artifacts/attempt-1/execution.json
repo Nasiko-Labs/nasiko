@@ -1,0 +1,23 @@
+{
+  "image": "sha256:f2b9f276afbfff71df1c84e510e023ff2c68cd1bf9caf02d9671a41f88f34839",
+  "limits": {
+    "CapDrop": [
+      "ALL"
+    ],
+    "Memory": 1073741824,
+    "MemorySwap": 1073741824,
+    "NanoCpus": 1000000000,
+    "NetworkMode": "none",
+    "PidsLimit": 256,
+    "ReadonlyRootfs": true,
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "Tmpfs": {
+      "/eval/out": "rw,noexec,nosuid,size=33554432,mode=1777",
+      "/tmp": "rw,exec,nosuid,size=536870912,mode=1777"
+    }
+  },
+  "test_command": "go test -mod=readonly -json ./...",
+  "user": "10001:10001"
+}

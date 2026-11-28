@@ -1,0 +1,11 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0
+cachedir: /tmp/pytest-cache
+rootdir: /work
+configfile: pyproject.toml
+collected 2 items
+
+tests/test_module.py ..                                                  [100%]
+
+------------------ generated xml file: /eval/out/results.xml -------------------
+============================== 2 passed in 0.01s ===============================

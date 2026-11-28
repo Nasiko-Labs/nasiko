@@ -1,0 +1,131 @@
+{
+  "attempts": [],
+  "blockers": [],
+  "images": {
+    "prepared_image_id": "sha256:b566b6759a5cde6ca4c4364c9fd0667e1be4a11cdb66be57e6d0af7e9c732e18",
+    "runtime_image_id": "sha256:ea930233b368b48bf94ba2b9bb8a8b651d5d2ecf5e091d6ab3f4d843766c47e1"
+  },
+  "mode": "one_shot",
+  "preflight": [],
+  "run_id": "autoeval-20261128-140005-49db7f",
+  "schema_version": 1,
+  "summary": [],
+  "task": {
+    "allowed_paths": [
+      "src/lib.rs"
+    ],
+    "fix_sha": "985fcb219251030a436add5c803614cc664db60d",
+    "id": "985fcb219251",
+    "ignored_documentation": [],
+    "input_kind": "local_fixture",
+    "issue": "Fix the repository behavior described here: Synthetic regression fix",
+    "issue_source": "commit subject only; no diff/history supplied",
+    "parent_sha": "32eab0b136092840f44fd26b474d75b92e18b7ad",
+    "plan": {
+      "cpus": 1.0,
+      "dependency_files": [
+        "Cargo.toml"
+      ],
+      "discovery_evidence": [
+        "Cargo.toml package",
+        "toolchain channel: 1",
+        "Cargo parser follows evals/src/testlog.rs binary::test identities",
+        "Operator supplied explicit execution overrides"
+      ],
+      "framework": "cargo",
+      "language": "rust",
+      "memory_mib": 1024,
+      "pids": 256,
+      "result_format": "cargo",
+      "runtime_image": "rust:1-slim-bookworm",
+      "runtime_requirements": {
+        "channel": "1",
+        "rust-version": null
+      },
+      "schema_version": 1,
+      "setup_commands": [
+        "cargo fetch"
+      ],
+      "setup_timeout_seconds": 600,
+      "test_command": "cargo test --offline --no-fail-fast -- --test-threads=1",
+      "test_path_rules": [
+        "tests/**",
+        "**/tests/**",
+        "**/*_test.rs",
+        "**/*_tests.rs"
+      ],
+      "timeout_seconds": 180,
+      "working_directory": "."
+    },
+    "production_changes": [
+      "src/lib.rs"
+    ],
+    "repository_url": "local fixture",
+    "test_changes": [
+      "tests/regression.rs"
+    ]
+  },
+  "validation": {
+    "before": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke-v2/cargo/artifacts/before-1",
+        "duration_seconds": 0.9287672920618206,
+        "exit_code": 101,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "regression::existing": "passed",
+          "regression::regression": "failed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke-v2/cargo/artifacts/before-2",
+        "duration_seconds": 1.0698282499797642,
+        "exit_code": 101,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "regression::existing": "passed",
+          "regression::regression": "failed"
+        }
+      }
+    ],
+    "expected_tests": [
+      "regression::existing",
+      "regression::regression"
+    ],
+    "fail_to_pass": [
+      "regression::regression"
+    ],
+    "pass_to_pass": [
+      "regression::existing"
+    ],
+    "reference": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke-v2/cargo/artifacts/reference-1",
+        "duration_seconds": 0.8943647919222713,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "regression::existing": "passed",
+          "regression::regression": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/results/adapter-smoke-v2/cargo/artifacts/reference-2",
+        "duration_seconds": 1.3193049170076847,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "regression::existing": "passed",
+          "regression::regression": "passed"
+        }
+      }
+    ],
+    "repetitions": 2,
+    "skipped_tests": [],
+    "status": "verified"
+  }
+}

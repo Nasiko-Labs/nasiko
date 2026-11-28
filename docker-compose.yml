@@ -16,7 +16,7 @@ services:
       POSTGRES_PASSWORD: nasiko
       POSTGRES_DB: nasiko_dev
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./init-databases.sql:/docker-entrypoint-initdb.d/create-extra-dbs.sql:ro
@@ -89,6 +89,8 @@ services:
     build:
       context: .
       dockerfile: server/Dockerfile
+      args:
+        CARGO_BUILD_JOBS: ${CARGO_BUILD_JOBS:-2}
     ports:
       - "8080:8080"
     env_file:

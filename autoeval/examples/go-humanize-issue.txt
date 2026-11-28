@@ -1,0 +1,4 @@
+SI formatting incorrectly adds a magnitude prefix to positive infinity,
+negative infinity, and NaN. Non-finite values have no meaningful SI magnitude.
+Keep them non-finite and format them with no prefix, while preserving existing
+behavior for finite inputs and zero.

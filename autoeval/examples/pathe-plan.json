@@ -1,0 +1,10 @@
+{
+  "runtime_image": "node:24-bookworm-slim",
+  "setup_commands": [
+    "npm install --global pnpm@11.9.0",
+    "pnpm install --frozen-lockfile --ignore-scripts"
+  ],
+  "test_command": "./node_modules/.bin/vitest run --configLoader=native --no-cache --maxWorkers=1 --reporter=json --outputFile=/eval/out/results.json",
+  "timeout_seconds": 180,
+  "setup_timeout_seconds": 600
+}

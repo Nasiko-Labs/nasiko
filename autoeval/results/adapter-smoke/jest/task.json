@@ -1,0 +1,58 @@
+{
+  "allowed_paths": [
+    "module.js"
+  ],
+  "fix_sha": "42fc6b2f811b31c8558044bfb5cd049310ddfe1b",
+  "id": "42fc6b2f811b",
+  "ignored_documentation": [],
+  "input_kind": "local_fixture",
+  "issue": "Fix the repository behavior described here: Synthetic regression fix",
+  "issue_source": "commit subject only; no diff/history supplied",
+  "parent_sha": "59045f97359ee402197417cdf3722bd0c1a02f2f",
+  "plan": {
+    "cpus": 1.0,
+    "dependency_files": [
+      "package.json"
+    ],
+    "discovery_evidence": [
+      "package.json declares jest",
+      "packageManager=npm"
+    ],
+    "framework": "jest",
+    "language": "javascript",
+    "memory_mib": 1024,
+    "pids": 256,
+    "result_format": "jest",
+    "runtime_image": "node:22-bookworm-slim",
+    "runtime_requirements": {
+      "engines": {},
+      "nvmrc": null,
+      "packageManager": null
+    },
+    "schema_version": 1,
+    "setup_commands": [
+      "npm install --ignore-scripts"
+    ],
+    "setup_timeout_seconds": 600,
+    "test_command": "./node_modules/.bin/jest --runInBand --json --outputFile=/eval/out/results.json",
+    "test_path_rules": [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "*.test.*",
+      "*.spec.*",
+      "**/__tests__/**",
+      "__tests__/**",
+      "test/**",
+      "tests/**"
+    ],
+    "timeout_seconds": 180,
+    "working_directory": "."
+  },
+  "production_changes": [
+    "module.js"
+  ],
+  "repository_url": "local fixture",
+  "test_changes": [
+    "tests/module.test.js"
+  ]
+}

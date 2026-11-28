@@ -53,10 +53,12 @@ COPY . .
 # shadow it with whatever (if anything) the context carried.
 COPY --from=ui /ui/oss/app/dist ./ui/oss/app/dist
 
+# Bound parallel compilation on development machines with limited Docker memory.
+ARG CARGO_BUILD_JOBS=2
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/build/target \
-    cargo build --release -p nasiko-server && \
+    cargo build --release -p nasiko-server --jobs "${CARGO_BUILD_JOBS}" && \
     cp target/release/nasiko-server /nasiko-server
 
 # ── Stage 3: runtime ────────────────────────────────────────────────────────

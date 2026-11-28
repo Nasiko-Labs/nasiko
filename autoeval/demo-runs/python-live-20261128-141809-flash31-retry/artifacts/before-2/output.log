@@ -1,0 +1,205 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0
+cachedir: /tmp/pytest-cache
+rootdir: /work
+configfile: pyproject.toml
+collected 54 items
+
+testing/test_iniconfig.py .............................................. [ 85%]
+.....FFF                                                                 [100%]
+
+=================================== FAILURES ===================================
+______________________________ test_utf8_bom_file ______________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-unknown/pytest-0/test_utf8_bom_file0')
+
+    def test_utf8_bom_file(tmp_path: Path) -> None:
+        """Files saved with a UTF-8 BOM (common on Windows editors) must parse."""
+        path = tmp_path / "bom.ini"
+        path.write_bytes(b"\xef\xbb\xbf[section]\nkey = value\n")
+>       config = IniConfig(path)
+                 ^^^^^^^^^^^^^^^
+
+testing/test_iniconfig.py:431: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/iniconfig/__init__.py:117: in __init__
+    sections_data, sources = _parse.parse_ini_data(
+src/iniconfig/_parse.py:37: in parse_ini_data
+    tokens = parse_lines(
+src/iniconfig/_parse.py:74: in parse_lines
+    name, data = _parseline(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = '/tmp/pytest-of-unknown/pytest-0/test_utf8_bom_file0/bom.ini'
+line = '\ufeff[section]', lineno = 0, strip_inline_comments = False
+strip_section_whitespace = False
+
+    def _parseline(
+        path: str,
+        line: str,
+        lineno: int,
+        strip_inline_comments: bool,
+        strip_section_whitespace: bool,
+    ) -> tuple[str | None, str | None]:
+        # blank lines
+        if iscommentline(line):
+            line = ""
+        else:
+            line = line.rstrip()
+        if not line:
+            return None, None
+        # section
+        if line[0] == "[":
+            realline = line
+            for c in COMMENTCHARS:
+                line = line.split(c)[0].rstrip()
+            if line[-1] == "]":
+                section_name = line[1:-1]
+                # Optionally strip whitespace from section name (issue #4)
+                if strip_section_whitespace:
+                    section_name = section_name.strip()
+                return section_name, None
+            return None, realline.strip()
+        # value
+        elif not line[0].isspace():
+            try:
+                name, value = line.split("=", 1)
+                if ":" in name:
+                    raise ValueError()
+            except ValueError:
+                try:
+                    name, value = line.split(":", 1)
+                except ValueError:
+>                   raise ParseError(path, lineno, f"unexpected line: {line!r}") from None
+E                   iniconfig.exceptions.ParseError: /tmp/pytest-of-unknown/pytest-0/test_utf8_bom_file0/bom.ini:1: unexpected line: '\ufeff[section]'
+
+src/iniconfig/_parse.py:131: ParseError
+_________________________ test_utf8_bom_in_data_string _________________________
+
+    def test_utf8_bom_in_data_string() -> None:
+>       config = IniConfig("x.ini", data="\ufeff[section]\nkey = value\n")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+testing/test_iniconfig.py:436: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/iniconfig/__init__.py:117: in __init__
+    sections_data, sources = _parse.parse_ini_data(
+src/iniconfig/_parse.py:37: in parse_ini_data
+    tokens = parse_lines(
+src/iniconfig/_parse.py:74: in parse_lines
+    name, data = _parseline(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = 'x.ini', line = '\ufeff[section]', lineno = 0
+strip_inline_comments = False, strip_section_whitespace = False
+
+    def _parseline(
+        path: str,
+        line: str,
+        lineno: int,
+        strip_inline_comments: bool,
+        strip_section_whitespace: bool,
+    ) -> tuple[str | None, str | None]:
+        # blank lines
+        if iscommentline(line):
+            line = ""
+        else:
+            line = line.rstrip()
+        if not line:
+            return None, None
+        # section
+        if line[0] == "[":
+            realline = line
+            for c in COMMENTCHARS:
+                line = line.split(c)[0].rstrip()
+            if line[-1] == "]":
+                section_name = line[1:-1]
+                # Optionally strip whitespace from section name (issue #4)
+                if strip_section_whitespace:
+                    section_name = section_name.strip()
+                return section_name, None
+            return None, realline.strip()
+        # value
+        elif not line[0].isspace():
+            try:
+                name, value = line.split("=", 1)
+                if ":" in name:
+                    raise ValueError()
+            except ValueError:
+                try:
+                    name, value = line.split(":", 1)
+                except ValueError:
+>                   raise ParseError(path, lineno, f"unexpected line: {line!r}") from None
+E                   iniconfig.exceptions.ParseError: x.ini:1: unexpected line: '\ufeff[section]'
+
+src/iniconfig/_parse.py:131: ParseError
+___________________________ test_parse_utf8_bom_file ___________________________
+
+tmp_path = PosixPath('/tmp/pytest-of-unknown/pytest-0/test_parse_utf8_bom_file0')
+
+    def test_parse_utf8_bom_file(tmp_path: Path) -> None:
+        path = tmp_path / "bom.ini"
+        path.write_bytes(b"\xef\xbb\xbf[section]\nkey = value\n")
+>       config = IniConfig.parse(path)
+                 ^^^^^^^^^^^^^^^^^^^^^
+
+testing/test_iniconfig.py:443: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+src/iniconfig/__init__.py:170: in parse
+    sections_data, sources = _parse.parse_ini_data(
+src/iniconfig/_parse.py:37: in parse_ini_data
+    tokens = parse_lines(
+src/iniconfig/_parse.py:74: in parse_lines
+    name, data = _parseline(
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+path = '/tmp/pytest-of-unknown/pytest-0/test_parse_utf8_bom_file0/bom.ini'
+line = '\ufeff[section]', lineno = 0, strip_inline_comments = True
+strip_section_whitespace = False
+
+    def _parseline(
+        path: str,
+        line: str,
+        lineno: int,
+        strip_inline_comments: bool,
+        strip_section_whitespace: bool,
+    ) -> tuple[str | None, str | None]:
+        # blank lines
+        if iscommentline(line):
+            line = ""
+        else:
+            line = line.rstrip()
+        if not line:
+            return None, None
+        # section
+        if line[0] == "[":
+            realline = line
+            for c in COMMENTCHARS:
+                line = line.split(c)[0].rstrip()
+            if line[-1] == "]":
+                section_name = line[1:-1]
+                # Optionally strip whitespace from section name (issue #4)
+                if strip_section_whitespace:
+                    section_name = section_name.strip()
+                return section_name, None
+            return None, realline.strip()
+        # value
+        elif not line[0].isspace():
+            try:
+                name, value = line.split("=", 1)
+                if ":" in name:
+                    raise ValueError()
+            except ValueError:
+                try:
+                    name, value = line.split(":", 1)
+                except ValueError:
+>                   raise ParseError(path, lineno, f"unexpected line: {line!r}") from None
+E                   iniconfig.exceptions.ParseError: /tmp/pytest-of-unknown/pytest-0/test_parse_utf8_bom_file0/bom.ini:1: unexpected line: '\ufeff[section]'
+
+src/iniconfig/_parse.py:131: ParseError
+------------------ generated xml file: /eval/out/results.xml -------------------
+=========================== short test summary info ============================
+FAILED testing/test_iniconfig.py::test_utf8_bom_file - iniconfig.exceptions.ParseError: /tmp/pytest-of-unknown/pytest-0/test_utf8_bom_file0/bom.ini:1: unexpected line: '\ufeff[section]'
+FAILED testing/test_iniconfig.py::test_utf8_bom_in_data_string - iniconfig.exceptions.ParseError: x.ini:1: unexpected line: '\ufeff[section]'
+FAILED testing/test_iniconfig.py::test_parse_utf8_bom_file - iniconfig.exceptions.ParseError: /tmp/pytest-of-unknown/pytest-0/test_parse_utf8_bom_file0/bom.ini:1: unexpected line: '\ufeff[section]'
+========================= 3 failed, 51 passed in 0.07s =========================

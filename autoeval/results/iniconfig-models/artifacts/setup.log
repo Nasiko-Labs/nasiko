@@ -1,0 +1,41 @@
+Collecting pytest==8.4.2
+  Downloading pytest-8.4.2-py3-none-any.whl.metadata (7.7 kB)
+Collecting iniconfig>=1 (from pytest==8.4.2)
+  Downloading iniconfig-2.3.1-py3-none-any.whl.metadata (2.8 kB)
+Collecting packaging>=20 (from pytest==8.4.2)
+  Downloading packaging-26.4-py3-none-any.whl.metadata (3.5 kB)
+Collecting pluggy<2,>=1.5 (from pytest==8.4.2)
+  Downloading pluggy-1.7.0-py3-none-any.whl.metadata (5.0 kB)
+Collecting pygments>=2.7.2 (from pytest==8.4.2)
+  Downloading pygments-2.21.0-py3-none-any.whl.metadata (2.5 kB)
+Downloading pytest-8.4.2-py3-none-any.whl (365 kB)
+Downloading iniconfig-2.3.1-py3-none-any.whl (7.6 kB)
+Downloading packaging-26.4-py3-none-any.whl (140 kB)
+Downloading pluggy-1.7.0-py3-none-any.whl (27 kB)
+Downloading pygments-2.21.0-py3-none-any.whl (1.3 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.3/1.3 MB 6.8 MB/s eta 0:00:00
+Installing collected packages: pygments, pluggy, packaging, iniconfig, pytest
+Successfully installed iniconfig-2.3.1 packaging-26.4 pluggy-1.7.0 pygments-2.21.0 pytest-8.4.2
+Obtaining file:///work
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Checking if build backend supports build_editable: started
+  Checking if build backend supports build_editable: finished with status 'done'
+  Getting requirements to build editable: started
+  Getting requirements to build editable: finished with status 'done'
+  Preparing editable metadata (pyproject.toml): started
+  Preparing editable metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: iniconfig
+  Building editable for iniconfig (pyproject.toml): started
+  Building editable for iniconfig (pyproject.toml): finished with status 'done'
+  Created wheel for iniconfig: filename=iniconfig-0.0.0-0.editable-py3-none-any.whl size=3137 sha256=84ec80c8acc7c11021b497cb0032d52f1dd3b370456f76725fa969ee83d7ea65
+  Stored in directory: /tmp/pip-ephem-wheel-cache-aqmtgx2j/wheels/c3/be/f9/d4edc8a6a5fc130baa8821785099dbd6f21e4c903787b290b5
+Successfully built iniconfig
+Installing collected packages: iniconfig
+  Attempting uninstall: iniconfig
+    Found existing installation: iniconfig 2.3.1
+    Uninstalling iniconfig-2.3.1:
+      Successfully uninstalled iniconfig-2.3.1
+Successfully installed iniconfig-0.0.0
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+pytest 8.4.2 requires iniconfig>=1, but you have iniconfig 0.0.0 which is incompatible.

@@ -1,0 +1,18 @@
+JSON report written to /eval/out/results.json
+
+⎯⎯⎯⎯⎯⎯ Unhandled Error ⎯⎯⎯⎯⎯⎯⎯
+Error: ENOENT: no such file or directory, mkdir '/work/node_modules/.vite'
+ ❯ Object.mkdir node:internal/fs/promises:858:10
+ ❯ ResultsCache.writeToCache node_modules/vitest/dist/chunks/resolveConfig.rBxzbVsl.js:4274:7
+ ❯ node_modules/vitest/dist/chunks/cli-api.DqsSTaIi.js:10827:7
+ ❯ Vitest.runFiles node_modules/vitest/dist/chunks/cli-api.DqsSTaIi.js:10840:12
+ ❯ Vitest.start node_modules/vitest/dist/chunks/cli-api.DqsSTaIi.js:10682:7
+ ❯ startVitest node_modules/vitest/dist/chunks/cli-api.DqsSTaIi.js:11848:7
+ ❯ start node_modules/vitest/dist/chunks/cac.CB_9Zo9Q.js:1506:17
+ ❯ CAC.run node_modules/vitest/dist/chunks/cac.CB_9Zo9Q.js:1486:3
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+Serialized Error: { errno: -2, code: 'ENOENT', syscall: 'mkdir', path: '/work/node_modules/.vite' }
+
+
+

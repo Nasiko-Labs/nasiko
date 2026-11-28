@@ -1,0 +1,34 @@
+
+added 1 package in 2s
+
+1 package is looking for funding
+  run `npm fund` for details
+? Verifying lockfile against supply-chain policies (222 entries)...
+Lockfile is up to date, resolution step is skipped
+Progress: resolved 1, reused 0, downloaded 0, added 0
+Packages: +124
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 124, reused 0, downloaded 14, added 1
+Progress: resolved 124, reused 0, downloaded 56, added 6
+Progress: resolved 124, reused 0, downloaded 97, added 9
+Progress: resolved 124, reused 0, downloaded 116, added 116
+Progress: resolved 124, reused 0, downloaded 117, added 117
+✓ Lockfile passes supply-chain policies (222 entries in 6.5s)
+Progress: resolved 124, reused 0, downloaded 118, added 117
+Progress: resolved 124, reused 0, downloaded 121, added 121
+Progress: resolved 124, reused 0, downloaded 122, added 122
+Progress: resolved 124, reused 0, downloaded 123, added 122
+Progress: resolved 124, reused 0, downloaded 124, added 124, done
+
+devDependencies:
++ @types/node 26.1.0
++ @typescript/native-preview 7.0.0-dev.20260703.1
++ @vitest/coverage-v8 4.1.9
++ changelogen 0.6.2
++ obuild 0.4.37
++ oxfmt 0.57.0
++ oxlint 1.72.0
++ typescript 6.0.3
++ vitest 4.1.9
+
+Done in 12.1s using pnpm v11.9.0

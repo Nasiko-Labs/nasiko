@@ -1,0 +1,30 @@
+[
+  {
+    "exit_code": 0,
+    "fixture": "jest",
+    "kind": "synthetic_adapter_verification",
+    "run": "autoeval/results/adapter-smoke/jest",
+    "verified": true
+  },
+  {
+    "exit_code": 1,
+    "fixture": "vitest",
+    "kind": "synthetic_adapter_verification",
+    "run": "autoeval/results/adapter-smoke/vitest",
+    "verified": false
+  },
+  {
+    "exit_code": 0,
+    "fixture": "go",
+    "kind": "synthetic_adapter_verification",
+    "run": "autoeval/results/adapter-smoke/go",
+    "verified": true
+  },
+  {
+    "exit_code": 1,
+    "fixture": "cargo",
+    "kind": "synthetic_adapter_verification",
+    "run": "autoeval/results/adapter-smoke/cargo",
+    "verified": false
+  }
+]

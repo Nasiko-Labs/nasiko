@@ -1,0 +1,30 @@
+{
+  "credential_scan": "283 files; no root credential values found",
+  "docker_adapter_fixture_frameworks": [
+    "pytest",
+    "jest",
+    "vitest",
+    "go-test",
+    "cargo"
+  ],
+  "editable_install_and_entry_point": "passed",
+  "health": "ok",
+  "live_ledger_rows_checked": 6,
+  "model_attempts": 7,
+  "native_rust_checks": {
+    "cargo check --workspace": "unavailable: cargo not installed (exit 127)",
+    "cargo clippy --workspace": "unavailable: cargo not installed (exit 127)",
+    "cargo fmt --all --check": "unavailable: cargo not installed (exit 127)"
+  },
+  "offline_readonly_nonroot_container_configurations_checked": 18,
+  "pricing_corrections_remaining_in_database": 0,
+  "python_compileall": "passed",
+  "ruff_format": "passed",
+  "ruff_lint": "passed",
+  "services_running": 7,
+  "unit_tests": {
+    "command": "PYTHONPATH=autoeval/src python3 -m unittest discover -s autoeval/tests -v",
+    "passed": 36
+  },
+  "verified_real_tasks": 3
+}

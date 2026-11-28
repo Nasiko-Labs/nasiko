@@ -1,0 +1,23 @@
+{
+  "image": "sha256:67a6559ba1637c66a45d672b4733ec20a97703110ae1ecaec31aae379276ee39",
+  "limits": {
+    "CapDrop": [
+      "ALL"
+    ],
+    "Memory": 1073741824,
+    "MemorySwap": 1073741824,
+    "NanoCpus": 1000000000,
+    "NetworkMode": "none",
+    "PidsLimit": 256,
+    "ReadonlyRootfs": true,
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "Tmpfs": {
+      "/eval/out": "rw,noexec,nosuid,size=33554432,mode=1777",
+      "/tmp": "rw,exec,nosuid,size=536870912,mode=1777"
+    }
+  },
+  "test_command": "/opt/venv/bin/python -m pytest testing -o addopts='' -o cache_dir=/tmp/pytest-cache --junitxml=/eval/out/results.xml",
+  "user": "10001:10001"
+}

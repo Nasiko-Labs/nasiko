@@ -1,0 +1,13 @@
+{"Time":"2026-11-28T08:29:02.876180555Z","Action":"start","Package":"example.com/autoeval-fixture"}
+{"Time":"2026-11-28T08:29:02.879651055Z","Action":"run","Package":"example.com/autoeval-fixture","Test":"TestExisting"}
+{"Time":"2026-11-28T08:29:02.879674305Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestExisting","Output":"=== RUN   TestExisting\n"}
+{"Time":"2026-11-28T08:29:02.879821638Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestExisting","Output":"--- PASS: TestExisting (0.00s)\n"}
+{"Time":"2026-11-28T08:29:02.879836305Z","Action":"pass","Package":"example.com/autoeval-fixture","Test":"TestExisting","Elapsed":0}
+{"Time":"2026-11-28T08:29:02.880041221Z","Action":"run","Package":"example.com/autoeval-fixture","Test":"TestRegression"}
+{"Time":"2026-11-28T08:29:02.880043346Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestRegression","Output":"=== RUN   TestRegression\n"}
+{"Time":"2026-11-28T08:29:02.880044846Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestRegression","Output":"    module_test.go:5: wrong answer\n"}
+{"Time":"2026-11-28T08:29:02.880050013Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestRegression","Output":"--- FAIL: TestRegression (0.00s)\n"}
+{"Time":"2026-11-28T08:29:02.880054388Z","Action":"fail","Package":"example.com/autoeval-fixture","Test":"TestRegression","Elapsed":0}
+{"Time":"2026-11-28T08:29:02.880069471Z","Action":"output","Package":"example.com/autoeval-fixture","Output":"FAIL\n"}
+{"Time":"2026-11-28T08:29:02.880490471Z","Action":"output","Package":"example.com/autoeval-fixture","Output":"FAIL\texample.com/autoeval-fixture\t0.003s\n"}
+{"Time":"2026-11-28T08:29:02.880540471Z","Action":"fail","Package":"example.com/autoeval-fixture","Elapsed":0.004}

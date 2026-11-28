@@ -1,0 +1,39 @@
+   Compiling autoeval-fixture v0.1.0 (/work)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.56s
+     Running unittests src/lib.rs (/tmp/target/debug/build/autoeval-fixture/891343ee62ab3041/out/autoeval_fixture-891343ee62ab3041)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/regression.rs (/tmp/target/debug/build/autoeval-fixture/1cebb67e26e8ec9d/out/regression-1cebb67e26e8ec9d)
+
+running 2 tests
+test existing ... ok
+test regression ... FAILED
+
+failures:
+
+---- regression stdout ----
+
+thread 'regression' (53) panicked at tests/regression.rs:5:19:
+assertion `left == right` failed
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    regression
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test regression`
+   Doc-tests autoeval_fixture
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `--test regression`

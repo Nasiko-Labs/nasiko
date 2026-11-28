@@ -1,0 +1,23 @@
+{
+  "image": "sha256:8fbde4597e2bda8d8b339b3755f50a838e67593b364fc8888af4fe9afd26a0c4",
+  "limits": {
+    "CapDrop": [
+      "ALL"
+    ],
+    "Memory": 1073741824,
+    "MemorySwap": 1073741824,
+    "NanoCpus": 1000000000,
+    "NetworkMode": "none",
+    "PidsLimit": 256,
+    "ReadonlyRootfs": true,
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "Tmpfs": {
+      "/eval/out": "rw,noexec,nosuid,size=33554432,mode=1777",
+      "/tmp": "rw,exec,nosuid,size=536870912,mode=1777"
+    }
+  },
+  "test_command": "./node_modules/.bin/vitest run --configLoader=native --no-cache --maxWorkers=1 --reporter=json --outputFile=/eval/out/results.json",
+  "user": "10001:10001"
+}

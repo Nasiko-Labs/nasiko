@@ -1,0 +1,12 @@
+{"Time":"2026-11-28T08:29:18.242543839Z","Action":"start","Package":"example.com/autoeval-fixture"}
+{"Time":"2026-11-28T08:29:18.244233339Z","Action":"run","Package":"example.com/autoeval-fixture","Test":"TestExisting"}
+{"Time":"2026-11-28T08:29:18.244258548Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestExisting","Output":"=== RUN   TestExisting\n"}
+{"Time":"2026-11-28T08:29:18.244280756Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestExisting","Output":"--- PASS: TestExisting (0.00s)\n"}
+{"Time":"2026-11-28T08:29:18.244284923Z","Action":"pass","Package":"example.com/autoeval-fixture","Test":"TestExisting","Elapsed":0}
+{"Time":"2026-11-28T08:29:18.244307839Z","Action":"run","Package":"example.com/autoeval-fixture","Test":"TestRegression"}
+{"Time":"2026-11-28T08:29:18.244309298Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestRegression","Output":"=== RUN   TestRegression\n"}
+{"Time":"2026-11-28T08:29:18.244320131Z","Action":"output","Package":"example.com/autoeval-fixture","Test":"TestRegression","Output":"--- PASS: TestRegression (0.00s)\n"}
+{"Time":"2026-11-28T08:29:18.244323506Z","Action":"pass","Package":"example.com/autoeval-fixture","Test":"TestRegression","Elapsed":0}
+{"Time":"2026-11-28T08:29:18.244324923Z","Action":"output","Package":"example.com/autoeval-fixture","Output":"PASS\n"}
+{"Time":"2026-11-28T08:29:18.244472798Z","Action":"output","Package":"example.com/autoeval-fixture","Output":"ok  \texample.com/autoeval-fixture\t0.001s\n"}
+{"Time":"2026-11-28T08:29:18.244706214Z","Action":"pass","Package":"example.com/autoeval-fixture","Elapsed":0.002}

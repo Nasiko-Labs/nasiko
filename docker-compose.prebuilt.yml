@@ -1,0 +1,8 @@
+# Run the published OSS server without compiling Rust or the dashboard:
+# docker compose -f docker-compose.yml -f docker-compose.prebuilt.yml up -d
+# Source: https://github.com/Nasiko-Labs/nasiko
+# Image revision: 2ec34192e0ff2c5e9422edc17d1d49e0db7595ce
+services:
+  server:
+    image: docker.io/nasiko/nasiko-server@sha256:795342e9e173d216d2504c9b8762374074e26a3589f9e2310fb28ee0edb83b60
+    build: !reset null
