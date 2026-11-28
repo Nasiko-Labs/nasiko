@@ -1,5 +1,10 @@
 //! The numbers in a run report: resolved rate, match rate against the control model, cost and
 //! saving, all split by difficulty, with a 95% range for each rate.
+//!
+//! The unit of every rate is the task, not the attempt: a task counts once, by its first
+//! attempt, however many attempts the run made. Repeated attempts of one task are not
+//! independent trials, so pooling them would narrow the range without adding evidence; what
+//! they do show is in [`crate::consistency`].
 
 use std::collections::BTreeMap;
 
@@ -9,6 +14,7 @@ use crate::cost::{PriceQuality, TokenUsage};
 use crate::grade::{FailureClass, Grade};
 use crate::instance::Difficulty;
 use crate::screen::level;
+use crate::stats;
 
 /// One graded attempt, as stored in `attempt.json`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,6 +47,7 @@ pub struct ModelSummary {
     pub model: String,
     pub is_control: bool,
     pub attempts: u32,
+    /// Share of tasks resolved, each task counted once by its first attempt.
     pub resolved: Rate,
     /// Share of the control's resolved tasks this model also resolved.
     pub match_rate: Option<Rate>,
@@ -50,15 +57,12 @@ pub struct ModelSummary {
     pub saving_vs_control: Option<f64>,
     /// 1 − (this model's cost ÷ the original sessions' cost), over the same tasks.
     pub saving_vs_original: Option<f64>,
+    /// Resolved rate per difficulty level, each task counted once by its first attempt.
     pub by_level: BTreeMap<String, Rate>,
+    /// Failure reasons, counted over every attempt.
     pub failures: BTreeMap<String, u32>,
     pub unpriced_attempts: u32,
 }
-
-/// Bootstrap rounds for the 95% ranges.
-pub const BOOTSTRAP_ROUNDS: u32 = 1000;
-/// Fixed seed, so the same records always give the same report.
-pub const BOOTSTRAP_SEED: u64 = 0x5eed_2026;
 
 /// One summary per model, the control first.
 pub fn summarise(records: &[AttemptRecord], control: &str) -> Vec<ModelSummary> {
@@ -80,11 +84,17 @@ pub fn summarise(records: &[AttemptRecord], control: &str) -> Vec<ModelSummary> 
         .collect()
 }
 
+/// One record per task for `model`: its first attempt (the lowest-numbered one on record, so a
+/// task whose attempt 1 left no record still counts).
 fn first_attempts<'a>(records: &'a [AttemptRecord], model: &str) -> Vec<&'a AttemptRecord> {
-    records
-        .iter()
-        .filter(|r| r.model == model && r.attempt == 1)
-        .collect()
+    let mut first: BTreeMap<&str, &AttemptRecord> = BTreeMap::new();
+    for r in records.iter().filter(|r| r.model == model) {
+        let kept = first.entry(r.instance_id.as_str()).or_insert(r);
+        if r.attempt < kept.attempt {
+            *kept = r;
+        }
+    }
+    first.into_values().collect()
 }
 
 fn summarise_model(
@@ -95,14 +105,15 @@ fn summarise_model(
     control_cost: &BTreeMap<&str, f64>,
 ) -> ModelSummary {
     let mine: Vec<&AttemptRecord> = records.iter().filter(|r| r.model == model).collect();
-    let hits: Vec<bool> = mine.iter().map(|r| r.grade.resolved).collect();
-    let matched: Vec<bool> = first_attempts(records, model)
+    let firsts = first_attempts(records, model);
+    let hits: Vec<bool> = firsts.iter().map(|r| r.grade.resolved).collect();
+    let matched: Vec<bool> = firsts
         .iter()
         .filter(|r| control_wins.get(r.instance_id.as_str()) == Some(&true))
         .map(|r| r.grade.resolved)
         .collect();
     let mut by_level: BTreeMap<String, Vec<bool>> = BTreeMap::new();
-    for r in &mine {
+    for r in &firsts {
         let key = r.difficulty.map(level).unwrap_or("unknown").to_string();
         by_level.entry(key).or_default().push(r.grade.resolved);
     }
@@ -111,16 +122,16 @@ fn summarise_model(
         *failures.entry(failure_name(f).to_string()).or_insert(0) += 1;
     }
     let cost_usd: f64 = mine.iter().filter_map(|r| r.cost_usd).sum();
-    let resolved = hits.iter().filter(|h| **h).count();
+    let resolved_attempts = mine.iter().filter(|r| r.grade.resolved).count();
     let (mut mine_vs_orig, mut orig) = (0.0, 0.0);
-    for r in first_attempts(records, model) {
+    for r in &firsts {
         if let (Some(c), Some(o)) = (r.cost_usd, r.original_cost_usd) {
             mine_vs_orig += c;
             orig += o;
         }
     }
     let (mut mine_on_shared, mut control_on_shared) = (0.0, 0.0);
-    for r in first_attempts(records, model) {
+    for r in &firsts {
         if let (Some(c), Some(base)) = (r.cost_usd, control_cost.get(r.instance_id.as_str())) {
             mine_on_shared += c;
             control_on_shared += base;
@@ -133,7 +144,7 @@ fn summarise_model(
         resolved: rate(&hits),
         match_rate: (!is_control && !matched.is_empty()).then(|| rate(&matched)),
         cost_usd,
-        cost_per_resolved: (resolved > 0).then(|| cost_usd / resolved as f64),
+        cost_per_resolved: (resolved_attempts > 0).then(|| cost_usd / resolved_attempts as f64),
         saving_vs_control: (!is_control && control_on_shared > 0.0)
             .then(|| 1.0 - mine_on_shared / control_on_shared),
         saving_vs_original: (orig > 0.0).then(|| 1.0 - mine_vs_orig / orig),
@@ -141,6 +152,28 @@ fn summarise_model(
         failures,
         unpriced_attempts: mine.iter().filter(|r| r.cost_usd.is_none()).count() as u32,
     }
+}
+
+/// Per model, the tasks whose first attempt failed on the sandbox, not on the model's work
+/// ([`FailureClass::InfraError`]). The rates count a task by its first attempt, so each of
+/// these reads as "not resolved" whatever later attempts did; a report names them so that a
+/// flaky sandbox is not taken for a weak model. Models without such a task have no entry.
+pub fn infra_failed_first_attempts(records: &[AttemptRecord]) -> BTreeMap<String, Vec<String>> {
+    let mut models: Vec<&str> = records.iter().map(|r| r.model.as_str()).collect();
+    models.sort();
+    models.dedup();
+    let failed_tasks = |model: &str| -> Vec<String> {
+        first_attempts(records, model)
+            .into_iter()
+            .filter(|r| r.grade.failure == Some(FailureClass::InfraError))
+            .map(|r| r.instance_id.clone())
+            .collect()
+    };
+    models
+        .into_iter()
+        .map(|model| (model.to_string(), failed_tasks(model)))
+        .filter(|(_, tasks)| !tasks.is_empty())
+        .collect()
 }
 
 fn failure_name(f: FailureClass) -> &'static str {
@@ -156,68 +189,100 @@ fn failure_name(f: FailureClass) -> &'static str {
     }
 }
 
-/// The share of `true`s, with a bootstrap 95% range.
+/// The share of `true`s, with its 95% Wilson score range ([`stats::wilson95`]). The same input
+/// always gives the same range, and all-true or all-false still gives a range with real width.
 pub fn rate(hits: &[bool]) -> Rate {
-    let n = hits.len();
-    if n == 0 {
-        return Rate {
-            value: 0.0,
-            low95: 0.0,
-            high95: 0.0,
-            n: 0,
-        };
-    }
-    let value = hits.iter().filter(|h| **h).count() as f64 / n as f64;
-    let mut rng = SplitMix64(BOOTSTRAP_SEED);
-    let mut samples: Vec<f64> = (0..BOOTSTRAP_ROUNDS)
-        .map(|_| {
-            let wins = (0..n).filter(|_| hits[rng.below(n)]).count();
-            wins as f64 / n as f64
-        })
-        .collect();
-    samples.sort_by(f64::total_cmp);
-    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+    let wins = hits.iter().filter(|h| **h).count();
+    rate_of(wins as u32, hits.len() as u32)
+}
+
+/// [`rate`] from counts: `hits` of `n`. More hits than `n` count as `n`: a share is never above
+/// one.
+pub fn rate_of(hits: u32, n: u32) -> Rate {
+    let hits = hits.min(n);
+    let (low95, high95) = stats::wilson95(hits, n);
+    let value = if n == 0 {
+        0.0
+    } else {
+        f64::from(hits) / f64::from(n)
+    };
     Rate {
         value,
-        low95: at(0.025),
-        high95: at(0.975),
-        n: n as u32,
+        low95,
+        high95,
+        n,
     }
 }
 
-/// A tiny seeded generator, so reports need no `rand` crate and are repeatable.
-struct SplitMix64(u64);
+/// One task's outcome for one model: how many of its attempts resolved the task.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct TaskCell {
+    pub resolved: u32,
+    pub attempts: u32,
+}
 
-impl SplitMix64 {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
+/// One row of the per-task table: a task and its outcome for every model that tried it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRow {
+    pub instance_id: String,
+    /// Model name → outcome; a model with no attempt on this task has no entry.
+    pub cells: BTreeMap<String, TaskCell>,
+}
 
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+/// The per-task view of a run: one row per task, sorted by task id.
+pub fn task_table(records: &[AttemptRecord]) -> Vec<TaskRow> {
+    let mut rows: BTreeMap<&str, BTreeMap<String, TaskCell>> = BTreeMap::new();
+    for r in records {
+        let cell = rows
+            .entry(r.instance_id.as_str())
+            .or_default()
+            .entry(r.model.clone())
+            .or_default();
+        cell.attempts += 1;
+        cell.resolved += u32::from(r.grade.resolved);
     }
+    rows.into_iter()
+        .map(|(id, cells)| TaskRow {
+            instance_id: id.to_string(),
+            cells,
+        })
+        .collect()
 }
 
 /// "GLM matched the original on 82% of tasks at 71% lower cost." for one model. Without a
 /// control run the comparison is with the original sessions, whose real fixes solved every task.
 pub fn headline(m: &ModelSummary, control: Option<&str>, dataset: &str) -> String {
+    headline_for(m, control, dataset, true)
+}
+
+/// The headline for a dataset whose tasks have no original session, such as one built from
+/// commit history: there is no session to match and no original cost, so it states the
+/// resolved rate and compares cost with the control only.
+pub fn headline_without_sessions(m: &ModelSummary, control: Option<&str>, dataset: &str) -> String {
+    headline_for(m, control, dataset, false)
+}
+
+fn headline_for(
+    m: &ModelSummary,
+    control: Option<&str>,
+    dataset: &str,
+    has_sessions: bool,
+) -> String {
     let matched = match (control, m.match_rate) {
         (Some(c), Some(r)) => format!(
             "matched {c} on {:.0}% of the tasks {c} solved",
             r.value * 100.0
         ),
-        _ => format!(
+        _ if has_sessions => format!(
             "matched the original sessions on {:.0}% of tasks",
             m.resolved.value * 100.0
         ),
+        _ => format!("resolved {:.0}% of tasks", m.resolved.value * 100.0),
     };
     let (saving, versus) = match control {
         Some(_) => (m.saving_vs_control, ""),
-        None => (m.saving_vs_original, " than the original sessions"),
+        None if has_sessions => (m.saving_vs_original, " than the original sessions"),
+        None => (None, ""),
     };
     let cost = match saving {
         Some(s) if s >= 0.0 => format!(" at {:.0}% lower cost{versus}", s * 100.0),
@@ -230,12 +295,14 @@ pub fn headline(m: &ModelSummary, control: Option<&str>, dataset: &str) -> Strin
     )
 }
 
+/// Attempt records for this crate's tests.
 #[cfg(test)]
-mod tests {
+pub(crate) mod fixtures {
     use super::*;
     use crate::grade::Resolution;
 
-    fn rec(id: &str, model: &str, resolved: bool, cost: f64) -> AttemptRecord {
+    /// Attempt 1 of `id` by `model`, costing `cost`.
+    pub(crate) fn rec(id: &str, model: &str, resolved: bool, cost: f64) -> AttemptRecord {
         AttemptRecord {
             instance_id: id.into(),
             model: model.into(),
@@ -261,6 +328,27 @@ mod tests {
             original_cost_usd: None,
         }
     }
+
+    /// Attempt `attempt` of `id` by `model`, costing 1.
+    pub(crate) fn nth(id: &str, model: &str, attempt: u32, resolved: bool) -> AttemptRecord {
+        AttemptRecord {
+            attempt,
+            ..rec(id, model, resolved, 1.0)
+        }
+    }
+
+    /// Attempt `attempt` of `id` by `model` that failed on the sandbox.
+    pub(crate) fn infra_failed(id: &str, model: &str, attempt: u32) -> AttemptRecord {
+        let mut record = nth(id, model, attempt, false);
+        record.grade.failure = Some(FailureClass::InfraError);
+        record
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fixtures::{infra_failed, nth, rec};
+    use super::*;
 
     #[test]
     fn match_rate_and_saving_are_against_the_control() {
@@ -296,6 +384,25 @@ mod tests {
     }
 
     #[test]
+    fn a_dataset_without_sessions_never_claims_to_match_them() {
+        let mut alone = rec("a", "flint", true, 1.0);
+        alone.original_cost_usd = Some(0.0);
+        let s = summarise(&[alone], "none");
+        let h = headline_without_sessions(&s[0], None, "ds@1");
+        assert_eq!(h, "flint resolved 100% of tasks, on ds@1 (1 attempts).");
+
+        let records = [rec("a", "claude", true, 4.0), rec("a", "flint", true, 1.0)];
+        let s = summarise(&records, "claude");
+        let flint = s.iter().find(|m| m.model == "flint").unwrap();
+        let h = headline_without_sessions(flint, Some("claude"), "ds@1");
+        assert!(
+            h.contains("matched claude on 100%") && h.contains("75% lower cost"),
+            "{h}"
+        );
+        assert!(!h.contains("original sessions"), "{h}");
+    }
+
+    #[test]
     fn ranges_are_repeatable_and_contain_the_value() {
         let hits = [
             true, true, false, true, false, true, true, false, true, true,
@@ -303,6 +410,90 @@ mod tests {
         let (a, b) = (rate(&hits), rate(&hits));
         assert_eq!(a, b);
         assert!(a.low95 <= a.value && a.value <= a.high95);
-        assert_eq!(rate(&[]).n, 0);
+        let nothing = Rate {
+            value: 0.0,
+            low95: 0.0,
+            high95: 0.0,
+            n: 0,
+        };
+        assert_eq!(rate(&[]), nothing);
+    }
+
+    #[test]
+    fn all_resolved_and_none_resolved_keep_a_real_range() {
+        let all = rate(&[true; 10]);
+        let (low, high) = stats::wilson95(10, 10);
+        assert_eq!((all.value, all.low95, all.high95), (1.0, low, high));
+        assert!(all.low95 < 0.75 && all.high95 == 1.0, "{all:?}");
+        let none = rate(&[false; 10]);
+        assert!(none.low95 == 0.0 && none.high95 > 0.25, "{none:?}");
+        assert_eq!(rate_of(5, 10), rate(&[true, false].repeat(5)));
+        assert_eq!(rate_of(3, 2), rate_of(2, 2), "a share is never above one");
+    }
+
+    #[test]
+    fn first_attempts_lost_to_the_sandbox_are_named_per_model() {
+        let records = vec![
+            infra_failed("a", "flint", 1),
+            nth("a", "flint", 2, true),
+            nth("b", "flint", 1, true),
+            infra_failed("b", "flint", 2),
+            nth("a", "claude", 1, false),
+        ];
+        let lost = infra_failed_first_attempts(&records);
+        assert_eq!(lost.len(), 1, "{lost:?}");
+        assert_eq!(lost["flint"], vec!["a"]);
+        // The rate still counts the task by that first attempt.
+        assert_eq!(
+            summarise(&records, "none")[1].resolved,
+            rate(&[false, true])
+        );
+    }
+
+    #[test]
+    fn repeated_attempts_do_not_add_tasks_to_the_resolved_rate() {
+        // Two tasks, three attempts each: the rate is over 2 tasks, by first attempt.
+        let records = vec![
+            nth("a", "flint", 1, true),
+            nth("a", "flint", 2, false),
+            nth("a", "flint", 3, false),
+            nth("b", "flint", 1, false),
+            nth("b", "flint", 2, true),
+            nth("b", "flint", 3, true),
+        ];
+        let flint = &summarise(&records, "none")[0];
+        assert_eq!(flint.attempts, 6);
+        assert_eq!(flint.resolved, rate(&[true, false]));
+        assert_eq!(flint.by_level["easy"].n, 2);
+        assert_eq!(flint.failures.get("tests_failed"), Some(&3));
+        // Cost stays every attempt's, shared over every resolved attempt.
+        assert_eq!(flint.cost_usd, 6.0);
+        assert_eq!(flint.cost_per_resolved, Some(2.0));
+    }
+
+    #[test]
+    fn a_task_without_attempt_one_counts_by_its_earliest_attempt() {
+        let records = vec![nth("a", "flint", 3, false), nth("a", "flint", 2, true)];
+        let flint = &summarise(&records, "none")[0];
+        assert_eq!(flint.resolved, rate(&[true]));
+    }
+
+    #[test]
+    fn the_task_table_counts_resolved_attempts_per_model() {
+        let records = vec![
+            nth("b", "flint", 1, true),
+            nth("b", "flint", 2, false),
+            nth("a", "flint", 1, false),
+            nth("a", "claude", 1, true),
+        ];
+        let table = task_table(&records);
+        assert_eq!(table.len(), 2);
+        assert_eq!(table[0].instance_id, "a");
+        let b_flint = TaskCell {
+            resolved: 1,
+            attempts: 2,
+        };
+        assert_eq!(table[1].cells["flint"], b_flint);
+        assert!(!table[1].cells.contains_key("claude"));
     }
 }

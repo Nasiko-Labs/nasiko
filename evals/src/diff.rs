@@ -103,6 +103,52 @@ fn strip_side(path: &str, side: &str) -> Option<String> {
     Some(path.strip_prefix(side).unwrap_or(path).to_string())
 }
 
+/// Which side of a change a hunk line is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LineKind {
+    /// Unchanged: in the file before and after.
+    Context,
+    Added,
+    Removed,
+}
+
+/// One `@@` block of a file's diff.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Hunk {
+    /// The text after the second `@@`: git's guess at the enclosing item (e.g. `mod tests {`).
+    pub section: String,
+    /// The hunk's lines in order, without their leading ` `, `+` or `-`.
+    pub lines: Vec<(LineKind, String)>,
+}
+
+/// A file diff's hunks. A binary or mode-only change has none.
+pub fn hunks(file: &FileDiff) -> Vec<Hunk> {
+    let mut hunks: Vec<Hunk> = Vec::new();
+    for line in file.text.lines().skip(1) {
+        if let Some(header) = line.strip_prefix("@@") {
+            let section = header.split_once("@@").map_or("", |(_, s)| s.trim());
+            hunks.push(Hunk {
+                section: section.to_string(),
+                lines: Vec::new(),
+            });
+            continue;
+        }
+        let Some(hunk) = hunks.last_mut() else {
+            continue;
+        };
+        let kind = match line.chars().next() {
+            Some('+') => LineKind::Added,
+            Some('-') => LineKind::Removed,
+            // "\ No newline at end of file" is about the file, not a line of it.
+            Some('\\') => continue,
+            _ => LineKind::Context,
+        };
+        let text = line.get(1..).unwrap_or_default().to_string();
+        hunk.lines.push((kind, text));
+    }
+    hunks
+}
+
 /// Joins file diffs back into one patch that `git apply` accepts.
 pub fn join(files: &[FileDiff]) -> String {
     files.iter().map(|f| f.text.as_str()).collect()
@@ -248,6 +294,41 @@ new file mode 100644
         assert!(rules.is_test("tests/a.rs"));
         assert!(rules.is_test("oss/x/src/foo_test.rs"));
         assert!(!rules.is_test("oss/x/src/testing.rs"));
+    }
+
+    #[test]
+    fn hunks_keep_the_section_and_each_line_with_its_side() {
+        let diff = "\
+diff --git a/src/lib.rs b/src/lib.rs
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -4,3 +4,3 @@ mod tests {
+     #[test]
+-    fn old() {}
++    fn new() {}
+\\ No newline at end of file
+@@ -20 +20,0 @@
+-gone
+";
+        let files = parse_unified(diff).expect("valid diff");
+        let found = hunks(&files[0]);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].section, "mod tests {");
+        assert_eq!(
+            found[0].lines,
+            vec![
+                (LineKind::Context, "    #[test]".to_string()),
+                (LineKind::Removed, "    fn old() {}".to_string()),
+                (LineKind::Added, "    fn new() {}".to_string()),
+            ]
+        );
+        assert_eq!(found[1].section, "");
+        assert_eq!(
+            found[1].lines,
+            vec![(LineKind::Removed, "gone".to_string())]
+        );
+        let binary = "diff --git a/a.png b/a.png\nBinary files a/a.png and b/a.png differ\n";
+        assert!(hunks(&parse_unified(binary).expect("valid diff")[0]).is_empty());
     }
 
     #[test]

@@ -32,6 +32,13 @@ pub struct EnvSpec {
     /// Kubernetes the pod also requests this much, so raise it only for the repos that need it.
     #[serde(default = "default_memory_mib")]
     pub memory_mib: u32,
+    /// Whether lints are capped at warnings in every container of this repo ([`lint_cap_env`]).
+    /// On unless the spec says otherwise, also for a spec saved before this setting existed:
+    /// an old commit can fail to compile on a newer compiler for lints alone, either new
+    /// warnings under its own `#![deny(warnings)]` or a lint the newer compiler denies by
+    /// default. The cap turns both into warnings, for the model's fix as well as the old code.
+    #[serde(default = "default_cap_lints")]
+    pub cap_lints: bool,
     /// Where the repository is checked out on this machine (images are built from it).
     #[serde(default)]
     pub local_path: Option<String>,
@@ -82,8 +89,80 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
         log_parser: LogParserKind::Cargo,
         timeout_secs: 1800,
         memory_mib: DEFAULT_MEMORY_MIB,
+        cap_lints: true,
         local_path: None,
     })
+}
+
+/// The environment variable that caps lints for a Rust repo, and its value: cargo's
+/// `build.rustflags` setting, given through the environment.
+///
+/// Why this and not `RUSTFLAGS` in the commands:
+/// * it is set in the env image, so the warm build, the gate, the agent's shell and the grader
+///   all compile with the same flags whatever cargo command they run. A flag only in the
+///   spec's commands would leave the agent's own `cargo build` without it: the old code would
+///   then fail on lints for the agent alone, and every switch between the two would compile
+///   the crate again;
+/// * cargo adds it to a `build.rustflags` in the repo's own `.cargo/config.toml`, where
+///   `RUSTFLAGS` replaces that list (and with it, say, a `--cfg` the tests need).
+///
+/// It does not reach the compiler when the repo's cargo config sets `target.<triple>.rustflags`
+/// or `target.<cfg>.rustflags`: cargo then uses those and ignores `build.rustflags`.
+///
+/// `--cap-lints=warn` turns lints that would stop the build into warnings: `deny(warnings)`,
+/// and lints that are errors by default. It changes no generated code, so a test that passed
+/// passes. Type, borrow and name errors are not lints and still fail the build.
+pub const LINT_CAP_ENV: (&str, &str) = ("CARGO_BUILD_RUSTFLAGS", "--cap-lints=warn");
+
+/// The variable and value the repo's images set to cap lints; `None` when the spec turns the
+/// cap off.
+pub fn lint_cap_env(spec: &EnvSpec) -> Option<(&'static str, &'static str)> {
+    (spec.cap_lints && spec.language == Language::Rust).then_some(LINT_CAP_ENV)
+}
+
+/// Whether a command of the spec (`build_cmd`, `test_cmd` or a `setup` line) appears to set
+/// compiler flags itself, as a spec edited by hand to cap lints does: `RUSTFLAGS=…`,
+/// `CARGO_ENCODED_RUSTFLAGS=…`, `CARGO_BUILD_RUSTFLAGS=…` or `--config build.rustflags=…`.
+/// Each of them replaces [`LINT_CAP_ENV`] for that command (the first two the repo's own
+/// `build.rustflags` as well), and the agent's plain `cargo` runs then compile with other
+/// flags than the gate's.
+///
+/// A best-effort text check: any mention of `rustflags`, in either case, counts. It can fire
+/// on a command that only names the word, and it cannot see flags set by a script the command
+/// calls.
+pub fn commands_set_rustflags(spec: &EnvSpec) -> bool {
+    [&spec.build_cmd, &spec.test_cmd]
+        .into_iter()
+        .chain(&spec.setup)
+        .any(|cmd| cmd.to_ascii_lowercase().contains("rustflags"))
+}
+
+/// The settings in which a saved spec differs from a fresh proposal for the same repo, by
+/// field name. `local_path` is left out: it says where the checkout is, not how to build it.
+pub fn differing_settings(saved: &EnvSpec, proposed: &EnvSpec) -> Vec<&'static str> {
+    let checks = [
+        ("language", saved.language != proposed.language),
+        (
+            "toolchain_image",
+            saved.toolchain_image != proposed.toolchain_image,
+        ),
+        (
+            "system_packages",
+            saved.system_packages != proposed.system_packages,
+        ),
+        ("setup", saved.setup != proposed.setup),
+        ("test_cmd", saved.test_cmd != proposed.test_cmd),
+        ("build_cmd", saved.build_cmd != proposed.build_cmd),
+        ("test_paths", saved.test_paths != proposed.test_paths),
+        ("log_parser", saved.log_parser != proposed.log_parser),
+        ("timeout_secs", saved.timeout_secs != proposed.timeout_secs),
+        ("memory_mib", saved.memory_mib != proposed.memory_mib),
+        ("cap_lints", saved.cap_lints != proposed.cap_lints),
+    ];
+    checks
+        .into_iter()
+        .filter_map(|(name, differs)| differs.then_some(name))
+        .collect()
 }
 
 /// A build container's memory limit unless the spec says otherwise.
@@ -91,6 +170,10 @@ pub const DEFAULT_MEMORY_MIB: u32 = 6144;
 
 fn default_memory_mib() -> u32 {
     DEFAULT_MEMORY_MIB
+}
+
+fn default_cap_lints() -> bool {
+    true
 }
 
 /// The pinned version from `rust-toolchain(.toml)`: `channel = "1.92"` or a bare `1.92.0`.
@@ -331,6 +414,73 @@ mod tests {
         saved.as_object_mut().unwrap().remove("memory_mib");
         let spec: EnvSpec = serde_json::from_value(saved).expect("old spec");
         assert_eq!(spec.memory_mib, DEFAULT_MEMORY_MIB);
+    }
+
+    #[test]
+    fn a_proposed_spec_caps_lints_and_keeps_its_commands_plain() {
+        let spec = propose("o/r", &["Cargo.toml".into()], None).expect("rust");
+        assert_eq!(
+            lint_cap_env(&spec),
+            Some(("CARGO_BUILD_RUSTFLAGS", "--cap-lints=warn"))
+        );
+        // The agent is shown these commands: the cap is in the image, not typed by the agent.
+        assert_eq!(spec.build_cmd, "cargo test {scope} --no-run");
+        assert_eq!(spec.test_cmd, "cargo test {scope} --no-fail-fast");
+        assert!(!commands_set_rustflags(&spec));
+        let off = EnvSpec {
+            cap_lints: false,
+            ..spec
+        };
+        assert_eq!(lint_cap_env(&off), None);
+    }
+
+    #[test]
+    fn a_spec_saved_before_cap_lints_reads_as_capped() {
+        let mut saved = serde_json::to_value(propose("o/r", &["Cargo.toml".into()], None))
+            .expect("a spec is JSON");
+        saved
+            .as_object_mut()
+            .expect("a spec is an object")
+            .remove("cap_lints");
+        let spec: EnvSpec = serde_json::from_value(saved).expect("old spec");
+        assert!(spec.cap_lints);
+    }
+
+    #[test]
+    fn a_command_that_sets_rustflags_itself_is_noticed() {
+        let mut spec = propose("o/r", &["Cargo.toml".into()], None).expect("rust");
+        let plain = spec.build_cmd.clone();
+        for cmd in [
+            "env RUSTFLAGS=--cap-lints=warn cargo test {scope} --no-run",
+            "env 'RUSTFLAGS=-D warnings' cargo test {scope}",
+            "env \"RUSTFLAGS=--cap-lints=warn\" cargo test {scope}",
+            // Replaces the value the image sets, so the cap is gone for this command.
+            "CARGO_BUILD_RUSTFLAGS=-Dwarnings cargo test {scope}",
+            "CARGO_ENCODED_RUSTFLAGS=-Dwarnings cargo test {scope}",
+            "cargo test {scope} --config build.rustflags=[\"-Dwarnings\"]",
+        ] {
+            spec.build_cmd = cmd.into();
+            assert!(commands_set_rustflags(&spec), "{cmd}");
+        }
+        spec.build_cmd = plain;
+        assert!(!commands_set_rustflags(&spec));
+        spec.setup.push("RUSTFLAGS=-Awarnings cargo build".into());
+        assert!(commands_set_rustflags(&spec));
+    }
+
+    #[test]
+    fn a_saved_spec_is_compared_with_a_fresh_proposal_by_setting() {
+        let proposed = propose("o/r", &["Cargo.toml".into()], None).expect("rust");
+        let mut saved = proposed.clone();
+        saved.local_path = Some("/somewhere/else".into());
+        assert!(differing_settings(&saved, &proposed).is_empty());
+        saved.memory_mib = 3072;
+        saved.toolchain_image = "rust:1.75-bookworm".into();
+        saved.cap_lints = false;
+        assert_eq!(
+            differing_settings(&saved, &proposed),
+            ["toolchain_image", "memory_mib", "cap_lints"]
+        );
     }
 
     #[test]
