@@ -1,0 +1,5 @@
+v22.23.5
+10.9.9
+synthetic-calculator-jest@ /work
+`-- jest@29.7.0
+

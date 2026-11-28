@@ -1,0 +1,1 @@
+SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.

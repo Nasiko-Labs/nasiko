@@ -1,0 +1,33 @@
+{
+  "verified_at": "2026-11-28T09:44:38.693896+00:00",
+  "source_url": "https://aistudio.google.com/docs/pricing",
+  "scope": "Standard text input and text/thinking output, USD per 1M tokens; no grounding tools",
+  "authorization": "User explicitly approved applying these two verified pricing rows.",
+  "database_rows": [
+    {
+      "id": "dea5b451-8b9f-44a8-b42a-b44571cc2017",
+      "provider": "gemini",
+      "model": "gemini-3.8-flash",
+      "input_price_per_1m": 0.75,
+      "output_price_per_1m": 3.75,
+      "cache_read_price_per_1m": 0.075,
+      "effective_from": "2026-11-28T09:44:38.55252+00:00",
+      "effective_until": "2027-01-01T00:00:00+00:00",
+      "notes": "autoeval-compat-20261128: Google Standard pricing through 2026-12-31; https://aistudio.google.com/docs/pricing#gemini-3.8-flash"
+    },
+    {
+      "id": "705bd5bc-2fb4-4fe4-9e75-d6557f59c5be",
+      "provider": "gemini",
+      "model": "gemini-4-hydrogen",
+      "input_price_per_1m": 1.5,
+      "output_price_per_1m": 7.5,
+      "cache_read_price_per_1m": 0.075,
+      "effective_from": "2026-11-28T09:44:38.55252+00:00",
+      "effective_until": "2027-01-01T00:00:00+00:00",
+      "notes": "autoeval-compat-20261128: Google Standard pricing; https://aistudio.google.com/docs/pricing#gemini-4-hydrogen"
+    }
+  ],
+  "historical_usage_modified": false,
+  "included_in_final_benchmark": false,
+  "note": "Final declared benchmark uses the separately verified Lite configurations. Flash promotional rates expire 2027-01-01; both rows require review by then."
+}

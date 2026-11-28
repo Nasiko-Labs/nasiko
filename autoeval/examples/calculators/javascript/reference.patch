@@ -1,0 +1,5 @@
+--- a/calculator.js
++++ b/calculator.js
+@@ -1 +1 @@
+-exports.add = (a, b) => a - b;
++exports.add = (a, b) => a + b;

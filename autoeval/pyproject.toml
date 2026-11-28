@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nasiko-autoeval"
+version = "0.1.0"
+description = "Shared, containerized repository-fix evaluations through Nasiko"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+autoeval = "nasiko_autoeval.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

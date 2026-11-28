@@ -1,0 +1,58 @@
+{
+  "allowed_paths": [
+    "calculator.ts"
+  ],
+  "fix_sha": "24df7bcb9176e6cb736e01533c2b3768248277a7",
+  "id": "24df7bcb9176",
+  "ignored_documentation": [],
+  "input_kind": "local_fixture",
+  "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+  "issue_source": "operator",
+  "parent_sha": "f13222ea0bb6b811d88de97fac7a8e7139886dea",
+  "plan": {
+    "cpus": 1.0,
+    "dependency_files": [
+      "package.json"
+    ],
+    "discovery_evidence": [
+      "package.json declares vitest",
+      "packageManager=npm"
+    ],
+    "framework": "vitest",
+    "language": "typescript",
+    "memory_mib": 1024,
+    "pids": 256,
+    "result_format": "jest",
+    "runtime_image": "node:22-bookworm-slim",
+    "runtime_requirements": {
+      "engines": {},
+      "nvmrc": null,
+      "packageManager": null
+    },
+    "schema_version": 1,
+    "setup_commands": [
+      "npm install --ignore-scripts"
+    ],
+    "setup_timeout_seconds": 600,
+    "test_command": "./node_modules/.bin/vitest run --no-cache --maxWorkers=1 --minWorkers=1 --reporter=json",
+    "test_path_rules": [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "*.test.*",
+      "*.spec.*",
+      "**/__tests__/**",
+      "__tests__/**",
+      "test/**",
+      "tests/**"
+    ],
+    "timeout_seconds": 180,
+    "working_directory": "."
+  },
+  "production_changes": [
+    "calculator.ts"
+  ],
+  "repository_url": "local fixture",
+  "test_changes": [
+    "tests/calculator.test.ts"
+  ]
+}

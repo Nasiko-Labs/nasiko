@@ -1,0 +1,13 @@
+{
+  "kind": "synthetic_calculator_demo",
+  "files": [
+    "Cargo.toml",
+    "Cargo.lock",
+    "src/lib.rs",
+    "tests/calculator.rs"
+  ],
+  "test_file": "tests/calculator.rs",
+  "source_file": "src/lib.rs",
+  "base_tag": "buggy",
+  "reference_tag": "reference-fix"
+}

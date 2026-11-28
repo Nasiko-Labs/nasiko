@@ -1,0 +1,1 @@
+<testsuite tests="2" failures="0" errors="0"><testcase classname="tests.test_module" name="test_existing" /><testcase classname="tests.test_module" name="test_regression" /></testsuite>

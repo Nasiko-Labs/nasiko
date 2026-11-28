@@ -1,0 +1,2 @@
+const { add } = require('../calculator');
+test('zero', () => expect(add(0, 0)).toBe(0));

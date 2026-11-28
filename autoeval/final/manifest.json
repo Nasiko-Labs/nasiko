@@ -1,0 +1,42 @@
+{
+  "context_bytes": 80000,
+  "generation_attempts_per_task_model": 1,
+  "kind": "real_repository_benchmark",
+  "models": [
+    "gemini:gemini-3.1-flash-lite",
+    "gemini:gemini-3.5-flash-lite"
+  ],
+  "name": "buildathon-final-v1",
+  "preflight_attempts": 3,
+  "schema_version": 1,
+  "selection_policy": "All three previously verified public tasks, selected before final generation. Exactly one generation attempt per model/task; no outcome-based task replacement. Synthetic examples, pricing diagnostics and development reruns are excluded.",
+  "tasks": [
+    {
+      "commit": "d2dcb7289291e7e7019c183659814d42f7264b2d",
+      "config_file": "inputs/iniconfig-bom/execution.json",
+      "id": "iniconfig-bom",
+      "issue_file": "inputs/iniconfig-bom/issue.txt",
+      "max_output_tokens": 4096,
+      "repository_cache": "iniconfig",
+      "repository_url": "https://github.com/pytest-dev/iniconfig.git"
+    },
+    {
+      "commit": "1b638b2c0d9b358cbae4b51b74f136d9a6055d1a",
+      "config_file": "inputs/go-humanize-nonfinite/execution.json",
+      "id": "go-humanize-nonfinite",
+      "issue_file": "inputs/go-humanize-nonfinite/issue.txt",
+      "max_output_tokens": 4096,
+      "repository_cache": "go-humanize",
+      "repository_url": "https://github.com/dustin/go-humanize.git"
+    },
+    {
+      "commit": "b52fcacc59717a1e4a8783d4bbfae7fa81b4db07",
+      "config_file": "inputs/pathe-unc/execution.json",
+      "id": "pathe-unc",
+      "issue_file": "inputs/pathe-unc/issue.txt",
+      "max_output_tokens": 8192,
+      "repository_cache": "pathe",
+      "repository_url": "https://github.com/unjs/pathe.git"
+    }
+  ]
+}

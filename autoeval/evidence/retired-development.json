@@ -1,0 +1,19 @@
+{
+  "kind": "development_evidence_retirement",
+  "excluded_from_headline": true,
+  "removed_directories": [
+    "results",
+    "demo-runs"
+  ],
+  "file_count": 296,
+  "uncompressed_bytes": 5229404,
+  "preserved_in_git_revision": "61918904fa32a4786d69ceeb2ea79f59f46ff264",
+  "local_archive": ".cache/development-evidence.tar.gz (ignored; excluded from delivery)",
+  "archive_sha256": "848e6b50feb4ff7068abd15080567505d548d813b7105d6c8c1894fd66b4f4c8",
+  "retained": [
+    "final/",
+    "evidence/calculators/",
+    "evidence/security/",
+    "evidence/pricing/"
+  ]
+}

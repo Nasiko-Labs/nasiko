@@ -1,0 +1,54 @@
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "start"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0
+cachedir: /tmp/pytest-cache
+rootdir: /work
+configfile: pyproject.toml
+collected 3 items
+
+tests/test_calculator.py 
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_zero", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_zero", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_zero", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_positive", "phase": "setup", "outcome": "passed"}
+F
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_positive", "phase": "call", "outcome": "failed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_positive", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_negative", "phase": "setup", "outcome": "passed"}
+F
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_negative", "phase": "call", "outcome": "failed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "test", "id": "tests/test_calculator.py::test_negative", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 28cbd835130d45dfbe7d9bae0f0165bc {"event": "finish", "exit_code": 1}
+
+
+=================================== FAILURES ===================================
+________________________________ test_positive _________________________________
+
+    def test_positive():
+>       assert add(2, 3) == 5
+E       assert -1 == 5
+E        +  where -1 = add(2, 3)
+
+tests/test_calculator.py:7: AssertionError
+________________________________ test_negative _________________________________
+
+    def test_negative():
+>       assert add(-2, -3) == -5
+E       assert 1 == -5
+E        +  where 1 = add(-2, -3)
+
+tests/test_calculator.py:10: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_calculator.py::test_positive - assert -1 == 5
+ +  where -1 = add(2, 3)
+FAILED tests/test_calculator.py::test_negative - assert 1 == -5
+ +  where 1 = add(-2, -3)
+========================= 2 failed, 1 passed in 0.01s ==========================

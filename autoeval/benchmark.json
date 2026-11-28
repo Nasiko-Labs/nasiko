@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "name": "buildathon-final-v1",
+  "kind": "real_repository_benchmark",
+  "models": ["gemini:gemini-3.1-flash-lite", "gemini:gemini-3.5-flash-lite"],
+  "preflight_attempts": 3,
+  "generation_attempts_per_task_model": 1,
+  "context_bytes": 80000,
+  "tasks": [
+    {
+      "id": "iniconfig-bom",
+      "repository_url": "https://github.com/pytest-dev/iniconfig.git",
+      "repository_cache": "iniconfig",
+      "commit": "d2dcb7289291e7e7019c183659814d42f7264b2d",
+      "issue_file": "examples/iniconfig-issue.txt",
+      "max_output_tokens": 4096
+    },
+    {
+      "id": "go-humanize-nonfinite",
+      "repository_url": "https://github.com/dustin/go-humanize.git",
+      "repository_cache": "go-humanize",
+      "commit": "1b638b2c0d9b358cbae4b51b74f136d9a6055d1a",
+      "issue_file": "examples/go-humanize-issue.txt",
+      "max_output_tokens": 4096
+    },
+    {
+      "id": "pathe-unc",
+      "repository_url": "https://github.com/unjs/pathe.git",
+      "repository_cache": "pathe",
+      "commit": "b52fcacc59717a1e4a8783d4bbfae7fa81b4db07",
+      "issue_file": "examples/pathe-issue.txt",
+      "config_file": "examples/pathe-plan.json",
+      "max_output_tokens": 8192
+    }
+  ],
+  "selection_policy": "All three previously verified public tasks, selected before final generation. Exactly one generation attempt per model/task; no outcome-based task replacement. Synthetic examples, pricing diagnostics and development reruns are excluded."
+}

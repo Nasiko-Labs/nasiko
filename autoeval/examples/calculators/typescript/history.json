@@ -1,0 +1,13 @@
+{
+  "kind": "synthetic_calculator_demo",
+  "files": [
+    "package.json",
+    "tsconfig.json",
+    "calculator.ts",
+    "tests/calculator.test.ts"
+  ],
+  "test_file": "tests/calculator.test.ts",
+  "source_file": "calculator.ts",
+  "base_tag": "buggy",
+  "reference_tag": "reference-fix"
+}

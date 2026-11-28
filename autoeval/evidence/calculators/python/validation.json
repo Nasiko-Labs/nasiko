@@ -1,0 +1,69 @@
+{
+  "before": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/python/artifacts/before-1",
+      "duration_seconds": 0.6578696249052882,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests.test_calculator::test_negative": "failed",
+        "tests.test_calculator::test_positive": "failed",
+        "tests.test_calculator::test_zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/python/artifacts/before-2",
+      "duration_seconds": 0.6356055841315538,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests.test_calculator::test_negative": "failed",
+        "tests.test_calculator::test_positive": "failed",
+        "tests.test_calculator::test_zero": "passed"
+      }
+    }
+  ],
+  "expected_tests": [
+    "tests.test_calculator::test_negative",
+    "tests.test_calculator::test_positive",
+    "tests.test_calculator::test_zero"
+  ],
+  "fail_to_pass": [
+    "tests.test_calculator::test_negative",
+    "tests.test_calculator::test_positive"
+  ],
+  "pass_to_pass": [
+    "tests.test_calculator::test_zero"
+  ],
+  "reference": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/python/artifacts/reference-1",
+      "duration_seconds": 0.6241975831799209,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests.test_calculator::test_negative": "passed",
+        "tests.test_calculator::test_positive": "passed",
+        "tests.test_calculator::test_zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/python/artifacts/reference-2",
+      "duration_seconds": 0.654658833052963,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests.test_calculator::test_negative": "passed",
+        "tests.test_calculator::test_positive": "passed",
+        "tests.test_calculator::test_zero": "passed"
+      }
+    }
+  ],
+  "repetitions": 2,
+  "skipped_tests": [],
+  "status": "verified"
+}

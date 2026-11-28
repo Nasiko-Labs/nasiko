@@ -1,0 +1,5 @@
+INI files saved by Windows editors may begin with a UTF-8 byte order mark.
+Reading an otherwise valid file with that leading mark currently raises a
+ParseError. Accept this input through both public parsing entry points,
+including the API that accepts INI data as a string. Preserve existing parsing
+behavior for input without a leading byte order mark.

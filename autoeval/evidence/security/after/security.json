@@ -1,0 +1,42 @@
+{
+  "attack": "atexit rewrites both report and captured log, then os._exit(0) hides failing test exit",
+  "attack_result": {
+    "artifact": "autoeval/evidence/security/after/artifacts/file-forgery",
+    "duration_seconds": 0.8585955831222236,
+    "exit_code": 0,
+    "reason": "Pytest finish status disagrees with container exit status",
+    "status": "infrastructure_error",
+    "tests": {}
+  },
+  "broken_control": {
+    "artifact": "autoeval/evidence/security/after/artifacts/broken-control",
+    "duration_seconds": 0.629531875019893,
+    "exit_code": 1,
+    "reason": null,
+    "status": "test_failure",
+    "tests": {
+      "tests.test_module::test_existing": "passed",
+      "tests.test_module::test_regression": "failed"
+    }
+  },
+  "excluded_from_benchmark": true,
+  "expected_vulnerable": false,
+  "exploit_succeeded": false,
+  "fixed_control": {
+    "artifact": "autoeval/evidence/security/after/artifacts/fixed-control",
+    "duration_seconds": 0.6628299998119473,
+    "exit_code": 0,
+    "reason": null,
+    "status": "passed",
+    "tests": {
+      "tests.test_module::test_existing": "passed",
+      "tests.test_module::test_regression": "passed"
+    }
+  },
+  "grade": {
+    "failure_reason": "Pytest finish status disagrees with container exit status",
+    "outcome": "infrastructure_error"
+  },
+  "kind": "synthetic_security_regression",
+  "runner_sha256": "b52c56b3c38d992506638dd6ff528e7fb10356d05dbc18b614c69547463704f0"
+}

@@ -1,0 +1,23 @@
+   Compiling synthetic-calculator v0.1.0 (/work)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.31s
+     Running unittests src/lib.rs (/tmp/target/debug/build/synthetic-calculator/e89dbb78d330a32d/out/synthetic_calculator-e89dbb78d330a32d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/calculator.rs (/tmp/target/debug/build/synthetic-calculator/927c83bf0034fe07/out/calculator-927c83bf0034fe07)
+
+running 3 tests
+test negative ... ok
+test positive ... ok
+test zero ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests synthetic_calculator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

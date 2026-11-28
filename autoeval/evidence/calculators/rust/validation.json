@@ -1,0 +1,69 @@
+{
+  "before": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/before-1",
+      "duration_seconds": 0.6684419168159366,
+      "exit_code": 101,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "calculator::negative": "failed",
+        "calculator::positive": "failed",
+        "calculator::zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/before-2",
+      "duration_seconds": 0.5337832921650261,
+      "exit_code": 101,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "calculator::negative": "failed",
+        "calculator::positive": "failed",
+        "calculator::zero": "passed"
+      }
+    }
+  ],
+  "expected_tests": [
+    "calculator::negative",
+    "calculator::positive",
+    "calculator::zero"
+  ],
+  "fail_to_pass": [
+    "calculator::negative",
+    "calculator::positive"
+  ],
+  "pass_to_pass": [
+    "calculator::zero"
+  ],
+  "reference": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/reference-1",
+      "duration_seconds": 0.5212030420079827,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "calculator::negative": "passed",
+        "calculator::positive": "passed",
+        "calculator::zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/reference-2",
+      "duration_seconds": 0.6149799171835184,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "calculator::negative": "passed",
+        "calculator::positive": "passed",
+        "calculator::zero": "passed"
+      }
+    }
+  ],
+  "repetitions": 2,
+  "skipped_tests": [],
+  "status": "verified"
+}

@@ -1,0 +1,5 @@
+{
+  "runtime_image": "golang:1.21-bookworm",
+  "timeout_seconds": 180,
+  "test_command": "go test -mod=readonly -json ./..."
+}

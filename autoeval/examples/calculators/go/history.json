@@ -1,0 +1,12 @@
+{
+  "kind": "synthetic_calculator_demo",
+  "files": [
+    "go.mod",
+    "calculator.go",
+    "calculator_test.go"
+  ],
+  "test_file": "calculator_test.go",
+  "source_file": "calculator.go",
+  "base_tag": "buggy",
+  "reference_tag": "reference-fix"
+}

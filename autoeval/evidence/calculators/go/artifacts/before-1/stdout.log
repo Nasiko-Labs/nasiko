@@ -1,0 +1,18 @@
+{"Time":"2026-11-28T09:39:55.516297213Z","Action":"start","Package":"example.invalid/synthetic-calculator"}
+{"Time":"2026-11-28T09:39:55.518946088Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestZero"}
+{"Time":"2026-11-28T09:39:55.518968963Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Output":"=== RUN   TestZero\n"}
+{"Time":"2026-11-28T09:39:55.518992504Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Output":"--- PASS: TestZero (0.00s)\n"}
+{"Time":"2026-11-28T09:39:55.518995338Z","Action":"pass","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Elapsed":0}
+{"Time":"2026-11-28T09:39:55.519028713Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestPositive"}
+{"Time":"2026-11-28T09:39:55.519030379Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Output":"=== RUN   TestPositive\n"}
+{"Time":"2026-11-28T09:39:55.519031796Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Output":"    calculator_test.go:6: positive sum\n"}
+{"Time":"2026-11-28T09:39:55.519034546Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Output":"--- FAIL: TestPositive (0.00s)\n"}
+{"Time":"2026-11-28T09:39:55.519035588Z","Action":"fail","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Elapsed":0}
+{"Time":"2026-11-28T09:39:55.519036879Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestNegative"}
+{"Time":"2026-11-28T09:39:55.519037754Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Output":"=== RUN   TestNegative\n"}
+{"Time":"2026-11-28T09:39:55.519039963Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Output":"    calculator_test.go:7: negative sum\n"}
+{"Time":"2026-11-28T09:39:55.519043588Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Output":"--- FAIL: TestNegative (0.00s)\n"}
+{"Time":"2026-11-28T09:39:55.519044838Z","Action":"fail","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Elapsed":0}
+{"Time":"2026-11-28T09:39:55.519045879Z","Action":"output","Package":"example.invalid/synthetic-calculator","Output":"FAIL\n"}
+{"Time":"2026-11-28T09:39:55.519426463Z","Action":"output","Package":"example.invalid/synthetic-calculator","Output":"FAIL\texample.invalid/synthetic-calculator\t0.002s\n"}
+{"Time":"2026-11-28T09:39:55.519451171Z","Action":"fail","Package":"example.invalid/synthetic-calculator","Elapsed":0.003}

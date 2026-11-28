@@ -1,0 +1,50 @@
+{
+  "allowed_paths": [
+    "calculator.go"
+  ],
+  "fix_sha": "5340a20524758b6d1a1ad51d851e1f751dfd6fee",
+  "id": "5340a2052475",
+  "ignored_documentation": [],
+  "input_kind": "local_fixture",
+  "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+  "issue_source": "operator",
+  "parent_sha": "c4b1a2dc43632956156a336b07551d8e0fe40b42",
+  "plan": {
+    "cpus": 1.0,
+    "dependency_files": [
+      "go.mod"
+    ],
+    "discovery_evidence": [
+      "go.mod",
+      "go directive: 1.21"
+    ],
+    "framework": "go-test",
+    "language": "go",
+    "memory_mib": 1024,
+    "pids": 256,
+    "result_format": "go-json",
+    "runtime_image": "golang:1.21-bookworm",
+    "runtime_requirements": {
+      "go": "1.21"
+    },
+    "schema_version": 1,
+    "setup_commands": [
+      "go mod download"
+    ],
+    "setup_timeout_seconds": 600,
+    "test_command": "go test -mod=readonly -json ./...",
+    "test_path_rules": [
+      "**/*_test.go",
+      "*_test.go"
+    ],
+    "timeout_seconds": 180,
+    "working_directory": "."
+  },
+  "production_changes": [
+    "calculator.go"
+  ],
+  "repository_url": "local fixture",
+  "test_changes": [
+    "calculator_test.go"
+  ]
+}

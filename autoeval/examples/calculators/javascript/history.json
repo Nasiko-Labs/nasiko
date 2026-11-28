@@ -1,0 +1,12 @@
+{
+  "kind": "synthetic_calculator_demo",
+  "files": [
+    "package.json",
+    "calculator.js",
+    "tests/calculator.test.js"
+  ],
+  "test_file": "tests/calculator.test.js",
+  "source_file": "calculator.js",
+  "base_tag": "buggy",
+  "reference_tag": "reference-fix"
+}

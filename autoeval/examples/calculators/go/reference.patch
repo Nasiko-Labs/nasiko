@@ -1,0 +1,7 @@
+--- a/calculator.go
++++ b/calculator.go
+@@ -1,3 +1,3 @@
+ package calculator
+ 
+-func Add(a, b int) int { return a - b }
++func Add(a, b int) int { return a + b }

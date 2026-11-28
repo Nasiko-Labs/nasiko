@@ -1,0 +1,38 @@
+
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "start"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0
+cachedir: /tmp/pytest-cache
+rootdir: /work
+configfile: pyproject.toml
+collected 2 items
+
+tests/test_module.py 
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_existing", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_existing", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_existing", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_regression", "phase": "setup", "outcome": "passed"}
+F
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_regression", "phase": "call", "outcome": "failed"}
+
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "test", "id": "tests/test_module.py::test_regression", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 2285d0a9e0e54c5e8615ec8f92b9a961 {"event": "finish", "exit_code": 1}
+
+
+=================================== FAILURES ===================================
+_______________________________ test_regression ________________________________
+
+    def test_regression():
+>       assert answer() == 1
+E       assert 0 == 1
+E        +  where 0 = answer()
+
+tests/test_module.py:5: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_module.py::test_regression - assert 0 == 1
+ +  where 0 = answer()
+========================= 1 failed, 1 passed in 0.01s ==========================

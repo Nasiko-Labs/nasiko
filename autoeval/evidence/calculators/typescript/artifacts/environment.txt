@@ -1,0 +1,6 @@
+v22.23.5
+10.9.9
+synthetic-calculator-vitest@ /work
++-- typescript@5.7.3
+`-- vitest@2.1.9
+
