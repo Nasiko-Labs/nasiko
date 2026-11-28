@@ -200,12 +200,32 @@ pub fn rate_by_task(tasks: &[Vec<bool>]) -> Rate {
         .collect();
     samples.sort_by(f64::total_cmp);
     let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+    let (low95, high95) = match (at(0.025), at(0.975)) {
+        // Every task came out the same (all solved, none solved), so every resampling does too
+        // and the bootstrap says "0%–0%": certainty the data does not have. One task that
+        // failed is consistent with a true rate far above zero. Fall back to the Wilson score
+        // interval over the number of tasks, which stays honest at 0/n and n/n.
+        (low, high) if low == high => wilson95(value, tasks.len()),
+        range => range,
+    };
     Rate {
         value,
-        low95: at(0.025),
-        high95: at(0.975),
+        low95,
+        high95,
         n: attempts as u32,
     }
+}
+
+/// The normal quantile of a two-sided 95% interval.
+const Z95: f64 = 1.959_964;
+
+/// The Wilson score 95% interval of a share `p` observed over `n` independent samples.
+fn wilson95(p: f64, n: usize) -> (f64, f64) {
+    let n = n as f64;
+    let z2 = Z95 * Z95;
+    let centre = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let half = Z95 * (p * (1.0 - p) / n + z2 / (4.0 * n * n)).sqrt() / (1.0 + z2 / n);
+    ((centre - half).max(0.0), (centre + half).min(1.0))
 }
 
 /// Each task's attempts' outcomes, keyed by task, for [`rate_by_task`].
@@ -359,6 +379,35 @@ mod tests {
             as_if_independent.high95 - as_if_independent.low95 < by_task.high95 - by_task.low95,
             "{as_if_independent:?} vs {by_task:?}"
         );
+    }
+
+    #[test]
+    fn when_every_task_agrees_the_range_is_not_zero_width() {
+        // One task, failed on both attempts: the bootstrap alone would say 0%-0%.
+        let one_failed = rate_by_task(&[vec![false, false]]);
+        assert_eq!(one_failed.value, 0.0);
+        assert_eq!(one_failed.low95, 0.0);
+        assert!(
+            (one_failed.high95 - 0.793).abs() < 0.001,
+            "{}",
+            one_failed.high95
+        );
+        // Ten tasks all solved: the range reaches below 100%.
+        let all_solved = rate_by_task(&vec![vec![true]; 10]);
+        // Wilson's upper end at 10/10 is 1 exactly in theory, a rounding error below it in f64.
+        assert!(all_solved.high95 > 0.999_999);
+        assert!(all_solved.low95 > 0.6 && all_solved.low95 < 0.75);
+        // More tasks, narrower range.
+        let ten_failed = rate_by_task(&vec![vec![false]; 10]);
+        assert!(ten_failed.high95 < one_failed.high95);
+    }
+
+    #[test]
+    fn a_range_the_bootstrap_can_resolve_is_left_alone() {
+        let hits = [true, false, true, true, false];
+        let r = rate(&hits);
+        assert!(r.low95 < r.value && r.value < r.high95);
+        assert!(r.high95 <= 1.0 && r.low95 >= 0.0);
     }
 
     #[test]
