@@ -638,6 +638,12 @@ pub fn report(id: &str, format: &str) -> Result<()> {
     Ok(())
 }
 
+/// `nasiko eval verdict`: whether switching to a cheaper model is safe, from a cluster run.
+pub fn verdict(id: &str, opts: &super::verdict::Options) -> Result<()> {
+    let run = get(&format!("/evals/runs/{}", encode(id)))?;
+    super::verdict::remote(&run, opts)
+}
+
 /// The report's summary as a table, then each model's headline.
 fn render(report: &Value, markdown: bool) -> String {
     let pct = |v: &Value| {

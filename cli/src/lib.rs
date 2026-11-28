@@ -1231,11 +1231,46 @@ pub enum EvalSubCommands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Is it safe to switch to a cheaper model? Exits 0 if SAFE, 2 if NOT SAFE, 3 if NOT ENOUGH DATA
+    Verdict(EvalVerdictArgs),
     /// The pipeline on this machine: local Claude Code logs, local git and Docker
     Local {
         #[command(subcommand)]
         command: EvalLocalCommands,
     },
+}
+
+/// `nasiko eval verdict` (and `nasiko eval local verdict`): a paired comparison of a cheaper
+/// model with the control on the same tasks, as an exit code CI can block a switch on.
+#[derive(Args, Clone, Debug)]
+pub struct EvalVerdictArgs {
+    pub run: String,
+    /// The model to switch to (default: every model but the control)
+    #[arg(long)]
+    pub candidate: Option<String>,
+    /// The model to switch from (default: the run's control)
+    #[arg(long)]
+    pub control: Option<String>,
+    /// How many points worse than the control the candidate may be (0-100)
+    #[arg(long, default_value_t = 10.0)]
+    pub margin: f64,
+    /// Pass (exit 0) on NOT ENOUGH DATA instead of blocking
+    #[arg(long)]
+    pub allow_inconclusive: bool,
+    #[arg(short = 'j', long)]
+    pub json: bool,
+}
+
+impl EvalVerdictArgs {
+    fn options(&self) -> commands::eval::verdict::Options {
+        commands::eval::verdict::Options {
+            candidate: self.candidate.clone(),
+            control: self.control.clone(),
+            margin_points: self.margin,
+            allow_inconclusive: self.allow_inconclusive,
+            json: self.json,
+        }
+    }
 }
 
 /// `nasiko eval datasets` subcommands.
@@ -1389,6 +1424,8 @@ pub enum EvalLocalCommands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Is it safe to switch to a cheaper model? Exits 0 if SAFE, 2 if NOT SAFE, 3 if NOT ENOUGH DATA
+    Verdict(EvalVerdictArgs),
     /// Re-read a run's costs from the Nasiko router (e.g. after adding a missing price)
     Costs { run: String },
     /// Remove leftover eval containers and networks
@@ -2116,6 +2153,7 @@ pub fn dispatch_eval(cmd: EvalSubCommands) -> Result<()> {
             EvalRunCommands::Rm { id } => remote::delete_run(&id),
         },
         EvalSubCommands::Report { run, format } => remote::report(&run, &format),
+        EvalSubCommands::Verdict(args) => remote::verdict(&args.run, &args.options()),
         EvalSubCommands::Local { command } => dispatch_eval_local(command),
     }
 }
@@ -2179,6 +2217,7 @@ pub fn dispatch_eval_local(cmd: EvalLocalCommands) -> Result<()> {
             eval::report_run(&run, format)
         }
         EvalLocalCommands::Costs { run } => eval::costs(&run),
+        EvalLocalCommands::Verdict(args) => eval::verdict::local(&args.run, &args.options()),
     }
 }
 

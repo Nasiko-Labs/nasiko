@@ -25,6 +25,7 @@ pub mod screen;
 pub mod session;
 pub mod spec;
 pub mod testlog;
+pub mod verdict;
 
 pub use cost::{PriceQuality, RouterUsage, TokenUsage};
 pub use diff::{FileDiff, SplitPatch, TestPathRules};
