@@ -318,15 +318,18 @@ impl AuthService for AuthServiceImpl {
             locked_until: Option<chrono::DateTime<chrono::Utc>>,
         }
 
+        let mut tx = self.db.begin().await?;
+
         let row: Option<CredRow> = sqlx::query_as(
             r#"SELECT u.id, u.username, u.is_superuser, u.is_active,
                       uc.access_secret_hash, u.failed_login_attempts, u.locked_until
                FROM users u
                JOIN user_credentials uc ON uc.user_id = u.id
-               WHERE (uc.access_key = $1 OR u.username = $1) AND u.deleted_at IS NULL"#,
+               WHERE (uc.access_key = $1 OR u.username = $1) AND u.deleted_at IS NULL
+               FOR UPDATE OF u"#,
         )
         .bind(username)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await?;
 
         // One bcrypt check for every attempt, before anything is decided, so the bcrypt cost
@@ -343,12 +346,14 @@ impl AuthService for AuthServiceImpl {
         .await;
 
         let Some(row) = row else {
+            tx.rollback().await?;
             log_login_refused(LoginRefusal::UnknownName, None);
             return Err(AuthError::InvalidCredentials {
                 reason: LoginRefusal::UnknownName,
                 user_id: None,
             });
         };
+
         // Every refusal of a known account is built here, so each logs its one line.
         let user_id = row.id.to_string();
         let refused = |reason| {
@@ -360,6 +365,7 @@ impl AuthService for AuthServiceImpl {
         };
 
         if !row.is_active {
+            tx.rollback().await?;
             return Err(refused(LoginRefusal::Deactivated));
         }
 
@@ -368,48 +374,53 @@ impl AuthService for AuthServiceImpl {
         let mut failures_before = row.failed_login_attempts;
         if let Some(locked_until) = row.locked_until {
             if Utc::now() < locked_until {
+                tx.rollback().await?;
                 return Err(refused(LoginRefusal::Locked));
             }
             // Lockout expired: clear it so the attempt proceeds, and count from zero: the
             // stored count is the one that set the lock, so a typo after the wait would
             // otherwise lock the account again at once.
             failures_before = 0;
-            let _ = sqlx::query(
+            sqlx::query(
                 "UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
             )
             .bind(row.id)
-            .execute(&self.db)
-            .await;
+            .execute(&mut *tx)
+            .await?;
         }
 
         if !password_ok {
             let attempts = failures_before + 1;
             if attempts >= LOGIN_LOCKOUT_THRESHOLD {
-                let _ = sqlx::query(
+                sqlx::query(
                     "UPDATE users SET failed_login_attempts = $2, \
                      locked_until = now() + interval '15 minutes' WHERE id = $1",
                 )
                 .bind(row.id)
                 .bind(attempts)
-                .execute(&self.db)
-                .await;
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
                 return Err(refused(LoginRefusal::Locked));
             }
-            let _ = sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
+            sqlx::query("UPDATE users SET failed_login_attempts = $2 WHERE id = $1")
                 .bind(row.id)
                 .bind(attempts)
-                .execute(&self.db)
-                .await;
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
             return Err(refused(LoginRefusal::WrongPassword));
         }
 
         // Successful login — reset failed attempts and update last_login.
-        let _ = sqlx::query(
+        sqlx::query(
             "UPDATE users SET last_login = now(), failed_login_attempts = 0, locked_until = NULL WHERE id = $1",
         )
         .bind(row.id)
-        .execute(&self.db)
-        .await;
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
 
         let identity = Identity {
             user_id: row.id.to_string(),
