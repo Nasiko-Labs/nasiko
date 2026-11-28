@@ -407,13 +407,24 @@ pub(super) fn atomic_owner_write(path: &Path, bytes: &[u8]) -> Result<()> {
         file.write_all(bytes)?;
         file.sync_all()?;
         std::fs::rename(&temp, path)?;
-        File::open(parent)?.sync_all()?;
+        sync_dir(parent)?;
         Ok(())
     })();
     if result.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
     result.with_context(|| format!("failed to atomically write {}", path.display()))
+}
+
+/// Makes a rename into `dir` durable. On Unix that takes an fsync of the directory itself. Windows
+/// has no such call, and `File::open` refuses a directory there ("Access is denied", os error 5),
+/// which failed every queue and ledger write after its rename had already succeeded.
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
 }
 
 #[cfg(test)]
