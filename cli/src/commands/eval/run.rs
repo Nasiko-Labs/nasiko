@@ -677,6 +677,20 @@ fn write_predictions(store: &Store, run_dir: &Path) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// The agent runs as root with every capability dropped: on a daemon that enforces
+    /// bind-mount permissions it can write only a folder open to everyone.
+    #[cfg(unix)]
+    #[test]
+    fn the_attempt_output_folder_is_writable_by_the_agent_container() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let out = dir.path().join("out");
+        fs::create_dir_all(&out).expect("out");
+        writable_by_container(&out).expect("permissions");
+        let mode = fs::metadata(&out).expect("metadata").permissions().mode() & 0o777;
+        assert_eq!(mode, 0o777);
+    }
+
     #[test]
     fn a_model_that_built_the_dataset_is_not_tested_on_it() {
         let dir = tempfile::tempdir().expect("temp dir");
