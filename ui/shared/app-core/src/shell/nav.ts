@@ -93,7 +93,16 @@ export const NAV_ITEMS: readonly NavItem[] = [
   // One request's orchestration (plans/feat-flows.md F1): its own 7-day window, so it doesn't carry the shared one.
   { to: '/flows', label: copy.nav.flows, icon: Network, group: 'observe', shared: false },
   // Harness sessions → eval dataset → model comparison (docs/superpowers/specs/2026-11-23-evals-design.md).
-  { to: '/evals', label: copy.nav.evals, icon: FlaskConical, group: 'evals', shared: false },
+  // Code review evals is a sibling page reached from Evals itself (a "Code review" link in its
+  // header), not its own sidebar entry — `also` just keeps this item current while there.
+  {
+    to: '/evals',
+    label: copy.nav.evals,
+    icon: FlaskConical,
+    group: 'evals',
+    shared: false,
+    also: ['/evals/code-review', '/evals/universe'],
+  },
   { to: '/tokenops', label: copy.nav.monitor, icon: DollarSign, group: 'tokenops', shared: true },
   // Budgets (Control) are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after Optimise.
   // What context optimization saves and your settings for it (plans/feat-optimization-page.md P7, P2).

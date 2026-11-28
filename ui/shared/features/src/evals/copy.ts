@@ -4,6 +4,8 @@ export const copy = {
   description:
     'Turn your Claude Code sessions, or SWE benchmarks, into evals, then compare models on the same tasks.',
   loading: 'Loading evals',
+  /** Links to the code review evals page, a sibling of this stepper (not its own nav entry). */
+  codeReviewLink: 'Code review (preview)',
   absent: 'Evals need a newer Open Runtime server',
   absentBody: "This server doesn't have evals yet.",
   failed: "Evals couldn't load",

@@ -18,11 +18,15 @@
 pub(crate) mod api;
 mod attempt;
 mod build;
-mod forge;
+/// Public within the crate: code-review evals reuses `Forge` for PR/diff/file reads instead of
+/// re-implementing GitHub access.
+pub(crate) mod forge;
 mod harvest;
 mod identity;
 pub mod jobs;
-mod llm;
+/// Public within the crate: code-review evals reuses `complete` for its single-shot review calls
+/// instead of the harness/container pipeline this module otherwise runs.
+pub(crate) mod llm;
 mod price;
 mod review;
 pub mod runner;

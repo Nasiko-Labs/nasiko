@@ -31,6 +31,8 @@ import { Route as AppBuildsBuildIdRouteImport } from './../../../shared/app-shel
 import { Route as AppChatIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/chat.index'
 import { Route as AppChatSessionIdRouteImport } from './../../../shared/app-shell/src/routes/_app/chat.$sessionId'
 import { Route as AppEvalsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/evals.index'
+import { Route as AppEvalsCodeReviewRouteImport } from './../../../shared/app-shell/src/routes/_app/evals.code-review'
+import { Route as AppEvalsUniverseRouteImport } from './../../../shared/app-shell/src/routes/_app/evals.universe'
 import { Route as AppFlowsIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/flows.index'
 import { Route as AppFlowsFlowIdRouteImport } from './../../../shared/app-shell/src/routes/_app/flows.$flowId'
 import { Route as AppMcpIndexRouteImport } from './../../../shared/app-shell/src/routes/_app/mcp.index'
@@ -160,6 +162,16 @@ const AppEvalsIndexRoute = AppEvalsIndexRouteImport.update({
   path: '/evals/',
   getParentRoute: () => AppRoute,
 } as any)
+const AppEvalsCodeReviewRoute = AppEvalsCodeReviewRouteImport.update({
+  id: '/evals/code-review',
+  path: '/evals/code-review',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppEvalsUniverseRoute = AppEvalsUniverseRouteImport.update({
+  id: '/evals/universe',
+  path: '/evals/universe',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppFlowsIndexRoute = AppFlowsIndexRouteImport.update({
   id: '/flows/',
   path: '/flows/',
@@ -275,6 +287,8 @@ export interface FileRoutesByFullPath {
   '/agents/mine': typeof AppAgentsMineRoute
   '/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/chat/$sessionId': typeof AppChatSessionIdRoute
+  '/evals/code-review': typeof AppEvalsCodeReviewRoute
+  '/evals/universe': typeof AppEvalsUniverseRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/mcp/builds': typeof AppMcpBuildsRoute
@@ -317,6 +331,8 @@ export interface FileRoutesByTo {
   '/agents/mine': typeof AppAgentsMineRoute
   '/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/chat/$sessionId': typeof AppChatSessionIdRoute
+  '/evals/code-review': typeof AppEvalsCodeReviewRoute
+  '/evals/universe': typeof AppEvalsUniverseRoute
   '/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/mcp/builds': typeof AppMcpBuildsRoute
@@ -361,6 +377,8 @@ export interface FileRoutesById {
   '/_app/agents/mine': typeof AppAgentsMineRoute
   '/_app/builds/$buildId': typeof AppBuildsBuildIdRoute
   '/_app/chat/$sessionId': typeof AppChatSessionIdRoute
+  '/_app/evals/code-review': typeof AppEvalsCodeReviewRoute
+  '/_app/evals/universe': typeof AppEvalsUniverseRoute
   '/_app/flows/$flowId': typeof AppFlowsFlowIdRoute
   '/_app/mcp/$connectorId': typeof AppMcpConnectorIdRoute
   '/_app/mcp/builds': typeof AppMcpBuildsRoute
@@ -405,6 +423,8 @@ export interface FileRouteTypes {
     | '/agents/mine'
     | '/builds/$buildId'
     | '/chat/$sessionId'
+    | '/evals/code-review'
+    | '/evals/universe'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
     | '/mcp/builds'
@@ -447,6 +467,8 @@ export interface FileRouteTypes {
     | '/agents/mine'
     | '/builds/$buildId'
     | '/chat/$sessionId'
+    | '/evals/code-review'
+    | '/evals/universe'
     | '/flows/$flowId'
     | '/mcp/$connectorId'
     | '/mcp/builds'
@@ -490,6 +512,8 @@ export interface FileRouteTypes {
     | '/_app/agents/mine'
     | '/_app/builds/$buildId'
     | '/_app/chat/$sessionId'
+    | '/_app/evals/code-review'
+    | '/_app/evals/universe'
     | '/_app/flows/$flowId'
     | '/_app/mcp/$connectorId'
     | '/_app/mcp/builds'
@@ -676,6 +700,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppEvalsIndexRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/evals/code-review': {
+      id: '/_app/evals/code-review'
+      path: '/evals/code-review'
+      fullPath: '/evals/code-review'
+      preLoaderRoute: typeof AppEvalsCodeReviewRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/evals/universe': {
+      id: '/_app/evals/universe'
+      path: '/evals/universe'
+      fullPath: '/evals/universe'
+      preLoaderRoute: typeof AppEvalsUniverseRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/flows/': {
       id: '/_app/flows/'
       path: '/flows'
@@ -829,6 +867,8 @@ interface AppRouteChildren {
   AppAgentsMineRoute: typeof AppAgentsMineRoute
   AppBuildsBuildIdRoute: typeof AppBuildsBuildIdRoute
   AppChatSessionIdRoute: typeof AppChatSessionIdRoute
+  AppEvalsCodeReviewRoute: typeof AppEvalsCodeReviewRoute
+  AppEvalsUniverseRoute: typeof AppEvalsUniverseRoute
   AppFlowsFlowIdRoute: typeof AppFlowsFlowIdRoute
   AppMcpConnectorIdRoute: typeof AppMcpConnectorIdRoute
   AppMcpBuildsRoute: typeof AppMcpBuildsRoute
@@ -871,6 +911,8 @@ const AppRouteChildren: AppRouteChildren = {
   AppAgentsMineRoute: AppAgentsMineRoute,
   AppBuildsBuildIdRoute: AppBuildsBuildIdRoute,
   AppChatSessionIdRoute: AppChatSessionIdRoute,
+  AppEvalsCodeReviewRoute: AppEvalsCodeReviewRoute,
+  AppEvalsUniverseRoute: AppEvalsUniverseRoute,
   AppFlowsFlowIdRoute: AppFlowsFlowIdRoute,
   AppMcpConnectorIdRoute: AppMcpConnectorIdRoute,
   AppMcpBuildsRoute: AppMcpBuildsRoute,

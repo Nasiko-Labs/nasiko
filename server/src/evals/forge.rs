@@ -143,6 +143,14 @@ impl Forge {
         })
     }
 
+    /// One pull request's number, title and base/head commits.
+    pub async fn pull_request(&self, number: u64) -> Result<nasiko_github::PullRequestDetail> {
+        Ok(self
+            .svc
+            .pull_request(&self.token, &self.repo, number)
+            .await?)
+    }
+
     /// The unified diff from `base` to `head`.
     pub async fn diff(&self, base: &str, head: &str) -> Result<String> {
         Ok(self
