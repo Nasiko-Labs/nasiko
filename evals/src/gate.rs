@@ -129,6 +129,65 @@ mod tests {
     }
     use TestStatus::{Failed, Passed};
 
+    const OLD: &str = "test/llm.test.ts::falls back to the next model";
+    const NEW: &str = "test/finch.test.ts::transcribes with finch first";
+
+    #[test]
+    fn a_new_test_file_that_cannot_load_before_the_fix_is_fail_to_pass() {
+        // Before the fix the new file imports what does not exist yet: node:test reports the
+        // whole file as one failed test named after it, and none of its tests.
+        let load_failure = "test/finch.test.ts::finch.test.ts";
+        let runs = GateRuns {
+            pristine: run(true, &[(OLD, Passed)]),
+            before: vec![run(true, &[(OLD, Passed), (load_failure, Failed)]); 3],
+            after: vec![run(true, &[(OLD, Passed), (NEW, Passed)]); 3],
+        };
+        let GateVerdict::Reproducible(l) = judge(&runs) else {
+            panic!("reproducible")
+        };
+        assert_eq!(l.fail_to_pass, vec![NEW]);
+        assert_eq!(l.pass_to_pass, vec![OLD]);
+    }
+
+    #[test]
+    fn a_flaky_test_is_dropped_and_the_steady_ones_are_kept() {
+        let flaky = "test/llm.test.ts::answers within the deadline";
+        let runs = GateRuns {
+            pristine: run(true, &[(OLD, Passed), (flaky, Passed)]),
+            before: vec![
+                run(true, &[(OLD, Passed), (flaky, Passed), (NEW, Failed)]),
+                run(true, &[(OLD, Passed), (flaky, Failed), (NEW, Failed)]),
+                run(true, &[(OLD, Passed), (flaky, Passed), (NEW, Failed)]),
+            ],
+            after: vec![run(true, &[(OLD, Passed), (flaky, Passed), (NEW, Passed)]); 3],
+        };
+        let GateVerdict::Reproducible(l) = judge(&runs) else {
+            panic!("reproducible")
+        };
+        assert_eq!(l.fail_to_pass, vec![NEW]);
+        assert_eq!(l.pass_to_pass, vec![OLD]);
+        assert_eq!(l.flaky, vec![flaky]);
+    }
+
+    #[test]
+    fn a_test_missing_from_one_identical_run_counts_as_flaky() {
+        let runs = GateRuns {
+            pristine: run(true, &[]),
+            before: vec![run(true, &[(NEW, Failed)]); 3],
+            after: vec![
+                run(true, &[(NEW, Passed)]),
+                run(true, &[]),
+                run(true, &[(NEW, Passed)]),
+            ],
+        };
+        assert_eq!(
+            judge(&runs),
+            GateVerdict::Rejected {
+                reason: GateRejection::AllFlaky
+            }
+        );
+    }
+
     #[test]
     fn new_test_that_fails_before_is_fail_to_pass() {
         let runs = GateRuns {

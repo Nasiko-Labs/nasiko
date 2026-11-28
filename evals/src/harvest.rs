@@ -20,7 +20,8 @@ use crate::diff::{self, DiffError, FileDiff, SplitPatch, TestPathRules};
 use crate::instance::{self, NasikoExtras, OriginalRun, TaskInstance, TaskStatus, TestSource};
 use crate::link::{self, CommitFacts, LinkDecision, LinkScore};
 use crate::session::SessionRecord;
-use crate::{patch, rust_tests};
+use crate::spec::{EnvSpec, Language};
+use crate::{node, patch, rust_tests};
 
 /// What happened to one session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -183,10 +184,22 @@ fn one_task(
 
 /// The linked commits' full diff (`first.parent..last`), split into fix and test files.
 pub fn split(full_diff: &str) -> Result<SplitPatch, DiffError> {
-    Ok(diff::split_tests(
-        diff::parse_unified(full_diff)?,
-        &TestPathRules::rust_default(),
-    ))
+    split_by(full_diff, &TestPathRules::rust_default())
+}
+
+/// [`split`] by the repository's own test-path rules ([`split_rules`]).
+pub fn split_by(full_diff: &str, rules: &TestPathRules) -> Result<SplitPatch, DiffError> {
+    Ok(diff::split_tests(diff::parse_unified(full_diff)?, rules))
+}
+
+/// The test-path rules and language a repository's commits are split by: its spec's, or
+/// Rust's when it has none (its tasks are then rejected as unsupported, and kept so the person
+/// sees why).
+pub fn split_rules(spec: Option<&EnvSpec>) -> (TestPathRules, Language) {
+    match spec {
+        Some(spec) => (TestPathRules::from_globs(&spec.test_paths), spec.language),
+        None => (TestPathRules::rust_default(), Language::Rust),
+    }
 }
 
 /// Gold Rust files whose base and gold text [`split_inline_rust_tests`] needs.
@@ -269,6 +282,19 @@ pub fn has_tests(split: &SplitPatch) -> bool {
         .test
         .iter()
         .any(|f| !in_tests_folder(f.path()) || is_test_target(f.path()) || adds_test_attr(f))
+}
+
+/// [`has_tests`] for a repository's language. A Node test file counts when a test runner runs
+/// it ([`node::is_test_module`]) and the patch leaves it in the tree: a helper under `test/`
+/// or a deleted test proves nothing.
+pub fn has_tests_in(split: &SplitPatch, language: Language) -> bool {
+    match language {
+        Language::Rust => has_tests(split),
+        Language::Node => split
+            .test
+            .iter()
+            .any(|f| f.new_path.is_some() && node::is_test_module(f.path())),
+    }
 }
 
 fn in_tests_folder(path: &str) -> bool {
@@ -617,6 +643,34 @@ mod tests {
             "\n",
             "fn h() {}\n"
         )));
+    }
+
+    #[test]
+    fn a_node_commit_needs_a_test_file_not_only_helpers() {
+        let rules = TestPathRules::from_globs(&node::test_paths());
+        let only = |path: &str| {
+            let parts = split_by(&patch::diff_texts(path, Some("a\n"), "b\n"), &rules).expect("ok");
+            has_tests_in(&parts, Language::Node)
+        };
+        assert!(only("server/test/finch.test.ts"));
+        assert!(only("web/src/__tests__/a.tsx"));
+        assert!(!only("server/test/helpers.ts"));
+        assert!(!only("server/src/finch.ts"));
+    }
+
+    #[test]
+    fn node_fixes_are_split_by_file_and_never_by_inline_rust_tests() {
+        let rules = TestPathRules::from_globs(&node::test_paths());
+        let diff = format!(
+            "{}{}",
+            patch::diff_texts("server/src/llm.ts", Some("a\n"), "#[test]\nb\n"),
+            patch::diff_texts("server/test/llm.test.ts", Some("a\n"), "b\n")
+        );
+        let parts = split_by(&diff, &rules).expect("splits");
+        assert_eq!(parts.gold.len(), 1);
+        assert_eq!(parts.test[0].path(), "server/test/llm.test.ts");
+        assert!(inline_test_paths(&parts).is_empty());
+        assert!(graded_paths(&parts.gold).is_empty());
     }
 
     #[test]

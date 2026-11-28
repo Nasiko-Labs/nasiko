@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::node;
 use crate::testlog::LogParserKind;
 
 /// Build and test settings for one repository.
@@ -41,6 +42,8 @@ pub struct EnvSpec {
 #[serde(rename_all = "lowercase")]
 pub enum Language {
     Rust,
+    /// JavaScript / TypeScript, tested with node:test, tsx or vitest ([`crate::node`]).
+    Node,
 }
 
 /// Default Rust toolchain image when the repo pins none. Debian 13 (trixie), not 12: prebuilt
@@ -48,17 +51,55 @@ pub enum Language {
 /// need glibc 2.38+ and GCC 14's C++ runtime.
 pub const DEFAULT_RUST_IMAGE: &str = "rust:1-trixie";
 
-/// Proposes a spec from the files at the repo root; `toolchain` is the content of
-/// `rust-toolchain.toml` / `rust-toolchain` when present. `None` for unsupported repos.
-pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Option<EnvSpec> {
-    if !root_files.iter().any(|f| f == "Cargo.toml") {
-        return None;
+impl Language {
+    /// The language a repo is built as, from the files at its root; `None` for unsupported
+    /// repos. Cargo wins in a repo that has both: a Rust crate with a JS front end or bindings
+    /// is built and tested with Cargo, as before Node support.
+    pub fn detect(root_files: &[String]) -> Option<Self> {
+        let has = |name: &str| root_files.iter().any(|f| f == name);
+        if has("Cargo.toml") {
+            Some(Language::Rust)
+        } else if has("package.json") {
+            Some(Language::Node)
+        } else {
+            None
+        }
     }
+
+    /// The root files that pin this language's toolchain, in the order they are read; the
+    /// first one present is the `toolchain` [`propose`] takes. Node has none read yet: the
+    /// toolchain image is [`node::NODE_IMAGE`].
+    pub fn toolchain_files(self) -> &'static [&'static str] {
+        match self {
+            Language::Rust => &["rust-toolchain.toml", "rust-toolchain"],
+            Language::Node => &[],
+        }
+    }
+
+    /// The file that makes a folder a package, whose nearest one above a file owns it.
+    pub fn manifest_file(self) -> &'static str {
+        match self {
+            Language::Rust => "Cargo.toml",
+            Language::Node => "package.json",
+        }
+    }
+}
+
+/// Proposes a spec from the files at the repo root; `toolchain` is the content of the first of
+/// [`Language::toolchain_files`] present. `None` for unsupported repos.
+pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Option<EnvSpec> {
+    match Language::detect(root_files)? {
+        Language::Rust => Some(propose_rust(repo, toolchain)),
+        Language::Node => Some(node::propose(repo)),
+    }
+}
+
+fn propose_rust(repo: &str, toolchain: Option<&str>) -> EnvSpec {
     let image = toolchain
         .and_then(rust_channel)
         .map(|v| format!("rust:{v}-trixie"))
         .unwrap_or_else(|| DEFAULT_RUST_IMAGE.to_string());
-    Some(EnvSpec {
+    EnvSpec {
         repo: repo.to_string(),
         language: Language::Rust,
         toolchain_image: image,
@@ -83,7 +124,7 @@ pub fn propose(repo: &str, root_files: &[String], toolchain: Option<&str>) -> Op
         timeout_secs: 1800,
         memory_mib: DEFAULT_MEMORY_MIB,
         local_path: None,
-    })
+    }
 }
 
 /// A build container's memory limit unless the spec says otherwise.
@@ -169,6 +210,28 @@ pub fn task_test_scope(files: &[OwnedFile]) -> Option<Vec<String>> {
     Some(cargo_scope(&packages))
 }
 
+/// A task's test scope from the files its fix and tests change, each with the package that owns
+/// it ([`Language::manifest_file`]): [`task_test_scope`] for Cargo, [`node::test_scope`] for
+/// Node. `None` when nothing can be run for it ([`no_scope_reason`]).
+pub fn scope_of(language: Language, files: &[OwnedFile]) -> Option<Vec<String>> {
+    match language {
+        Language::Rust => task_test_scope(files),
+        Language::Node => node::test_scope(files),
+    }
+}
+
+/// Why a task with no test scope ([`scope_of`]) is rejected.
+pub fn no_scope_reason(language: Language) -> &'static str {
+    match language {
+        Language::Rust => {
+            "build: no Cargo package owns the task's files, so it has no tests to run"
+        }
+        Language::Node => {
+            "build: the task's tests change no test file of one package, so none can be run"
+        }
+    }
+}
+
 /// The integration test target `file` is, when it is one: `tests/<name>.rs` or
 /// `tests/<name>/main.rs` under its package's folder. A shared helper (`tests/common/mod.rs`)
 /// or an inline test module is none.
@@ -191,16 +254,32 @@ fn integration_test_target(file: &OwnedFile) -> Option<String> {
     (!name.is_empty()).then(|| name.to_string())
 }
 
-/// The `Cargo.toml` paths that may own `path`, nearest first: each folder above it up to the
-/// repo root. The first one that exists names the file's package.
-pub fn manifests_above(path: &str) -> Vec<String> {
+/// The name of the package a manifest found by [`manifests_above`] makes. A `Cargo.toml` with
+/// no `[package]` (a root-only workspace) makes none; any `package.json` makes one, named by
+/// its `name` when it has one.
+pub fn package_name(language: Language, manifest: &str) -> Option<String> {
+    match language {
+        Language::Rust => crate::remote::package_name(manifest),
+        Language::Node => Some(
+            serde_json::from_str::<serde_json::Value>(manifest)
+                .ok()
+                .and_then(|v| v.get("name")?.as_str().map(str::to_string))
+                .unwrap_or_default(),
+        ),
+    }
+}
+
+/// The manifest paths (`Cargo.toml`, `package.json`: [`Language::manifest_file`]) that may own
+/// `path`, nearest first: each folder above it up to the repo root. The first one that exists
+/// names the file's package.
+pub fn manifests_above(path: &str, manifest_file: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut dir = std::path::Path::new(path).parent();
     while let Some(d) = dir {
         out.push(if d.as_os_str().is_empty() {
-            "Cargo.toml".to_string()
+            manifest_file.to_string()
         } else {
-            format!("{}/Cargo.toml", d.display())
+            format!("{}/{manifest_file}", d.display())
         });
         dir = d.parent();
     }
@@ -296,7 +375,7 @@ mod tests {
     #[test]
     fn manifests_are_listed_nearest_first() {
         assert_eq!(
-            manifests_above("oss/x/src/lib.rs"),
+            manifests_above("oss/x/src/lib.rs", "Cargo.toml"),
             vec![
                 "oss/x/src/Cargo.toml",
                 "oss/x/Cargo.toml",
@@ -304,7 +383,7 @@ mod tests {
                 "Cargo.toml"
             ]
         );
-        assert_eq!(manifests_above("lib.rs"), vec!["Cargo.toml"]);
+        assert_eq!(manifests_above("lib.rs", "Cargo.toml"), vec!["Cargo.toml"]);
     }
 
     #[test]
@@ -322,7 +401,29 @@ mod tests {
         let spec =
             propose("o/r", &["Cargo.toml".into()], Some("channel = \"1.92\"")).expect("rust");
         assert_eq!(spec.toolchain_image, "rust:1.92-trixie");
-        assert!(propose("o/r", &["package.json".into()], None).is_none());
+        assert!(propose("o/r", &["go.mod".into()], None).is_none());
+    }
+
+    #[test]
+    fn proposes_node_for_package_json_repos_and_cargo_for_mixed_ones() {
+        let spec = propose("o/r", &["package.json".into()], None).expect("node");
+        assert_eq!(spec.language, Language::Node);
+        assert_eq!(spec.log_parser, LogParserKind::Junit);
+        assert_eq!(spec.toolchain_image, "node:22-bookworm");
+        let mixed = ["package.json".to_string(), "Cargo.toml".to_string()];
+        assert_eq!(Language::detect(&mixed), Some(Language::Rust));
+    }
+
+    #[test]
+    fn node_files_are_owned_by_the_nearest_package_json() {
+        assert_eq!(
+            manifests_above("server/test/a.test.ts", "package.json"),
+            vec![
+                "server/test/package.json",
+                "server/package.json",
+                "package.json"
+            ]
+        );
     }
 
     #[test]

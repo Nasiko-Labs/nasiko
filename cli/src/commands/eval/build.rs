@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use nasiko_evals::gate::{self, GateRuns, GateVerdict, RunOutcome};
-use nasiko_evals::spec::{self, EXIT_BUILD, EXIT_MODEL_PATCH, EXIT_TEST_PATCH, EnvSpec};
+use nasiko_evals::spec::{self, EXIT_BUILD, EXIT_MODEL_PATCH, EXIT_TEST_PATCH, EnvSpec, Language};
 use nasiko_evals::{TaskInstance, TaskStatus, diff, testlog};
 
 use super::containers::{Containers, ImageBuild, JobLimits, JobSpec, Mount, Network};
@@ -18,15 +18,34 @@ use super::store::Store;
 /// `nasiko eval spec detect`: proposes and saves the build/test spec of a repo.
 pub fn spec_detect(store: &Store, repo_dir: &Path) -> Result<EnvSpec> {
     let repo = Repo::open(repo_dir)?;
-    let slug = repo.slug();
+    let spec = proposed_spec(&repo)?;
+    store.save_spec(&repo.slug(), &spec)?;
+    Ok(spec)
+}
+
+/// The repo's saved spec, or the one [`spec_detect`] would propose, not saved: harvest needs
+/// the repo's test-path rules before anyone has run `spec detect`.
+pub fn spec_or_proposed(store: &Store, repo: &Repo) -> Result<EnvSpec> {
+    match store.load_spec(&repo.slug())? {
+        Some(spec) => Ok(spec),
+        None => proposed_spec(repo),
+    }
+}
+
+const UNSUPPORTED: &str =
+    "only Cargo (Rust) and Node (JavaScript, TypeScript) repositories are supported so far";
+
+/// The spec proposed from the files at the repo's `HEAD`.
+fn proposed_spec(repo: &Repo) -> Result<EnvSpec> {
     let root = repo.root_files("HEAD")?;
-    let toolchain = ["rust-toolchain.toml", "rust-toolchain"]
+    let language = Language::detect(&root).context(UNSUPPORTED)?;
+    let toolchain = language
+        .toolchain_files()
         .iter()
         .find_map(|f| repo.file_at("HEAD", f).ok().flatten());
-    let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref())
-        .context("only Cargo (Rust) repositories are supported so far")?;
+    let mut spec =
+        spec::propose(&repo.full_name(), &root, toolchain.as_deref()).context(UNSUPPORTED)?;
     spec.local_path = Some(repo.root().to_string_lossy().into_owned());
-    store.save_spec(&slug, &spec)?;
     Ok(spec)
 }
 
@@ -116,7 +135,8 @@ fn build_task(
         .as_deref()
         .context("the spec has no local_path; re-run `nasiko eval spec detect`")?;
     let repo = Repo::open(Path::new(repo_path))?;
-    let scope = test_scope(&repo, task)?;
+    let scope =
+        test_scope(&repo, task, spec.language)?.context(spec::no_scope_reason(spec.language))?;
     let env_tag = images::env_image_tag(&spec);
     if !containers.image_exists(&env_tag)? {
         let dir = scratch_dir(store, &task.instance_id, "env-image")?;
@@ -165,14 +185,14 @@ fn build_task(
     }))
 }
 
-/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
-/// ([`spec::task_test_scope`]).
-fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
+/// The task's test scope, from the packages owning the files the fix and its tests change
+/// ([`spec::scope_of`]); `None` when nothing can be run for it.
+fn test_scope(repo: &Repo, task: &TaskInstance, language: Language) -> Result<Option<Vec<String>>> {
     let mut files = Vec::new();
     for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {
             if let Some((package, manifest)) =
-                repo.cargo_package_of(&task.x_nasiko.gold_commit, file.path())?
+                repo.package_of(&task.x_nasiko.gold_commit, file.path(), language)?
             {
                 files.push(spec::OwnedFile {
                     path: file.path().to_string(),
@@ -183,8 +203,7 @@ fn test_scope(repo: &Repo, task: &TaskInstance) -> Result<Vec<String>> {
             }
         }
     }
-    spec::task_test_scope(&files)
-        .context("no Cargo package owns the task's files, so it has no tests to run")
+    Ok(spec::scope_of(language, &files))
 }
 
 /// The three gate set-ups.
@@ -374,6 +393,67 @@ mod tests {
         assert!(
             jobs.iter()
                 .all(|j| j.network == Network::None && j.limits.disk_mib == 2048)
+        );
+    }
+
+    /// A Node test run's output: each file's JUnit report under its file line.
+    fn node_run(reports: &[(&str, &str)]) -> String {
+        use nasiko_evals::testlog::{JUNIT_BEGIN, JUNIT_END, JUNIT_FILE};
+        let mut out = format!("▶ tests\n{JUNIT_BEGIN}\n");
+        for (file, cases) in reports {
+            out.push_str(&format!(
+                "{JUNIT_FILE}{file}\n<testsuites>{cases}</testsuites>\n"
+            ));
+        }
+        out + JUNIT_END + "\n"
+    }
+
+    #[test]
+    fn a_node_gate_reads_each_files_junit_report() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::new(EvalLayout::new(dir.path()));
+        let fake = FakeContainers::default();
+        let old = r#"<testcase name="keeps the time" classname="test"/>"#;
+        let new_fails =
+            r#"<testcase name="falls back" classname="test"><failure message="no"/></testcase>"#;
+        let new_passes = r#"<testcase name="falls back" classname="test"/>"#;
+        *fake.outcomes.lock().expect("lock") = vec![
+            outcome(0, &node_run(&[("test/dates.test.ts", old)])),
+            outcome(
+                1,
+                &node_run(&[("test/dates.test.ts", old), ("test/llm.test.ts", new_fails)]),
+            ),
+            outcome(
+                0,
+                &node_run(&[
+                    ("test/dates.test.ts", old),
+                    ("test/llm.test.ts", new_passes),
+                ]),
+            ),
+        ];
+        let spec = spec::propose("o/r", &["package.json".into()], None).expect("node");
+        let task: TaskInstance =
+            serde_json::from_str(include_str!("testdata/task.json")).expect("task");
+        let ctx = GateCtx {
+            store: &store,
+            containers: &fake,
+            task: &task,
+            spec: &spec,
+            limits: test_limits(&spec, 2048),
+        };
+        let run = |s, n| ctx.run(s, n).expect("runs");
+        let runs = GateRuns {
+            pristine: run(Setup::Pristine, 1),
+            before: vec![run(Setup::Before, 1)],
+            after: vec![run(Setup::After, 1)],
+        };
+        let GateVerdict::Reproducible(lists) = gate::judge(&runs) else {
+            panic!("reproducible");
+        };
+        assert_eq!(lists.fail_to_pass, vec!["test/llm.test.ts::falls back"]);
+        assert_eq!(
+            lists.pass_to_pass,
+            vec!["test/dates.test.ts::keeps the time"]
         );
     }
 

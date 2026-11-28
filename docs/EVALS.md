@@ -19,9 +19,9 @@ own machine, for repositories that are not on GitHub (see the end of this page).
 | Step | What happens |
 |---|---|
 | Sessions | Your Claude Code sessions, synced with chat history (`nasiko integration sync`). Each carries where it ran: its folder, branch and repository (read from local git when syncing; only the host and `owner/name` leave your machine). |
-| Dataset | You pick sessions. For each, the server lists the commits made during it (and up to two hours after) on every branch it worked on and the default branch, through your connected GitHub account, and links the session to the commit (or unbroken run of commits) that is its work. A long session whose matching commits are not one short run gives one task per commit, each from the request that led to it. The commit is split into the fix (gold patch) and its tests (test patch), Rust inline `#[cfg(test)]` modules included. A commit that changes no test, or only shared test helpers (`tests/common/mod.rs`), gives no task (`no_tests`): nothing could show the work was done. |
+| Dataset | You pick sessions. For each, the server lists the commits made during it (and up to two hours after) on every branch it worked on and the default branch, through your connected GitHub account, and links the session to the commit (or unbroken run of commits) that is its work. A long session whose matching commits are not one short run gives one task per commit, each from the request that led to it. The commit is split into the fix (gold patch) and its tests (test patch) by the repository's test paths, Rust inline `#[cfg(test)]` modules included. A commit that changes no test, or only shared test helpers (`tests/common/mod.rs`, a `test/helpers.ts`), gives no task (`no_tests`): nothing could show the work was done. |
 | Rewrite (P1) | A model rewrites the session's request as an issue. |
-| Build and gate | The server builds an image per task (the repository at the commit before the fix, as a fresh one-commit repository, with opencode at the OpenCode harness image's version) and runs the tests several times: old code, old code + new tests, fix + new tests. This fills `FAIL_TO_PASS` and `PASS_TO_PASS` and drops flaky tests. Only the packages the task changes are built, and only the integration tests it changes when they are all one package's; a task no Cargo package owns is rejected rather than built as the whole workspace. |
+| Build and gate | The server builds an image per task (the repository at the commit before the fix, as a fresh one-commit repository, with opencode at the OpenCode harness image's version) and runs the tests several times: old code, old code + new tests, fix + new tests. This fills `FAIL_TO_PASS` and `PASS_TO_PASS` and drops flaky tests. Only the packages the task changes are built, and only the integration tests it changes when they are all one package's; a task no Cargo package owns is rejected rather than built as the whole workspace. A Node task runs only the test files it changes, in the package (nearest `package.json`) that owns them (see [Node repositories](#node-javascript-typescript-repositories)). |
 | Screen (P3) | Reviewer models judge each task the way SWE-bench Verified did: is the request clear, would the tests accept any correct fix, how long would it take. A task is kept only if every score is 0 or 1 and nothing is flagged; a task no reviewer could judge waits for a person (Approve or Reject beside it on the Evals page, or `nasiko eval review`). A person's verdict overrides the models', so a task the reviewers rejected after the gate kept it can still be approved (Approve beside it). |
 | Run | You pick verified tasks and models. Each model is one of your LLM configs. A preflight call per model must come back priced. Then opencode replays every task per model in the task image, and each attempt is graded in a fresh container with no network: resolved only if every `FAIL_TO_PASS` and `PASS_TO_PASS` test passes (SWE-bench's rule). |
 | Report | Resolved rate, match rate, cost, saving against the original sessions (and against the original model re-run, when you picked it), results by difficulty, and why attempts failed, each rate with a 95% range. Saved with the run. |
@@ -44,7 +44,37 @@ heartbeat, and a job whose server stopped is taken over.
   with a price in the router's price book: a model the router cannot price stops at the
   preflight rather than producing a guessed cost. The attempt runs on the config's own model,
   pinned, so neither tier routing nor a fallback stands in for it.
-* Only Claude Code sessions and Cargo (Rust) repositories, so far.
+* Only Claude Code sessions, and Cargo (Rust) or Node (JavaScript, TypeScript) repositories, so
+  far. A repository with a root `Cargo.toml` is built as Rust, else one with a root
+  `package.json` as Node.
+
+### Node (JavaScript, TypeScript) repositories
+
+The proposed spec (`GET /api/evals/specs/{owner}/{repo}`; edit it with `PUT`) uses `node:22-bookworm`
+and reads test results from JUnit XML, not from console text (`log_parser: "junit"`):
+
+* **Scope:** the package that owns the task's changed test files (the nearest `package.json`
+  above them) and those files, e.g. `['server', 'test/finch.test.ts']`. Test files are
+  `*.test.*`, `*.spec.*`, `*-test.*`, `*_test.*` and scripts under `__tests__/`; a task whose
+  tests span two packages, or that changes only helpers, is rejected.
+* **Install** (while the image is built, the only step with network): in that package, with the
+  package manager its lockfile names (`pnpm-lock.yaml`, also at the repo root for a workspace;
+  `yarn.lock`; `package-lock.json`; else `npm install`), through Corepack so a pinned
+  `packageManager` is honoured.
+* **Build step:** only checks the dependencies are installed. There is no `tsc --noEmit`: tsx and
+  vitest strip types without checking them, so a type error that breaks nothing at runtime fails
+  no test, and requiring a clean type check would fail correct fixes, or reject every task of a
+  repository whose base commit does not type-check.
+* **Tests:** each changed test file runs on its own with the runner the package's `test` script
+  uses *at the base commit* (vitest, `tsx --test`, else `node --test`), each writing its own
+  JUnit report: node:test's report names no file, so two files' tests of the same name would
+  otherwise merge. A test is named `<file>::<suite>::…::<test>`. jest needs `jest-junit` and is
+  not picked automatically yet.
+* **What the agent sees:** `cd /testbed/<package> && npm test` and `npm run --if-present build`,
+  never the graded command, which names the hidden test files.
+* **What is not graded:** besides test files, the model's edits to `vitest.config.*`,
+  `jest.config.*` and `jest.setup.*` are dropped before grading. `node_modules/` never enters a
+  patch.
 
 ### A local model served by llama-server
 
@@ -137,7 +167,11 @@ and model, rewriter, reviewers, control, limits); then `harvest --repo`, `rewrit
 
 ## Limits and known gaps
 
-* Claude Code sessions and Cargo repositories only.
+* Claude Code sessions only, and Cargo or Node repositories only. Another language is a new
+  `Language` variant (detection, image, scope, test paths); one whose runner writes JUnit XML
+  (pytest's `--junitxml`, `go-junit-report`) reuses the `junit` log parser as is.
+* Node: jest is not picked automatically, a task whose tests span packages is rejected, and
+  tests that need a database or network fail in the sandbox and drop out of the lists.
 * A session is usable only if it was synced with chat history, and after its repository was
   recorded (re-sync older sessions to backfill it).
 * Tests run per affected Cargo package; integration tests that need a database or network fail
