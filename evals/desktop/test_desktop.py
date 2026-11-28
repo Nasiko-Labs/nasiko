@@ -41,6 +41,46 @@ class RunnerTest(unittest.TestCase):
             self.assertTrue(all(r["resolved"] is True and r["usage_status"] == "offline" for r in rows))
             self.assertTrue(all(r["router_usd"] is None for r in rows))
 
+    def test_saved_work_is_graded_after_a_client_error(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            def command(source):
+                return [sys.executable, "-c", source]
+
+            artifact = "from pathlib import Path; import os; saved = Path(os.environ['DESKTOP_ATTEMPT_DIR'])/'saved';"
+            task = {"id": "confirm", "prompt": "Save", "reset": command("pass"),
+                    "grade": command(artifact + "import json; print(json.dumps({'resolved': saved.is_file()}))")}
+            row = runner.attempt(root, root, "test", 1, task, "client",
+                                 command(artifact + "saved.touch(); raise SystemExit(1)"),
+                                 "model", 1, 5, None)
+            self.assertIs(row["resolved"], True)
+            self.assertEqual(row["harness_outcome"], "harness_error")
+            self.assertEqual(row["outcome"], "harness_error")
+
+    def test_client_json_errors_write_only_safe_diagnostics(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            for harness in ("codex", "opencode"):
+                with self.subTest(harness=harness):
+                    directory = root / (harness + "-attempt")
+                    directory.mkdir()
+                    message = "Rate limit exceeded. Bearer private-fixture; body contains private prompt."
+                    event = ({"type": "turn.failed", "error": {"message": message + " HTTP 429"}}
+                             if harness == "codex" else
+                             {"type": "error", "error": {"data": {"statusCode": 429, "message": message}}})
+                    cli = root / harness
+                    cli.write_text(f"#!{sys.executable}\nprint({json.dumps(event)!r})\n")
+                    cli.chmod(0o755)
+                    env = dict(os.environ, PATH=str(root) + os.pathsep + os.environ["PATH"],
+                               DESKTOP_PROMPT="Save", DESKTOP_MODEL="test", DESKTOP_HARNESS=harness,
+                               DESKTOP_ATTEMPT_DIR=str(directory), NASIKO_DESKTOP_MCP=str(cli),
+                               NASIKO_ROUTER_URL="http://localhost/v1", NASIKO_ROUTER_TOKEN="private-fixture",
+                               NASIKO_EVAL_ATTEMPT="test:trial")
+                    result = subprocess.run([sys.executable, str(HERE / "adapters/desktop_harness.py")], env=env)
+                    self.assertEqual(result.returncode, 1)
+                    diagnostic = json.loads((directory / "harness-errors.jsonl").read_text())
+                    self.assertEqual(diagnostic, {"event": event["type"], "reason": "rate limited", "http_status": 429})
+
     def test_timeout_grades_the_saved_artifact_without_passing_control_credentials(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

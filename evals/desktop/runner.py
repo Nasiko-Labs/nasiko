@@ -120,9 +120,8 @@ def attempt(manifest_dir, output, run_id, index, task, harness, argv, model, tri
             harness_env.update(NASIKO_ROUTER_URL=server + "/v1", NASIKO_ROUTER_TOKEN=token)
         started = time.monotonic()
         try:
-            if invoke(argv, manifest_dir, harness_env, timeout):
-                return record
-            ended = "finished"
+            exit_code = invoke(argv, manifest_dir, harness_env, timeout)
+            ended = "finished" if exit_code == 0 else "harness_error"
         except subprocess.TimeoutExpired:
             ended = "time_limit"
         finally:

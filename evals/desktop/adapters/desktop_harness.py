@@ -1,6 +1,7 @@
 """Run Codex or OpenCode with one desktop MCP server and a tagged Nasiko provider."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -55,6 +56,46 @@ def launch(harness, model, prompt, mcp, root, env):
             "--", prompt]
 
 
+# Provider messages can echo credentials, headers, prompts or response bodies. Persist
+# only a recognized diagnosis and structured status, never arbitrary client text.
+ERROR_KINDS = {
+    "authentication failed": ("unauthorized", "authentication", "invalid api key", "invalid_api_key"),
+    "access denied": ("forbidden", "permission denied"),
+    "rate limited": ("rate limit", "rate_limit", "too many requests"),
+    "quota exhausted": ("insufficient_quota", "quota exceeded"),
+    "model unavailable": ("model_not_found", "model not found", "unknown model"),
+    "context limit exceeded": ("context_length_exceeded", "context window"),
+    "request timed out": ("timed out", "timeout"),
+    "connection failed": ("econnrefused", "connection refused", "connection reset"),
+}
+
+
+def client_diagnostic(event):
+    error = event.get("error")
+    error = error if isinstance(error, dict) else {}
+    data = error.get("data")
+    data = data if isinstance(data, dict) else {}
+    fields = [event.get("message"), event.get("error"), error.get("message"),
+              error.get("code"), data.get("message"), data.get("code")]
+    description = " ".join(value for value in fields if isinstance(value, str)).lower()
+    reason = next((kind for kind, hints in ERROR_KINDS.items()
+                   if any(hint in description for hint in hints)), "unclassified client failure")
+    entry = {"event": event["type"], "reason": reason}
+    status = data.get("statusCode", error.get("statusCode"))
+    if type(status) is int and 400 <= status <= 599:
+        entry["http_status"] = status
+    else:
+        match = re.search(r"\b(?:http(?: status)?|status(?: code)?)\s*[:=]?\s*([45]\d\d)\b", description)
+        if match:
+            entry["http_status"] = int(match[1])
+    return entry
+
+
+def log_failure(directory, entry):
+    with (directory / "harness-errors.jsonl").open("a", encoding="utf-8") as log:
+        print(json.dumps(entry), file=log)
+
+
 def main():
     harness = os.environ["DESKTOP_HARNESS"]
     if harness not in ("codex", "opencode"):
@@ -75,6 +116,7 @@ def main():
             env[key] = str(directory)
         prompt = "Operate only the provided desktop through its MCP tools. " + os.environ["DESKTOP_PROMPT"]
         args = launch(harness, os.environ["DESKTOP_MODEL"], prompt, str(mcp), root, env)
+        directory = Path(env["DESKTOP_ATTEMPT_DIR"])
         failed = False
         with subprocess.Popen(args, cwd=root, env=env, stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, text=True) as proc:
@@ -84,7 +126,10 @@ def main():
                 except ValueError:
                     continue
                 if isinstance(event, dict) and event.get("type") in ("error", "turn.failed"):
+                    log_failure(directory, client_diagnostic(event))
                     failed = True
+        if proc.returncode:
+            log_failure(directory, {"event": "client_exit", "exit_code": proc.returncode})
         return proc.returncode or int(failed)
 
 

@@ -27,6 +27,7 @@ const attempt = z.object({
   model: z.string(),
   trial: z.number(),
   outcome: z.string(),
+  harness_outcome: z.optional(z.string()),
   resolved: z.nullable(z.boolean()),
   seconds: z.number(),
   screenshots: z.array(z.string()),
@@ -161,7 +162,14 @@ function ReportDetails({ report, images }: Bundle) {
                   <TableCell>{r.model}</TableCell>
                   <TableCell>{r.trial}</TableCell>
                   <TableCell>{grade(r.resolved)}</TableCell>
-                  <TableCell>{r.outcome.replaceAll('_', ' ')}</TableCell>
+                  <TableCell>
+                    {r.outcome.replaceAll('_', ' ')}
+                    {r.harness_outcome && r.harness_outcome !== r.outcome && (
+                      <div className="text-muted-foreground">
+                        Harness stop reason: {r.harness_outcome.replaceAll('_', ' ')}
+                      </div>
+                    )}
+                  </TableCell>
                   <TableCell>{r.seconds.toLocaleString()} s</TableCell>
                   <TableCell>
                     {r.router_usd === null

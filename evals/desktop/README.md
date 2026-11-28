@@ -64,7 +64,9 @@ python3 runner.py --output /tmp/ticket-model --server "$NASIKO_SERVER" --refresh
 | Reset | Restore the starting desktop and wait for the intended window. Generate identical input for the same task and trial across harnesses and models. A setup failure yields an unverified attempt. |
 | Harness | Read `DESKTOP_PROMPT`, `DESKTOP_MODEL`, `DESKTOP_HARNESS` and `DESKTOP_TRIAL`. Connect the screenshot and input tools to the task display. For server-backed runs use `NASIKO_ROUTER_URL`, `NASIKO_ROUTER_TOKEN` and `NASIKO_EVAL_ATTEMPT`. |
 | Evidence | Save the PNG returned to the model under `DESKTOP_ATTEMPT_DIR/screenshots/`. Each attempt owns its directory and router tag. Inspect the report and images before sharing real sessions. |
-| Grade | Read the submitted file or frozen state. Print a JSON object with boolean `resolved`. After a timeout the runner still grades the result. Grader errors leave the grade unavailable. |
+| Grade | Read the submitted file or frozen state. Print a JSON object with boolean `resolved`. The runner still grades saved work after a timeout or nonzero harness exit. Grader errors leave the grade unavailable. |
 | Backend | The included MCP executable accesses only the dedicated X11 display. For a Render desktop or another service, supply reset, collection and MCP commands that target your own isolated desktop. The controller owns provisioning, credentials and teardown. |
+
+For Codex and OpenCode, inspect the attempt’s `harness-errors.jsonl` when a client fails. It records the error category, recognized HTTP status when available, and nonzero exit code. Raw provider messages can contain credentials or private task content and are omitted.
 
 The sample shares a machine between trusted adapters, app and grader. Use a separate sandbox for the model-controlled desktop and keep reference files and control-plane credentials outside it when evaluating real workflows. Open **Evals → Open desktop report → Report folder** and select the output directory to inspect its screenshots. Choosing only `report.json` loads the numbers. Reports stay on the local computer. Router operations appear in Nasiko TokenOps.

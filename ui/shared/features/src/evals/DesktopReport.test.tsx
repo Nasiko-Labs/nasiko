@@ -34,6 +34,7 @@ describe('Desktop report import', () => {
           id: 'a00002',
           trial: 2,
           outcome: 'grader_error',
+          harness_outcome: 'time_limit',
           resolved: null,
           router_usd: null,
           usage_status: 'unavailable',
@@ -46,6 +47,8 @@ describe('Desktop report import', () => {
     })
     expect(within(table).getByText('Passed')).toBeInTheDocument()
     expect(within(table).getByText('time limit')).toBeInTheDocument()
+    const graderFailure = within(table).getByText('grader error').closest('tr')!
+    expect(within(graderFailure).getByText('Harness stop reason: time limit')).toBeInTheDocument()
     expect(within(table).getByText('$0.00')).toBeInTheDocument()
     expect(within(table).getByText('unavailable')).toBeInTheDocument()
     expect(screen.queryByRole('img')).toBeNull()
