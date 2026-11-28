@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 use nasiko_evals::harvest::{self, FileVersions, Linked, Outcome};
 use nasiko_evals::link;
-use nasiko_evals::{TaskSource, TaskStatus};
+use nasiko_evals::{TaskSource, TaskStatus, TestPathRules};
 use serde_json::json;
 
 use super::forge::Forge;
@@ -136,7 +136,13 @@ async fn draft_and_insert(
         return Err(skipped(Outcome::NoMatch.label()));
     }
     let gold = linked.last().sha.clone();
-    let mut split = harvest::split(&forge.diff(&base, &gold).await?).context("unreadable diff")?;
+    let spec = store::spec(db, user, &forge.repo).await?;
+    let diff = forge.diff(&base, &gold).await?;
+    let mut split = match spec.as_ref() {
+        Some(s) => harvest::split_with_rules(&diff, &TestPathRules::from_globs(&s.test_paths)),
+        None => harvest::split(&diff),
+    }
+    .context("unreadable diff")?;
     let mut versions = BTreeMap::new();
     for path in harvest::inline_test_paths(&split) {
         versions.insert(
@@ -157,7 +163,6 @@ async fn draft_and_insert(
     }
     let commits: Vec<&nasiko_evals::CommitFacts> = linked.commits.iter().collect();
     let source = TaskSource::new(session, &linked.slice, &commits);
-    let spec = store::spec(db, user, &forge.repo).await?;
     let stage = if spec.is_none() {
         task.x_nasiko.status = TaskStatus::Rejected;
         task.x_nasiko.reject_reason =
@@ -217,10 +222,21 @@ async fn ensure_spec(state: &AppState, user: uuid::Uuid, forge: &Forge) -> Resul
     let head = forge.default_branch.as_str();
     let root = forge.root_files(head).await?;
     let mut toolchain = None;
-    for name in ["rust-toolchain.toml", "rust-toolchain"] {
-        if root.iter().any(|f| f == name) {
-            toolchain = forge.file_at(head, name).await?;
-            break;
+    if root.iter().any(|f| f == "Cargo.toml") {
+        for name in ["rust-toolchain.toml", "rust-toolchain"] {
+            if root.iter().any(|f| f == name) {
+                toolchain = forge.file_at(head, name).await?;
+                break;
+            }
+        }
+    } else if root.iter().any(|f| f == "package.json") {
+        toolchain = forge.file_at(head, "package.json").await?;
+    } else {
+        for name in ["pyproject.toml", "requirements.txt", "pytest.ini"] {
+            if root.iter().any(|f| f == name) {
+                toolchain = forge.file_at(head, name).await?;
+                break;
+            }
         }
     }
     if let Some(spec) = nasiko_evals::spec::propose(&forge.repo, &root, toolchain.as_deref()) {

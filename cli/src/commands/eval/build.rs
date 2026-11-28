@@ -20,11 +20,21 @@ pub fn spec_detect(store: &Store, repo_dir: &Path) -> Result<EnvSpec> {
     let repo = Repo::open(repo_dir)?;
     let slug = repo.slug();
     let root = repo.root_files("HEAD")?;
-    let toolchain = ["rust-toolchain.toml", "rust-toolchain"]
-        .iter()
-        .find_map(|f| repo.file_at("HEAD", f).ok().flatten());
-    let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref())
-        .context("only Cargo (Rust) repositories are supported so far")?;
+    let toolchain = if root.iter().any(|f| f == "Cargo.toml") {
+        ["rust-toolchain.toml", "rust-toolchain"]
+            .iter()
+            .find_map(|f| repo.file_at("HEAD", f).ok().flatten())
+    } else if root.iter().any(|f| f == "package.json") {
+        repo.file_at("HEAD", "package.json").ok().flatten()
+    } else {
+        ["pyproject.toml", "requirements.txt", "pytest.ini"]
+            .iter()
+            .find(|&&name| root.iter().any(|f| f == name))
+            .and_then(|name| repo.file_at("HEAD", name).ok().flatten())
+    };
+    let mut spec = spec::propose(&repo.full_name(), &root, toolchain.as_deref()).context(
+        "only Cargo (Rust) and Vitest (TypeScript/JavaScript) repositories are supported so far",
+    )?;
     spec.local_path = Some(repo.root().to_string_lossy().into_owned());
     store.save_spec(&slug, &spec)?;
     Ok(spec)
@@ -116,7 +126,11 @@ fn build_task(
         .as_deref()
         .context("the spec has no local_path; re-run `nasiko eval spec detect`")?;
     let repo = Repo::open(Path::new(repo_path))?;
-    let scope = test_scope(&repo, task)?;
+    let scope = if spec.language == spec::Language::Rust {
+        test_scope(&repo, task)?
+    } else {
+        Vec::new()
+    };
     let env_tag = images::env_image_tag(&spec);
     if !containers.image_exists(&env_tag)? {
         let dir = scratch_dir(store, &task.instance_id, "env-image")?;

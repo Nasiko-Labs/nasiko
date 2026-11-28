@@ -132,6 +132,30 @@ impl TestPathRules {
         ])
     }
 
+    /// Default test-path rules for a TypeScript/JavaScript workspace.
+    pub fn ts_default() -> Self {
+        Self::from_globs(&[
+            "**/*.test.ts".to_string(),
+            "**/*.spec.ts".to_string(),
+            "**/*.test.tsx".to_string(),
+            "**/*.spec.tsx".to_string(),
+            "**/*.test.js".to_string(),
+            "**/*.spec.js".to_string(),
+            "**/*.test.jsx".to_string(),
+            "**/*.spec.jsx".to_string(),
+            "**/__tests__/**".to_string(),
+        ])
+    }
+
+    /// Default test-path rules for a Python (pytest) workspace.
+    pub fn python_default() -> Self {
+        Self::from_globs(&[
+            "**/test_*.py".to_string(),
+            "**/*_test.py".to_string(),
+            "**/tests/**".to_string(),
+        ])
+    }
+
     pub fn is_test(&self, path: &str) -> bool {
         self.patterns.iter().any(|p| p.is_match(path))
     }
@@ -180,11 +204,13 @@ pub fn split_tests(files: Vec<FileDiff>, rules: &TestPathRules) -> SplitPatch {
             split.test.push(file);
             continue;
         }
-        if file.added.iter().any(|l| {
-            INLINE_TEST_MARKERS
-                .iter()
-                .any(|m| l.trim_start().starts_with(m))
-        }) {
+        if file.path().ends_with(".rs")
+            && file.added.iter().any(|l| {
+                INLINE_TEST_MARKERS
+                    .iter()
+                    .any(|m| l.trim_start().starts_with(m))
+            })
+        {
             split.mixed.push(file.path().to_string());
         }
         split.gold.push(file);
@@ -254,5 +280,105 @@ new file mode 100644
     fn rejects_non_diff_text() {
         assert!(parse_unified("hello\n").is_err());
         assert_eq!(parse_unified("").expect("empty is fine"), vec![]);
+    }
+
+    const RANGOT_DIFF: &str = "\
+diff --git a/src/utils/festivalTimer.test.ts b/src/utils/festivalTimer.test.ts
+new file mode 100644
+index 0000000..421cd8b
+--- /dev/null
++++ b/src/utils/festivalTimer.test.ts
+@@ -0,0 +1,6 @@
++import { describe, expect, it } from \"vitest\";
++import { getDaysUntilFestival } from \"./festivalTimer\";
++
++describe(\"getDaysUntilFestival\", () => {
++  it(\"counts one day for the next day\", () => {
++    expect(getDaysUntilFestival(\"2026-11-29\", \"2026-11-28\")).toBe(1);
++  });
++});
+diff --git a/src/utils/festivalTimer.ts b/src/utils/festivalTimer.ts
+new file mode 100644
+index 0000000..57bb9cc
+--- /dev/null
++++ b/src/utils/festivalTimer.ts
+@@ -0,0 +1,4 @@
++export function getDaysUntilFestival(targetDateISO: string, nowDateISO: string): number {
++  return 1;
++}
+";
+
+    #[test]
+    fn splits_rangot_vitest_diff() {
+        let files = parse_unified(RANGOT_DIFF).expect("valid diff");
+        let split = split_tests(files, &TestPathRules::ts_default());
+        assert_eq!(split.test.len(), 1);
+        assert_eq!(split.test[0].path(), "src/utils/festivalTimer.test.ts");
+        assert_eq!(split.gold.len(), 1);
+        assert_eq!(split.gold[0].path(), "src/utils/festivalTimer.ts");
+        assert!(split.mixed.is_empty());
+    }
+
+    #[test]
+    fn ts_default_matches_expected_test_patterns() {
+        let rules = TestPathRules::ts_default();
+        for p in [
+            "src/utils/festivalTimer.test.ts",
+            "src/utils/festivalTimer.spec.ts",
+            "src/components/Banner.test.tsx",
+            "src/components/Banner.spec.tsx",
+            "lib/date.test.js",
+            "lib/date.spec.js",
+            "lib/Button.test.jsx",
+            "lib/Button.spec.jsx",
+            "src/__tests__/festivalTimer.ts",
+            "__tests__/smoke.js",
+        ] {
+            assert!(rules.is_test(p), "expected test path: {p}");
+        }
+        assert!(!rules.is_test("src/utils/festivalTimer.ts"));
+        assert!(!rules.is_test("src/utils/testing.ts"));
+    }
+
+    const PYTHON_DIFF: &str = "\
+diff --git a/src/pricing.py b/src/pricing.py
+index 1111111..2222222 100644
+--- a/src/pricing.py
++++ b/src/pricing.py
+@@ -1,2 +1,2 @@
+ def total(x):
+-    return x
++    return x + 1
+diff --git a/tests/test_pricing.py b/tests/test_pricing.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/tests/test_pricing.py
+@@ -0,0 +1,2 @@
++def test_total():
++    assert True
+diff --git a/src/utils_test.py b/src/utils_test.py
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/src/utils_test.py
+@@ -0,0 +1,2 @@
++def test_helper():
++    assert True
+";
+
+    #[test]
+    fn splits_python_pytest_diff() {
+        let files = parse_unified(PYTHON_DIFF).expect("valid diff");
+        let split = split_tests(files, &TestPathRules::python_default());
+        assert_eq!(split.gold.len(), 1);
+        assert_eq!(split.gold[0].path(), "src/pricing.py");
+        assert_eq!(split.test.len(), 2);
+        let test_paths: Vec<&str> = split.test.iter().map(|f| f.path()).collect();
+        assert_eq!(
+            test_paths,
+            vec!["tests/test_pricing.py", "src/utils_test.py"]
+        );
+        assert!(split.mixed.is_empty());
     }
 }

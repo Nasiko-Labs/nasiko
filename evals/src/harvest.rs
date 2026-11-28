@@ -183,10 +183,12 @@ fn one_task(
 
 /// The linked commits' full diff (`first.parent..last`), split into fix and test files.
 pub fn split(full_diff: &str) -> Result<SplitPatch, DiffError> {
-    Ok(diff::split_tests(
-        diff::parse_unified(full_diff)?,
-        &TestPathRules::rust_default(),
-    ))
+    split_with_rules(full_diff, &TestPathRules::rust_default())
+}
+
+/// Splits a unified diff into fix and test files using caller-supplied [`TestPathRules`].
+pub fn split_with_rules(full_diff: &str, rules: &TestPathRules) -> Result<SplitPatch, DiffError> {
+    Ok(diff::split_tests(diff::parse_unified(full_diff)?, rules))
 }
 
 /// Gold Rust files whose base and gold text [`split_inline_rust_tests`] needs.
