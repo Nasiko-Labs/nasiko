@@ -159,20 +159,41 @@ impl SessionRecord {
     /// Edited paths relative to whichever of `repo_roots` holds them; edits outside every
     /// root are dropped. A repo can have several roots: its main folder and its `git worktree`s,
     /// which share one history, and a session may edit any of them.
+    ///
+    /// Windows paths are compared with `/` and an upper-case drive letter: git reports the root
+    /// as `K:/repo` while Claude Code records edits as `K:\repo\src\a.rs`.
     pub fn edited_paths_in(&self, repo_roots: &[String]) -> Vec<String> {
         let roots: Vec<String> = repo_roots
             .iter()
-            .map(|r| format!("{}/", r.trim_end_matches('/')))
+            .map(|r| format!("{}/", portable_path(r).trim_end_matches('/')))
             .collect();
         let mut paths: Vec<String> = self
             .edits
             .iter()
-            .filter_map(|e| roots.iter().find_map(|r| e.path.strip_prefix(r.as_str())))
-            .map(str::to_string)
+            .filter_map(|e| {
+                let path = portable_path(&e.path);
+                roots
+                    .iter()
+                    .find_map(|r| path.strip_prefix(r.as_str()).map(str::to_string))
+            })
             .collect();
         paths.sort();
         paths.dedup();
         paths
+    }
+}
+
+/// `path` with `/` separators and an upper-case drive letter when it is a Windows path
+/// (`K:\repo` or `k:/repo`); any other path is returned as it is.
+fn portable_path(path: &str) -> String {
+    let mut chars = path.chars();
+    match (chars.next(), chars.next()) {
+        (Some(drive), Some(':')) if drive.is_ascii_alphabetic() => format!(
+            "{}:{}",
+            drive.to_ascii_uppercase(),
+            chars.as_str().replace('\\', "/")
+        ),
+        _ => path.to_string(),
     }
 }
 
