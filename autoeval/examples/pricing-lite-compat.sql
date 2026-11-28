@@ -1,6 +1,6 @@
--- Prepared for the two working model configurations. NOT applied by AutoEval.
+-- Exact Standard text prices for the two benchmark configurations.
 -- Separate from pricing-compat.sql, which targets Hydrogen / 3.8 Flash.
--- Operator approval is required before executing this file against the server.
+-- Explicit operator action; never run automatically by the CLI.
 -- Verified 2026-11-28, Standard text/thinking-token prices:
 -- https://aistudio.google.com/docs/pricing#gemini-3.1-flash-lite
 -- https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite

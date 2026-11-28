@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from .analyzer import inspect_repository, select_plan
+from .examples import NAMES, run_examples
 from .nasiko import NasikoClient
 from .report import aggregate_directory, write_report
 from .schema import EvalError
@@ -48,6 +49,9 @@ def main(argv=None):
                 help="Pinned config name/id, or priced provider:model (creates an autoeval config)",
             )
             command.add_argument("--max-output-tokens", type=int, default=8192)
+            command.add_argument(
+                "--preflight-attempts", type=int, choices=(1, 2, 3), default=1
+            )
             command.add_argument("--context-bytes", type=int, default=80000)
             command.add_argument(
                 "--allow-cost-gaps",
@@ -57,6 +61,33 @@ def main(argv=None):
             _server_arguments(command)
     report = commands.add_parser("report")
     report.add_argument("--run", type=Path, required=True)
+    examples = commands.add_parser(
+        "examples",
+        help="Validate synthetic calculator examples; excluded from benchmark scores",
+    )
+    examples.add_argument("example", choices=(*NAMES, "all"))
+    examples.add_argument("--run", type=Path)
+    benchmark = commands.add_parser(
+        "benchmark",
+        help="Run and seal the explicitly declared real-repository benchmark",
+    )
+    benchmark.add_argument(
+        "--manifest",
+        type=Path,
+        default=Path(__file__).resolve().parents[2] / "benchmark.json",
+    )
+    benchmark.add_argument("--run", type=Path, required=True)
+    benchmark.add_argument(
+        "--source-bundles",
+        type=Path,
+        help="Reuse source.bundle files under a previous final/inputs directory",
+    )
+    _server_arguments(benchmark)
+    verify = commands.add_parser(
+        "verify",
+        help="Verify sealed membership, artifact hashes and recomputed headline metrics",
+    )
+    verify.add_argument("--run", type=Path, required=True)
     models = commands.add_parser(
         "models",
         help="List configurations; optionally verify generation and recorded cost",
@@ -65,6 +96,20 @@ def main(argv=None):
     _server_arguments(models)
     args = parser.parse_args(argv)
     try:
+        if args.command == "benchmark":
+            from .benchmark import run_benchmark
+
+            return run_benchmark(args)
+        if args.command == "verify":
+            from .benchmark import verify_benchmark
+
+            result = verify_benchmark(args.run)
+            print(
+                f"VERIFIED sealed benchmark: {len(result['verified_tasks'])} real tasks, {len(result['attempts'])} assigned slots"
+            )
+            return 0
+        if args.command == "examples":
+            return run_examples(args)
         if args.command == "inspect":
             plans = inspect_repository(args.repo)
             if args.unit or args.config:
@@ -77,7 +122,10 @@ def main(argv=None):
         if args.command == "report":
             path = args.run / "results.json"
             results = json.loads(path.read_text()) if path.exists() else None
-            if results is None or results.get("run_kind") == "aggregate":
+            if results is None or results.get("run_kind") in {
+                "aggregate",
+                "frozen_benchmark",
+            }:
                 aggregate_directory(args.run)
             else:
                 write_report(args.run, results)

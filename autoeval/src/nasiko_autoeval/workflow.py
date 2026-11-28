@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from .nasiko import NasikoClient
 from .report import write_report
 from .results import grade, verify_gate
-from .runner import DockerRunner
+from .runner import GRADING_VERSION, DockerRunner
 from .schema import EvalError, save_json
 from .tasks import apply_candidate, build_task, git, model_prompt
 
@@ -28,7 +28,7 @@ def run_workflow(args):
         + uuid.uuid4().hex[:6]
     )
     directory = Path(
-        args.run or Path(__file__).resolve().parents[2] / "results" / run_id
+        args.run or Path(__file__).resolve().parents[2] / "runs" / run_id
     ).resolve()
     if (directory / "results.json").exists():
         raise EvalError(
@@ -45,6 +45,12 @@ def run_workflow(args):
         "preflight": [],
         "preflight_failures": [],
         "blockers": [],
+        "grading": {
+            "version": GRADING_VERSION,
+            "host_owned_capture": True,
+            "tamper_proof": False,
+            "scope": "File/log replacement regression verified; in-process framework/stdout manipulation remains a risk",
+        },
     }
     try:
         task, plan, base, before, reference = build_task(
@@ -79,10 +85,12 @@ def run_workflow(args):
                         if any(c["id"] == configuration["id"] for c in configurations):
                             continue
                         print(f"Preflight: {configuration['name']}", flush=True)
-                        probe = client.probe(
+                        probe = _probe(
+                            client,
                             configuration,
                             run_id + f":preflight-{index}",
-                            args.allow_cost_gaps,
+                            args,
+                            results,
                         )
                         results["preflight"].append(probe)
                         if probe.get("cost_error"):
@@ -145,6 +153,36 @@ def run_workflow(args):
         and (args.command == "validate" or results["attempts"])
         else 1
     )
+
+
+def _probe(client, configuration, tag, args, results):
+    tries = getattr(args, "preflight_attempts", 1)
+    if not 1 <= tries <= 3:
+        raise EvalError("Preflight attempts must be 1–3")
+    for index in range(tries):
+        try:
+            return client.probe(
+                configuration, tag + f"-{index + 1}", args.allow_cost_gaps
+            )
+        except EvalError as error:
+            retryable = any(
+                status in str(error) for status in ("HTTP 502", "HTTP 503", "HTTP 429")
+            )
+            if not retryable or index + 1 == tries:
+                raise
+            results["preflight_failures"].append(
+                {
+                    "model": configuration["model"],
+                    "failure_reason": client.redact(str(error)),
+                    "cost_usd": None,
+                    "retried": True,
+                }
+            )
+            print(
+                f"Availability preflight retry {index + 2}/{tries}: {configuration['name']}",
+                flush=True,
+            )
+            time.sleep(3)
 
 
 def _evaluate(

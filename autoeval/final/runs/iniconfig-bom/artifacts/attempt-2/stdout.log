@@ -1,0 +1,338 @@
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "start"}
+============================= test session starts ==============================
+platform linux -- Python 3.12.16, pytest-8.4.2, pluggy-1.7.0
+cachedir: /tmp/pytest-cache
+rootdir: /work
+configfile: pyproject.toml
+collected 54 items
+
+testing/test_iniconfig.py 
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[assignment in value]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[assignment in value]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[assignment in value]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[blank line]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[blank line]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[blank line]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on section]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on section]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on section]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on value]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on value]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment on value]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2 on section]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2 on section]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[comment2 on section]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[continuations on several values]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[continuations on several values]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[continuations on several values]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[empty value]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[empty value]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[empty value]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[equality gets precedence]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[equality gets precedence]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[equality gets precedence]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[pseudo section syntax in value]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[pseudo section syntax in value]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[pseudo section syntax in value]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[section]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[section]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[section]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon for name-values]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon for name-values]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon for name-values]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon without space]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon without space]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[use of colon without space]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value in section]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value in section]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value in section]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with aligned continuation]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with aligned continuation]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with aligned continuation]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with continuation]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with continuation]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_tokenize[value with continuation]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_empty", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_empty", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_empty", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_ParseError", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_ParseError", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_ParseError", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_needs_perceeding_token", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_needs_perceeding_token", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_needs_perceeding_token", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_cant_be_after_section", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_cant_be_after_section", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_continuation_cant_be_after_section", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_cant_be_empty", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_cant_be_empty", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_cant_be_empty", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_error_on_weird_lines[!!]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_error_on_weird_lines[!!]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_error_on_weird_lines[!!]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_from_file", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_from_file", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_from_file", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_section_first", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_section_first", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_section_first", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconig_section_duplicate_fails", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconig_section_duplicate_fails", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconig_section_duplicate_fails", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_duplicate_key_fails", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_duplicate_key_fails", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_duplicate_key_fails", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_lineof", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_lineof", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_lineof", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_convert", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_convert", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_convert", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_missing", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_missing", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iniconfig_get_missing", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_get", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_get", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_get", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_missing_section", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_missing_section", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_missing_section", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_getitem", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_getitem", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_getitem", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_iter", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_iter", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_section_iter", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_iter", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_iter", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_iter", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_contains", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_contains", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_config_contains", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iter_file_order", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iter_file_order", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iter_file_order", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_example_pypirc", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_example_pypirc", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_example_pypirc", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_api_import", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_api_import", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_api_import", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[#qwe]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[#qwe]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[#qwe]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[  #qwe]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[  #qwe]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[  #qwe]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[;qwe]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[;qwe]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[;qwe]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[ ;qwe]", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[ ;qwe]", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_iscommentline_true[ ;qwe]", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments_from_continuations", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments_from_continuations", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_strips_inline_comments_from_continuations", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_preserves_inline_comments_when_disabled", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_preserves_inline_comments_when_disabled", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_preserves_inline_comments_when_disabled", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_constructor_preserves_inline_comments_for_backward_compatibility", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_constructor_preserves_inline_comments_for_backward_compatibility", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_constructor_preserves_inline_comments_for_backward_compatibility", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_stripped", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_stripped", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_stripped", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_section_names_with_opt_in", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_section_names_with_opt_in", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_section_names_with_opt_in", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_key_names", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_key_names", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_unicode_whitespace_in_key_names", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_file", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_file", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_file", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_in_data_string", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_in_data_string", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_utf8_bom_in_data_string", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_utf8_bom_file", "phase": "setup", "outcome": "passed"}
+.
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_utf8_bom_file", "phase": "call", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "test", "id": "testing/test_iniconfig.py::test_parse_utf8_bom_file", "phase": "teardown", "outcome": "passed"}
+
+NASIKO_PYTEST_V1 86d4ce84606e433fb3190cc39906e6f0 {"event": "finish", "exit_code": 0}
+
+
+============================== 54 passed in 0.05s ==============================

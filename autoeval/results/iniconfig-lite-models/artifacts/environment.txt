@@ -1,7 +1,0 @@
-Python 3.12.16
-# Editable install with no version control (iniconfig==0.0.0)
--e /work
-packaging==26.4
-pluggy==1.7.0
-Pygments==2.21.0
-pytest==8.4.2

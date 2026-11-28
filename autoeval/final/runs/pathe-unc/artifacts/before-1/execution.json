@@ -1,0 +1,28 @@
+{
+  "grading_version": "host-stream-v2",
+  "image": "sha256:dad843993cba47e663eca65c0ac6b131af25162c73c8ddd0b76782665314fe87",
+  "limits": {
+    "CapDrop": [
+      "ALL"
+    ],
+    "Memory": 1073741824,
+    "MemorySwap": 1073741824,
+    "NanoCpus": 1000000000,
+    "NetworkMode": "none",
+    "PidsLimit": 256,
+    "ReadonlyRootfs": true,
+    "SecurityOpt": [
+      "no-new-privileges"
+    ],
+    "Tmpfs": {
+      "/tmp": "rw,exec,nosuid,size=536870912,mode=1777"
+    }
+  },
+  "observed_exit_code": 1,
+  "oom_killed": false,
+  "protocol_token": null,
+  "report_transport": "Docker pipes captured by host; no report/log mount",
+  "tamper_proof": false,
+  "test_command": "./node_modules/.bin/vitest run --configLoader=native --no-cache --maxWorkers=1 --reporter=json",
+  "user": "10001:10001"
+}

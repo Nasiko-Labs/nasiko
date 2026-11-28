@@ -1,0 +1,66 @@
+{
+  "allowed_paths": [
+    "build.config.ts",
+    "src/_glob.ts",
+    "src/_internal.ts",
+    "src/_path.ts",
+    "src/index.ts",
+    "src/utils.ts",
+    "utils.d.ts"
+  ],
+  "fix_sha": "b52fcacc59717a1e4a8783d4bbfae7fa81b4db07",
+  "id": "b52fcacc5971",
+  "ignored_documentation": [],
+  "input_kind": "real_repository",
+  "issue": "resolve() loses the leading UNC network prefix when resolving Windows network\npaths. Preserve the double leading slash for a UNC input and resolve subsequent\nrelative segments correctly. Preserve normal POSIX and drive-letter behavior.\n",
+  "issue_source": "operator",
+  "parent_sha": "55a21be8a14b70ec67098d3f68f54a34f3796fd4",
+  "plan": {
+    "cpus": 1.0,
+    "dependency_files": [
+      "package.json"
+    ],
+    "discovery_evidence": [
+      "package.json declares vitest",
+      "packageManager=pnpm@11.9.0",
+      "Operator supplied explicit execution overrides"
+    ],
+    "framework": "vitest",
+    "language": "typescript",
+    "memory_mib": 1024,
+    "pids": 256,
+    "result_format": "jest",
+    "runtime_image": "node:24-bookworm-slim",
+    "runtime_requirements": {
+      "engines": {},
+      "nvmrc": null,
+      "packageManager": "pnpm@11.9.0"
+    },
+    "schema_version": 1,
+    "setup_commands": [
+      "npm install --global pnpm@11.9.0",
+      "pnpm install --frozen-lockfile --ignore-scripts"
+    ],
+    "setup_timeout_seconds": 600,
+    "test_command": "./node_modules/.bin/vitest run --configLoader=native --no-cache --maxWorkers=1 --reporter=json",
+    "test_path_rules": [
+      "**/*.test.*",
+      "**/*.spec.*",
+      "*.test.*",
+      "*.spec.*",
+      "**/__tests__/**",
+      "__tests__/**",
+      "test/**",
+      "tests/**"
+    ],
+    "timeout_seconds": 180,
+    "working_directory": "."
+  },
+  "production_changes": [
+    "src/_path.ts"
+  ],
+  "repository_url": "https://github.com/unjs/pathe.git",
+  "test_changes": [
+    "test/index.spec.ts"
+  ]
+}

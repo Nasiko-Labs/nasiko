@@ -126,6 +126,15 @@ class NasikoClient:
         name = "autoeval-" + re.sub(r"[^a-zA-Z0-9_-]", "-", selector)
         found = next((c for c in configs if c["name"] == name), None)
         if found:
+            if (
+                not found.get("pinned")
+                or found.get("fallback_models")
+                or found.get("provider") != provider
+                or (found.get("pinned_model") or found.get("model")) != model
+            ):
+                raise EvalError(
+                    f"Existing config {name} no longer matches the requested pinned model"
+                )
             return found
         return self.request(
             "/api/llm-configs",
@@ -372,12 +381,11 @@ def verified_cost(usage, model):
     pricing = usage.get("pricing") or {}
     if "pricing" in usage:
         provenance_known = (
-            pricing.get("source") in {"Exact", "Family"}
-            and pricing.get("estimated") is False
+            pricing.get("source") == "Exact" and pricing.get("estimated") is False
         )
     else:
         provenance_known = (
-            usage.get("worst_price_source") in {"Exact", "Family"}
+            usage.get("worst_price_source") == "Exact"
             and usage.get("estimated_calls") == 0
         )
     estimated = (

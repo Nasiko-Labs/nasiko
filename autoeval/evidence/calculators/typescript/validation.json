@@ -1,0 +1,69 @@
+{
+  "before": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/before-1",
+      "duration_seconds": 0.726925625000149,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests/calculator.test.ts::negative": "failed",
+        "tests/calculator.test.ts::positive": "failed",
+        "tests/calculator.test.ts::zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/before-2",
+      "duration_seconds": 0.7403802089393139,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "tests/calculator.test.ts::negative": "failed",
+        "tests/calculator.test.ts::positive": "failed",
+        "tests/calculator.test.ts::zero": "passed"
+      }
+    }
+  ],
+  "expected_tests": [
+    "tests/calculator.test.ts::negative",
+    "tests/calculator.test.ts::positive",
+    "tests/calculator.test.ts::zero"
+  ],
+  "fail_to_pass": [
+    "tests/calculator.test.ts::negative",
+    "tests/calculator.test.ts::positive"
+  ],
+  "pass_to_pass": [
+    "tests/calculator.test.ts::zero"
+  ],
+  "reference": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/reference-1",
+      "duration_seconds": 0.7298971249256283,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests/calculator.test.ts::negative": "passed",
+        "tests/calculator.test.ts::positive": "passed",
+        "tests/calculator.test.ts::zero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/reference-2",
+      "duration_seconds": 1.408012584084645,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "tests/calculator.test.ts::negative": "passed",
+        "tests/calculator.test.ts::positive": "passed",
+        "tests/calculator.test.ts::zero": "passed"
+      }
+    }
+  ],
+  "repetitions": 2,
+  "skipped_tests": [],
+  "status": "verified"
+}

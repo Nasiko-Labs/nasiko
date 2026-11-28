@@ -1,0 +1,41 @@
+FAIL tests/calculator.test.js
+  ✓ zero (1 ms)
+  ✕ positive (1 ms)
+  ✕ negative
+
+  ● positive
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 5
+    Received: -1
+
+      1 | const { add } = require('../calculator');
+      2 | test('zero', () => expect(add(0, 0)).toBe(0));
+    > 3 | test('positive', () => expect(add(2, 3)).toBe(5));
+        |                                          ^
+      4 | test('negative', () => expect(add(-2, -3)).toBe(-5));
+      5 |
+
+      at Object.toBe (tests/calculator.test.js:3:42)
+
+  ● negative
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: -5
+    Received: 1
+
+      2 | test('zero', () => expect(add(0, 0)).toBe(0));
+      3 | test('positive', () => expect(add(2, 3)).toBe(5));
+    > 4 | test('negative', () => expect(add(-2, -3)).toBe(-5));
+        |                                            ^
+      5 |
+
+      at Object.toBe (tests/calculator.test.js:4:44)
+
+Test Suites: 1 failed, 1 total
+Tests:       2 failed, 1 passed, 3 total
+Snapshots:   0 total
+Time:        0.231 s
+Ran all test suites.

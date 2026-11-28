@@ -1,0 +1,72 @@
+{
+  "recorded_at": "2026-11-28T09:45:34.382731+00:00",
+  "unit_tests": {
+    "command": "PYTHONPATH=autoeval/src python3 -m unittest discover -s autoeval/tests -v",
+    "exit_code": 0,
+    "passed": 47
+  },
+  "source_checks": [
+    {
+      "command": "/tmp/nasiko-autoeval-cli-check/bin/ruff check autoeval/src autoeval/tests autoeval/run.py autoeval/demo.py",
+      "exit_code": 0
+    },
+    {
+      "command": "/tmp/nasiko-autoeval-cli-check/bin/ruff format --check autoeval/src autoeval/tests autoeval/run.py autoeval/demo.py",
+      "exit_code": 0,
+      "files": 22
+    },
+    {
+      "command": "python3 -m compileall -q autoeval/src",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 autoeval/run.py --help",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 autoeval/demo.py",
+      "exit_code": 0
+    },
+    {
+      "command": "python3 autoeval/run.py verify --run autoeval/final",
+      "exit_code": 0
+    }
+  ],
+  "docker_checks": {
+    "calculator_command": "python3 autoeval/run.py examples all --run autoeval/evidence/calculators",
+    "calculator_exit_code": 0,
+    "calculator_examples_verified": 5,
+    "tests_each": {
+      "fail_to_pass": 2,
+      "pass_to_pass": 1
+    },
+    "real_tasks_verified": 3,
+    "old_and_reference_repeats_each": 2,
+    "security_before_exploit_succeeded": true,
+    "security_after_exploit_succeeded": false,
+    "tamper_proof": false
+  },
+  "host_rust_checks": [
+    {
+      "command": "cargo fmt",
+      "exit_code": 127,
+      "reason": "cargo: command not found"
+    },
+    {
+      "command": "cargo check --workspace",
+      "exit_code": 127,
+      "reason": "cargo: command not found"
+    },
+    {
+      "command": "cargo clippy --workspace",
+      "exit_code": 127,
+      "reason": "cargo: command not found"
+    }
+  ],
+  "server_health": {
+    "endpoint": "http://localhost:8080/health",
+    "response": "ok",
+    "original_container": "d28149ff83a5",
+    "seven_services_running": true
+  }
+}

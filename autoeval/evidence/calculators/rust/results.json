@@ -1,0 +1,145 @@
+{
+  "attempts": [],
+  "blockers": [],
+  "grading": {
+    "host_owned_capture": true,
+    "scope": "File/log replacement regression verified; in-process framework/stdout manipulation remains a risk",
+    "tamper_proof": false,
+    "version": "host-stream-v2"
+  },
+  "images": {
+    "prepared_image_id": "sha256:b4e3962c24c97031d603fac2ee306bf84d80e50663eb29fd614c09c5886c04ad",
+    "runtime_image_id": "sha256:ea930233b368b48bf94ba2b9bb8a8b651d5d2ecf5e091d6ab3f4d843766c47e1"
+  },
+  "mode": "one_shot",
+  "preflight": [],
+  "preflight_failures": [],
+  "run_id": "autoeval-20261128-151034-c12c2f",
+  "schema_version": 1,
+  "summary": [],
+  "task": {
+    "allowed_paths": [
+      "src/lib.rs"
+    ],
+    "fix_sha": "43d754e7dd64f29598ba550eff896d3ead3dd88f",
+    "id": "43d754e7dd64",
+    "ignored_documentation": [],
+    "input_kind": "local_fixture",
+    "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+    "issue_source": "operator",
+    "parent_sha": "307399c14c6d26997ef1e37178a155be18e5f075",
+    "plan": {
+      "cpus": 1.0,
+      "dependency_files": [
+        "Cargo.lock",
+        "Cargo.toml"
+      ],
+      "discovery_evidence": [
+        "Cargo.toml package",
+        "toolchain channel: 1",
+        "Cargo parser follows evals/src/testlog.rs binary::test identities",
+        "Operator supplied explicit execution overrides"
+      ],
+      "framework": "cargo",
+      "language": "rust",
+      "memory_mib": 1024,
+      "pids": 256,
+      "result_format": "cargo",
+      "runtime_image": "rust:1-slim-bookworm",
+      "runtime_requirements": {
+        "channel": "1",
+        "rust-version": null
+      },
+      "schema_version": 1,
+      "setup_commands": [
+        "cargo fetch"
+      ],
+      "setup_timeout_seconds": 600,
+      "test_command": "cargo test --offline --no-fail-fast -- --test-threads=1",
+      "test_path_rules": [
+        "tests/**",
+        "**/tests/**",
+        "**/*_test.rs",
+        "**/*_tests.rs"
+      ],
+      "timeout_seconds": 180,
+      "working_directory": "."
+    },
+    "production_changes": [
+      "src/lib.rs"
+    ],
+    "repository_url": "local fixture",
+    "test_changes": [
+      "tests/calculator.rs"
+    ]
+  },
+  "validation": {
+    "before": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/before-1",
+        "duration_seconds": 0.6684419168159366,
+        "exit_code": 101,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "calculator::negative": "failed",
+          "calculator::positive": "failed",
+          "calculator::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/before-2",
+        "duration_seconds": 0.5337832921650261,
+        "exit_code": 101,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "calculator::negative": "failed",
+          "calculator::positive": "failed",
+          "calculator::zero": "passed"
+        }
+      }
+    ],
+    "expected_tests": [
+      "calculator::negative",
+      "calculator::positive",
+      "calculator::zero"
+    ],
+    "fail_to_pass": [
+      "calculator::negative",
+      "calculator::positive"
+    ],
+    "pass_to_pass": [
+      "calculator::zero"
+    ],
+    "reference": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/reference-1",
+        "duration_seconds": 0.5212030420079827,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "calculator::negative": "passed",
+          "calculator::positive": "passed",
+          "calculator::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/rust/artifacts/reference-2",
+        "duration_seconds": 0.6149799171835184,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "calculator::negative": "passed",
+          "calculator::positive": "passed",
+          "calculator::zero": "passed"
+        }
+      }
+    ],
+    "repetitions": 2,
+    "skipped_tests": [],
+    "status": "verified"
+  }
+}

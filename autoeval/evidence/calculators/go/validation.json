@@ -1,0 +1,69 @@
+{
+  "before": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/go/artifacts/before-1",
+      "duration_seconds": 11.209951125085354,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "example.invalid/synthetic-calculator::TestNegative": "failed",
+        "example.invalid/synthetic-calculator::TestPositive": "failed",
+        "example.invalid/synthetic-calculator::TestZero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/go/artifacts/before-2",
+      "duration_seconds": 11.133306791074574,
+      "exit_code": 1,
+      "reason": null,
+      "status": "test_failure",
+      "tests": {
+        "example.invalid/synthetic-calculator::TestNegative": "failed",
+        "example.invalid/synthetic-calculator::TestPositive": "failed",
+        "example.invalid/synthetic-calculator::TestZero": "passed"
+      }
+    }
+  ],
+  "expected_tests": [
+    "example.invalid/synthetic-calculator::TestNegative",
+    "example.invalid/synthetic-calculator::TestPositive",
+    "example.invalid/synthetic-calculator::TestZero"
+  ],
+  "fail_to_pass": [
+    "example.invalid/synthetic-calculator::TestNegative",
+    "example.invalid/synthetic-calculator::TestPositive"
+  ],
+  "pass_to_pass": [
+    "example.invalid/synthetic-calculator::TestZero"
+  ],
+  "reference": [
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/go/artifacts/reference-1",
+      "duration_seconds": 13.812340541975573,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "example.invalid/synthetic-calculator::TestNegative": "passed",
+        "example.invalid/synthetic-calculator::TestPositive": "passed",
+        "example.invalid/synthetic-calculator::TestZero": "passed"
+      }
+    },
+    {
+      "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/go/artifacts/reference-2",
+      "duration_seconds": 12.139895374886692,
+      "exit_code": 0,
+      "reason": null,
+      "status": "passed",
+      "tests": {
+        "example.invalid/synthetic-calculator::TestNegative": "passed",
+        "example.invalid/synthetic-calculator::TestPositive": "passed",
+        "example.invalid/synthetic-calculator::TestZero": "passed"
+      }
+    }
+  ],
+  "repetitions": 2,
+  "skipped_tests": [],
+  "status": "verified"
+}

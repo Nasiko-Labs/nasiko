@@ -1,70 +1,90 @@
 # Three-minute demo
 
-Run commands from the Nasiko repository root. Clones and recorded evidence from
-this session are available at the paths below. The demo reads actual saved runs;
-the README has commands to reproduce generation and Docker grading.
+Run from the Nasiko repository root. Python 3.11+, Git and running Docker are
+required for validation. Recorded evidence can be displayed without model calls.
 
-**0:00–0:25 — The workflow.**
+## Before presenting
 
-“AutoEval turns a repository fix commit into a verified coding task, asks models
-through Nasiko to fix the parent, and grades their production changes. One shared
-workflow handles four language families; a repository is an input.”
+Run the five synthetic calculator demos together; allow time for image pulls and
+dependency installation on a new machine:
+
+```sh
+python3 autoeval/run.py examples all
+python3 autoeval/run.py verify --run autoeval/final
+```
+
+Expected: each calculator reports two regression tests and one existing test;
+the final benchmark verifies three real tasks and six assigned model/task slots.
+Individual calculator commands are in [the example guide](examples/calculators/README.md).
+The synthetic command calls the ordinary shared validation pipeline and makes
+no model requests. It is separate from the headline real benchmark.
+
+## 0:00–0:35 — One pipeline, five toolchains
+
+“AutoEval discovers a repository's test toolchain, separates a reference fix from
+its regression tests, verifies the task, then asks models through Nasiko to fix
+the parent. These five calculators are synthetic demonstrations.”
 
 ```sh
 python3 autoeval/run.py --help
+cat autoeval/evidence/calculators/report.md
 ```
 
-Point out `inspect`, `validate`, `compare`, `report`.
+Show `autoeval/examples/calculators/python/` and one other language folder.
+Point out project manifests, the subtraction bug, tests and `reference.patch`.
+The helper creates deterministic `buggy` and `reference-fix` commits; the standard
+detector and evaluator handle them without separate language workflows.
 
-**0:25–0:50 — Automatic environment discovery.**
+## 0:35–1:05 — A verified real task
 
-```sh
-python3 autoeval/run.py inspect --repo /tmp/nasiko-autoeval-iniconfig
-```
+Open `autoeval/final/runs/iniconfig-bom/validation.json`, then
+`artifacts/before-1/stdout.log` and `artifacts/reference-1/stdout.log` in that run.
 
-Show manifest evidence, pytest, Python runtime, test directory, setup commands,
-result format and limits. Explain that Go, Jest/Vitest and Cargo supply the same
-schema; `--unit` selects a monorepo project and `--config` resolves ambiguity.
+“Three upstream regression tests fail on old Python code and pass on the reference
+fix. All 51 existing tests pass. We repeat both checks in fresh offline containers.
+The model receives the issue and parent production code, without these hidden
+tests, the reference implementation or Git history.”
 
-**0:50–1:20 — A trustworthy task.**
-
-Open `autoeval/results/iniconfig-lite-models/validation.json`. Show the three
-fail-to-pass identities and 51 existing passing requirements. Open
-`artifacts/before-1/output.log` and `artifacts/reference-1/output.log` beside it.
-
-“These upstream tests fail on the old implementation and pass with the reference
-fix, twice in clean offline containers. Setup failures cannot establish a task.
-The model never receives this hidden test patch or the reference implementation.”
-
-**1:20–2:00 — Real measurements across languages.**
+## 1:05–1:45 — The frozen comparison
 
 ```sh
 python3 autoeval/demo.py
 ```
 
-“Three real tasks are verified: Python, Go and TypeScript. The two Lite models
-attempted the same three tasks once each. 3.1 Flash-Lite resolved two; 3.5 resolved
-one. Both fixed Go; only 3.1 fixed the BOM bug. Both failed TypeScript. The grader
-also caught existing-suite regressions, and rejected a replacement that could
-not compile. A separate Flash timeout stays visible as infrastructure failure.”
+“This one declared final cohort contains three real public tasks and two models.
+Both models fixed Python and Go, and both failed TypeScript: two of three each.
+One TypeScript patch regressed existing tests; the other failed compilation or
+suite loading. Each assigned slot had one generation request. Synthetic fixtures
+and development reruns do not enter these scores.”
 
-**2:00–2:35 — Cost honesty and grading isolation.**
+## 1:45–2:15 — Exact recorded cost
 
-Open `autoeval/results/report.md`, then one `model-1.json` in a completed run.
-Point out response token counts, Nasiko trace ID, `pricing.source=Static` and
-`estimated=true`.
+Open `autoeval/final/runs/iniconfig-bom/model-1.json`; show `usage.trace_id`, token
+counts and `usage.pricing` (`source=Exact`, `estimated=false`).
 
-“Usage and ledger amounts came from Nasiko. Its older image is using estimated
-rates for these IDs, so verified cost metrics remain N/A. We have prepared the
-price-book correction and have left it unapplied. Grade containers have no
-network, credentials or Docker socket, and cannot modify the checkout.”
+“The approved exact prices are applied and source-verified. Generation cost totals
+are $0.016999 for 3.1 Flash-Lite and $0.025345 for 3.5 Flash-Lite. Preflight overhead
+is separately $0.000081. Amounts come from Nasiko's attributable ledger records.”
 
-**2:35–3:00 — Scope and next step.**
+## 2:15–2:45 — Show the grading limit honestly
 
-Show `autoeval/SUBMISSION.md` and `autoeval/README.md`.
+Open `autoeval/evidence/security/before/security.json` and `after/security.json`.
 
-“All adapters have Docker fixture coverage; Python, Go and TypeScript have real
-upstream task validation and model attempts. This is one-shot generation. Three
-selected public tasks cannot establish a general model ranking, and verified
-cost comparison is blocked by pricing. The next step is approved exact pricing
-and a fresh strict comparison without `--allow-cost-gaps`.”
+“We reproduced a candidate replacing the old writable report and log, then forcing
+exit zero. It incorrectly resolved before hardening. Reports now stream to the
+host, and the same attack is rejected with a phase/exit mismatch. Framework and
+stdout manipulation remain possible: grading is not tamper-proof.”
+
+## 2:45–3:00 — Verify and reproduce
+
+```sh
+python3 autoeval/run.py verify --run autoeval/final
+```
+
+“We retain exact commits, Git bundles, pinned runtimes, dependency inventories,
+prompts, patches, raw test captures and usage. Verification checks file hashes and
+recomputes results from explicit membership. Three selected public tasks support
+these observed outcomes, not a general model ranking.”
+
+The [README](README.md) has commands for unit tests, an independent security
+regression, individual calculator demos and a fresh paid benchmark replay.

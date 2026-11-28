@@ -1,0 +1,210 @@
+{
+  "purpose": "Exact-pricing diagnostic before collector hardening; excluded from final benchmark",
+  "run_id": "autoeval-20261128-143306-41192f",
+  "preflight": [
+    {
+      "config": "autoeval-gemini-gemini-3-1-flash-lite",
+      "cost_error": null,
+      "cost_usd": 1.1e-05,
+      "duration_seconds": 27.28529500006698,
+      "model": "gemini-3.1-flash-lite",
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "ROUTER_OK",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1795856614,
+        "id": "chatcmpl-y5gKa96PAaWKz7sP8aGz0Ac",
+        "model": "gemini-3.1-flash-lite",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "prompt_tokens": 20,
+          "total_tokens": 24
+        }
+      },
+      "usage": {
+        "attribution": "one new identity row; response-token cross-check",
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "calls": 1,
+        "cost_estimated": null,
+        "cost_usd": 1.1e-05,
+        "failed_calls": 0,
+        "input_tokens": 20,
+        "model": "gemini-3.1-flash-lite",
+        "output_tokens": 4,
+        "pricing": {
+          "cache_creation_usd": 0.0,
+          "cache_read_usd": 0.0,
+          "cache_source": "Ratio",
+          "estimated": false,
+          "input_usd": 5e-06,
+          "output_usd": 6e-06,
+          "rates_per_1m": {
+            "cache_creation": 0.1,
+            "cache_creation_1h": null,
+            "cache_read": 0.025,
+            "input": 0.25,
+            "output": 1.5
+          },
+          "resolved_as": "gemini-3.1-flash-lite",
+          "source": "Exact"
+        },
+        "provider": "gemini",
+        "router_estimated_input_tokens": 0,
+        "source": "read-only trace_usage.router_* snapshot",
+        "trace_id": "direct:9f23c6af-9340-475d-bc35-c290a934b7e1"
+      }
+    },
+    {
+      "config": "autoeval-gemini-gemini-3-5-flash-lite",
+      "cost_error": null,
+      "cost_usd": 1.6e-05,
+      "duration_seconds": 0.6352314169052988,
+      "model": "gemini-3.5-flash-lite",
+      "response": {
+        "choices": [
+          {
+            "finish_reason": "stop",
+            "index": 0,
+            "message": {
+              "content": "ROUTER_OK",
+              "role": "assistant"
+            }
+          }
+        ],
+        "created": 1795856615,
+        "id": "chatcmpl-5pgKa6aGHrbHg8UPo6-AsAI",
+        "model": "gemini-3.5-flash-lite",
+        "object": "chat.completion",
+        "usage": {
+          "completion_tokens": 4,
+          "prompt_tokens": 20,
+          "total_tokens": 24
+        }
+      },
+      "usage": {
+        "attribution": "one new identity row; response-token cross-check",
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "calls": 1,
+        "cost_estimated": null,
+        "cost_usd": 1.6e-05,
+        "failed_calls": 0,
+        "input_tokens": 20,
+        "model": "gemini-3.5-flash-lite",
+        "output_tokens": 4,
+        "pricing": {
+          "cache_creation_usd": 0.0,
+          "cache_read_usd": 0.0,
+          "cache_source": "Ratio",
+          "estimated": false,
+          "input_usd": 6e-06,
+          "output_usd": 1e-05,
+          "rates_per_1m": {
+            "cache_creation": 0.12,
+            "cache_creation_1h": null,
+            "cache_read": 0.03,
+            "input": 0.3,
+            "output": 2.5
+          },
+          "resolved_as": "gemini-3.5-flash-lite",
+          "source": "Exact"
+        },
+        "provider": "gemini",
+        "router_estimated_input_tokens": 0,
+        "source": "read-only trace_usage.router_* snapshot",
+        "trace_id": "direct:dc925ce2-c0e1-4be5-bd1d-3f615d4dc95f"
+      }
+    }
+  ],
+  "attempts": [
+    {
+      "attempt_id": "autoeval-20261128-143306-41192f:attempt-1",
+      "cost_usd": 0.003231,
+      "duration_seconds": 5.251249791122973,
+      "model": "gemini-3.1-flash-lite",
+      "outcome": "resolved",
+      "usage": {
+        "attribution": "one new identity row; response-token cross-check",
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "calls": 1,
+        "cost_estimated": null,
+        "cost_usd": 0.003231,
+        "failed_calls": 0,
+        "input_tokens": 4009,
+        "model": "gemini-3.1-flash-lite",
+        "output_tokens": 1486,
+        "pricing": {
+          "cache_creation_usd": 0.0,
+          "cache_read_usd": 0.0,
+          "cache_source": "Ratio",
+          "estimated": false,
+          "input_usd": 0.001002,
+          "output_usd": 0.002229,
+          "rates_per_1m": {
+            "cache_creation": 0.1,
+            "cache_creation_1h": null,
+            "cache_read": 0.025,
+            "input": 0.25,
+            "output": 1.5
+          },
+          "resolved_as": "gemini-3.1-flash-lite",
+          "source": "Exact"
+        },
+        "provider": "gemini",
+        "router_estimated_input_tokens": 0,
+        "source": "read-only trace_usage.router_* snapshot",
+        "trace_id": "direct:7c687e4a-8def-4c7b-a11f-538338412590"
+      }
+    },
+    {
+      "attempt_id": "autoeval-20261128-143306-41192f:attempt-2",
+      "cost_usd": 0.004908,
+      "duration_seconds": 4.988495165947825,
+      "model": "gemini-3.5-flash-lite",
+      "outcome": "resolved",
+      "usage": {
+        "attribution": "one new identity row; response-token cross-check",
+        "cache_creation_tokens": 0,
+        "cache_read_tokens": 0,
+        "calls": 1,
+        "cost_estimated": null,
+        "cost_usd": 0.004908,
+        "failed_calls": 0,
+        "input_tokens": 4009,
+        "model": "gemini-3.5-flash-lite",
+        "output_tokens": 1482,
+        "pricing": {
+          "cache_creation_usd": 0.0,
+          "cache_read_usd": 0.0,
+          "cache_source": "Ratio",
+          "estimated": false,
+          "input_usd": 0.001203,
+          "output_usd": 0.003705,
+          "rates_per_1m": {
+            "cache_creation": 0.12,
+            "cache_creation_1h": null,
+            "cache_read": 0.03,
+            "input": 0.3,
+            "output": 2.5
+          },
+          "resolved_as": "gemini-3.5-flash-lite",
+          "source": "Exact"
+        },
+        "provider": "gemini",
+        "router_estimated_input_tokens": 0,
+        "source": "read-only trace_usage.router_* snapshot",
+        "trace_id": "direct:f02662e1-67c4-4e10-908b-28693e0482e8"
+      }
+    }
+  ]
+}

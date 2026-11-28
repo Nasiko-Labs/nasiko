@@ -1,0 +1,12 @@
+{
+  "name": "synthetic-calculator-vitest",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "vitest": "2.1.9",
+    "typescript": "5.7.3"
+  }
+}

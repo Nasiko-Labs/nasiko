@@ -1,0 +1,45 @@
+{
+  "verified_at": "2026-11-28T09:38:27.983032+00:00",
+  "billing_scope": "Standard text input and text/thinking output, USD per 1,000,000 tokens; no grounding tools",
+  "source_url": "https://aistudio.google.com/docs/pricing",
+  "models": {
+    "gemini-3.1-flash-lite": {
+      "input": 0.25,
+      "output": 1.5,
+      "cache_read": 0.025,
+      "source_fragment": "#gemini-3.1-flash-lite"
+    },
+    "gemini-3.5-flash-lite": {
+      "input": 0.3,
+      "output": 2.5,
+      "cache_read": 0.03,
+      "source_fragment": "#gemini-3.5-flash-lite"
+    }
+  },
+  "database_rows": [
+    {
+      "id": "97028662-1b19-43a7-a077-eda639cd61ef",
+      "provider": "gemini",
+      "model": "gemini-3.1-flash-lite",
+      "input_price_per_1m": 0.25,
+      "output_price_per_1m": 1.5,
+      "cache_read_price_per_1m": 0.025,
+      "effective_from": "2026-11-28T09:03:05.818003+00:00",
+      "effective_until": "2027-01-01T00:00:00+00:00",
+      "notes": "autoeval-lite-compat-20261128: Google Standard text prices; https://aistudio.google.com/docs/pricing#gemini-3.1-flash-lite"
+    },
+    {
+      "id": "d9c235d8-bac1-4059-8843-12e8d97e5969",
+      "provider": "gemini",
+      "model": "gemini-3.5-flash-lite",
+      "input_price_per_1m": 0.3,
+      "output_price_per_1m": 2.5,
+      "cache_read_price_per_1m": 0.03,
+      "effective_from": "2026-11-28T09:03:05.818003+00:00",
+      "effective_until": "2027-01-01T00:00:00+00:00",
+      "notes": "autoeval-lite-compat-20261128: Google Standard text prices; https://aistudio.google.com/docs/pricing#gemini-3.5-flash-lite"
+    }
+  ],
+  "historical_usage_modified": false,
+  "authorization": "User explicitly requested finishing exact source-verified pricing and fresh strict cost comparison."
+}

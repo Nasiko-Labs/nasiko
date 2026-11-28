@@ -8,11 +8,12 @@ import time
 import uuid
 from pathlib import Path
 
+from .capture import capture
 from .results import normalize
 from .schema import EvalError, TestRun, save_json
 
 LABEL = "nasiko.autoeval"
-REPORTS = {"junit": "results.xml", "jest": "results.json"}
+GRADING_VERSION = "host-stream-v2"
 
 
 class DockerRunner:
@@ -130,12 +131,29 @@ class DockerRunner:
         self._docker("commit", name, image, timeout=120)
         return image
 
-    def prepare(self, files, plan):
+    def _copy_driver(self, name):
+        data = Path(__file__).with_name("pytest_driver.py").read_bytes()
+        buffer = io.BytesIO()
+        with tarfile.open(fileobj=buffer, mode="w") as archive:
+            directory = tarfile.TarInfo("eval")
+            directory.type = tarfile.DIRTYPE
+            directory.mode = 0o755
+            archive.addfile(directory)
+            info = tarfile.TarInfo("eval/pytest_driver.py")
+            info.mode = 0o444
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+        self._docker("cp", "-a", "-", name + ":/", input=buffer.getvalue())
+
+    def resolve_image(self, plan):
         if self._docker("image", "inspect", plan.runtime_image, check=False).returncode:
             self._docker("pull", plan.runtime_image, timeout=plan.setup_timeout_seconds)
-        self.base_image_id = json.loads(
-            self._docker("image", "inspect", plan.runtime_image).stdout
-        )[0]["Id"]
+        return json.loads(self._docker("image", "inspect", plan.runtime_image).stdout)[
+            0
+        ]
+
+    def prepare(self, files, plan):
+        self.base_image_id = self.resolve_image(plan)["Id"]
         name = self._name("setup")
         self.containers.add(name)
         inventory = {
@@ -194,6 +212,14 @@ class DockerRunner:
     def run(self, files, plan, label):
         if not self.prepared:
             raise EvalError("Prepare dependencies before offline execution")
+        if (
+            "/eval/out" in plan.test_command
+            or "--outputFile" in plan.test_command
+            or "--junitxml" in plan.test_command
+        ):
+            raise EvalError(
+                "Writable report destinations are unsupported; use the host-stream adapter command"
+            )
         artifact = self.artifacts / label
         artifact.mkdir(parents=True, exist_ok=True)
         snapshot_name = self._name("snapshot")
@@ -203,12 +229,20 @@ class DockerRunner:
         )
         try:
             self._copy_tree(snapshot_name, files)
+            self._copy_driver(snapshot_name)
             snapshot = self._commit(snapshot_name, "tree")
         finally:
             self._remove_container(snapshot_name)
         name = self._name("test")
         self.containers.add(name)
         started = time.monotonic()
+        token = uuid.uuid4().hex
+        command = "set -u\n"
+        if plan.framework == "cargo":
+            command += "cp -a /opt/cargo /tmp/cargo\nexport CARGO_HOME=/tmp/cargo\n"
+        command += plan.test_command.replace("{report_token}", token)
+        if plan.framework == "cargo":
+            command = "(\n" + command + "\n) 2>&1"
         try:
             self._docker(
                 "create",
@@ -221,16 +255,13 @@ class DockerRunner:
                 "--user=10001:10001",
                 "--tmpfs",
                 "/tmp:rw,exec,nosuid,size=536870912,mode=1777",
-                "--tmpfs",
-                "/eval/out:rw,noexec,nosuid,size=33554432,mode=1777",
                 "--workdir",
                 "/work/" + plan.working_directory,
                 snapshot,
                 "sh",
                 "-c",
-                "while :; do sleep 30; done",
+                command,
             )
-            self._docker("start", name)
             inspected = json.loads(self._docker("inspect", name).stdout)[0]
             host = inspected["HostConfig"]
             save_json(
@@ -239,6 +270,12 @@ class DockerRunner:
                     "image": inspected["Image"],
                     "user": inspected["Config"]["User"],
                     "test_command": plan.test_command,
+                    "grading_version": GRADING_VERSION,
+                    "report_transport": "Docker pipes captured by host; no report/log mount",
+                    "protocol_token": token
+                    if plan.result_format == "pytest-events"
+                    else None,
+                    "tamper_proof": False,
                     "limits": {
                         key: host.get(key)
                         for key in [
@@ -255,53 +292,47 @@ class DockerRunner:
                     },
                 },
             )
-            command = "set -u\n"
-            if plan.framework == "cargo":
-                command += "cp -a /opt/cargo /tmp/cargo\nexport CARGO_HOME=/tmp/cargo\n"
-            command += plan.test_command
-            try:
-                bounded = (
-                    "(\n"
-                    + command
-                    + '\n) > /eval/out/output.log 2>&1\ncode=$?\ntail -c 4000000 /eval/out/output.log\nexit "$code"'
-                )
-                result = self._docker(
-                    "exec",
-                    name,
-                    "sh",
-                    "-c",
-                    bounded,
-                    timeout=plan.timeout_seconds,
-                    check=False,
-                )
-            except EvalError as error:
+            result = capture(["docker", "start", "-a", name], plan.timeout_seconds)
+            output = result.stdout.decode(errors="replace")
+            (artifact / "stdout.log").write_bytes(result.stdout)
+            if result.stderr:
+                (artifact / "stderr.log").write_bytes(result.stderr)
+            if result.stopped:
                 return TestRun(
-                    "timeout",
+                    result.stopped,
                     {},
                     None,
                     time.monotonic() - started,
-                    str(error),
+                    "Host collector stopped execution for " + result.stopped,
                     str(artifact),
                 )
-            output = (result.stdout + result.stderr).decode(errors="replace")
-            (artifact / "output.log").write_text(output[-4_000_000:])
-            report_name = REPORTS.get(plan.result_format)
-            report = None
-            if report_name:
-                # Docker Desktop's archive API can miss files in a tmpfs mount.
-                copied = self._docker(
-                    "exec", name, "cat", f"/eval/out/{report_name}", check=False
+            state = json.loads(self._docker("inspect", name).stdout)[0]["State"]
+            execution_path = artifact / "execution.json"
+            execution = json.loads(execution_path.read_text())
+            execution["observed_exit_code"] = state["ExitCode"]
+            execution["oom_killed"] = state.get("OOMKilled", False)
+            save_json(execution_path, execution)
+            if (
+                state.get("OOMKilled")
+                or state.get("Running")
+                or result.client_exit_code not in {0, state.get("ExitCode")}
+            ):
+                return TestRun(
+                    "infrastructure_error",
+                    {},
+                    state.get("ExitCode"),
+                    time.monotonic() - started,
+                    "OOM, incomplete container, or Docker attach failure",
+                    str(artifact),
                 )
-                if copied.returncode == 0:
-                    report = copied.stdout.decode()
-                    (artifact / report_name).write_text(report)
             return normalize(
                 plan,
-                result.returncode,
+                state["ExitCode"],
                 time.monotonic() - started,
-                report,
+                output if plan.result_format in {"jest", "junit"} else None,
                 output,
                 str(artifact),
+                protocol_token=token,
             )
         finally:
             self._remove_container(name)

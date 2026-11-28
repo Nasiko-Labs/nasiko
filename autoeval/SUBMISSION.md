@@ -1,58 +1,66 @@
 # Nasiko AutoEval — buildathon submission
 
-**Scope.** A runnable, standard-library Python CLI extends Nasiko evaluations to
-Python/pytest, JavaScript/Jest, TypeScript/Vitest, Go and Rust/Cargo. All adapters
-produce one execution-plan schema. Task extraction, Docker execution, validation,
-one-shot model attempts, grading and reporting are shared. The existing prebuilt
-server and seven-service stack remain running; no backend or frontend rebuild was
-required. Claude Code/Codex ingestion is not a prerequisite.
+A standard-library Python CLI turns repository fix commits into verified coding
+tasks, requests one-shot production changes through Nasiko, and grades the result.
+Python/pytest, JavaScript/Jest, TypeScript/Vitest, Go and Rust/Cargo all produce one
+execution plan and reuse task extraction, Docker execution, validation, grading
+and reporting. The existing prebuilt Nasiko server stays running.
 
-**Measured real work.** Public upstream commits produced three verified tasks:
+The final real benchmark is prospectively declared in
+[benchmark.json](benchmark.json) and sealed in [final/](final/report.md). Every task
+failed on its parent and passed on the reference fix twice in fresh offline
+containers. Each model received one generation request per task, identical source,
+issue and output budget within that task, at temperature zero.
 
-| Repository / language | Fix | Fail-to-pass | Pass-to-pass |
-| --- | --- | ---: | ---: |
-| pytest-dev/iniconfig / Python | `d2dcb7289291` | 3 | 51 |
-| dustin/go-humanize / Go | `1b638b2c0d9b` | 1 | 68 |
-| unjs/pathe / TypeScript | `b52fcacc5971` | 10 | 457 |
+| Public task | Fix commit | Regression / existing tests |
+| --- | --- | ---: |
+| pytest-dev/iniconfig, Python BOM parsing | `d2dcb7289291` | 3 / 51 |
+| dustin/go-humanize, Go non-finite SI values | `1b638b2c0d9b` | 1 / 68 |
+| unjs/pathe, TypeScript UNC resolution | `b52fcacc5971` | 10 / 457 |
 
-Every task failed on old code and passed on the reference fix twice in fresh
-offline containers. Pathe additionally has 16 optional skipped/todo tests;
-these do not count as passing requirements. Exact parent/fix SHAs, test identities,
-commands, images and logs are in [results.json](results/results.json).
+Pathe also has 16 optional skipped/todo tests, excluded from passing requirements.
+Python/Go use 4,096 output tokens; TypeScript uses 8,192. Availability preflights
+can retry up to three times; generation is never retried. All six assigned slots
+are included. Development reruns and synthetic fixtures cannot enter the headline
+aggregation through directory scanning.
 
-Two working Nasiko configurations each attempted all three tasks. Gemini 3.1
-Flash-Lite resolved **2/3 (66.7%)**; Gemini 3.5 Flash-Lite resolved **1/3 (33.3%)**.
-Both fixed Go; only 3.1 fixed Python; both failed TypeScript. The TypeScript grader
-caught existing-suite regressions and an invalid TypeScript replacement. A
-separate Gemini 3.8 Flash attempt timed out and is recorded as an infrastructure
-failure. Models received identical prompts and budgets per task: 4,096 output
-tokens for Python/Go and 8,192 for TypeScript, temperature zero, one generation
-request each. These selected tasks support those outcomes, not a general ranking.
+| Model | Resolved | Exact recorded generation cost |
+| --- | ---: | ---: |
+| Gemini 3.1 Flash-Lite | 2/3 (66.7%) | $0.016999 |
+| Gemini 3.5 Flash-Lite | 2/3 (66.7%) | $0.025345 |
 
-**Cost evidence and blocker.** Six completed Lite attempts have attributable
-Nasiko trace IDs and response-checked token counts. Nasiko recorded **$0.049993**
-across those six calls, using pricing it marks **estimated**. The older server
-misses context-suffixed prices and falls back to a static rate. Verified cost per
-attempt and per resolution therefore remain **N/A**; no estimate is presented as
-verified spend. The absent `/api/evals/*` routes are bridged by read-only,
-owner/agent-scoped Postgres snapshots. Two verified-price insertions for the
-working models are prepared in [pricing-lite-compat.sql](examples/pricing-lite-compat.sql),
-awaiting operator approval. No pricing correction remains applied.
+Both fixed Python and Go; both failed TypeScript. The grader caught existing-suite
+regressions in 3.1's patch and a compilation/loading failure in 3.5's patch. Total
+generation cost was **$0.042344**, with **$0.000081** separate preflight overhead
+and no failed/retried preflights. These are Nasiko ledger costs at Google's
+[verified Standard text rates](evidence/pricing/source.json), not provider invoice
+reconciliation. Exact native-model entries are applied; every final cost has
+`source=Exact`, `estimated=false`, an attributable trace and response-checked
+usage. The older server's missing evaluation endpoints are bridged with read-only,
+owner/agent-scoped Postgres snapshots.
 
-**Grading trust.** Prompts contain parent production source and an issue, with no
-reference fix, hidden tests or revealing Git history. Candidate test/config
-edits are rejected. Trusted tests run against candidate code with no network,
-host credentials, Docker socket or writable checkout, under time/memory/process
-limits. Missing/zero reports, omitted or skipped requirements and infrastructure
-errors never resolve. Candidate compile/import failures count as unresolved.
+The original writable-report attack was reproduced: buggy candidate code replaced
+the report and log, forced exit zero, and incorrectly resolved. Host-side bounded
+stream capture, read-only test execution and pytest phase/exit consistency checks
+now reject that same attack; broken/fixed controls still behave correctly.
+**Grading is not tamper-proof.** Candidate code shares framework execution and may
+manipulate internals or forge stdout. [Security evidence and limits](SECURITY.md)
+state exactly what was verified. Sandboxes have no network, credentials or Docker
+socket during grading, with time/memory/process/output limits.
 
-**Checks and limits.** 36 focused unit tests, five Docker adapter fixtures,
-three real repeatability gates, Ruff lint/format, compilation and editable CLI
-installation passed. Native Rust workspace checks could not run because the host
-has no Cargo; the Cargo adapter passed in Docker. Rust/Jest have fixture coverage,
-not real model-attempt demonstrations. This is one-shot file replacement, with
-limited package-manager support and no Rust inline-test extraction, independent
-task screening, broad compatibility claim or adversarial result-forgery defense.
+[Five synthetic calculator projects](examples/calculators/README.md) each include
+configuration, a buggy add function, tests and deterministic reference-fix history.
+All five pass repeated Docker validation with two regression tests and one existing
+test each. They demonstrate adapter coverage, use no model calls, and remain
+separate from real benchmark scores.
 
-**Artifacts.** [README and exact commands](README.md),
-[measured report](results/report.md), [three-minute demo](DEMO.md).
+Reproducibility evidence retains source Git bundles, pinned image digests,
+dependency inventories, prompts, responses, candidates, raw captures, normalized
+tests and ledger records. `verify` checks sealed hashes, recomputes membership and
+metrics, and re-parses captures. Checksums are unsigned. The small selected public
+sample, possible training overlap, narrow package-manager support and one-shot
+file replacement limit generalization. Host Cargo is unavailable; Cargo adapter
+validation passed inside Docker.
+
+[Run and test commands](README.md) · [Three-minute demo](DEMO.md) ·
+[Final report](final/report.md)

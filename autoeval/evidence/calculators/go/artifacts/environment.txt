@@ -1,0 +1,2 @@
+go version go1.21.13 linux/arm64
+example.invalid/synthetic-calculator

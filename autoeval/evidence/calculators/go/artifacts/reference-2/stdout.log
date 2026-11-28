@@ -1,0 +1,16 @@
+{"Time":"2026-11-28T09:40:34.26077555Z","Action":"start","Package":"example.invalid/synthetic-calculator"}
+{"Time":"2026-11-28T09:40:34.262291258Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestZero"}
+{"Time":"2026-11-28T09:40:34.262333842Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Output":"=== RUN   TestZero\n"}
+{"Time":"2026-11-28T09:40:34.262360217Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Output":"--- PASS: TestZero (0.00s)\n"}
+{"Time":"2026-11-28T09:40:34.262363175Z","Action":"pass","Package":"example.invalid/synthetic-calculator","Test":"TestZero","Elapsed":0}
+{"Time":"2026-11-28T09:40:34.262367508Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestPositive"}
+{"Time":"2026-11-28T09:40:34.262368883Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Output":"=== RUN   TestPositive\n"}
+{"Time":"2026-11-28T09:40:34.262370675Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Output":"--- PASS: TestPositive (0.00s)\n"}
+{"Time":"2026-11-28T09:40:34.262372092Z","Action":"pass","Package":"example.invalid/synthetic-calculator","Test":"TestPositive","Elapsed":0}
+{"Time":"2026-11-28T09:40:34.2623733Z","Action":"run","Package":"example.invalid/synthetic-calculator","Test":"TestNegative"}
+{"Time":"2026-11-28T09:40:34.262374342Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Output":"=== RUN   TestNegative\n"}
+{"Time":"2026-11-28T09:40:34.262375675Z","Action":"output","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Output":"--- PASS: TestNegative (0.00s)\n"}
+{"Time":"2026-11-28T09:40:34.262376717Z","Action":"pass","Package":"example.invalid/synthetic-calculator","Test":"TestNegative","Elapsed":0}
+{"Time":"2026-11-28T09:40:34.2623778Z","Action":"output","Package":"example.invalid/synthetic-calculator","Output":"PASS\n"}
+{"Time":"2026-11-28T09:40:34.262539925Z","Action":"output","Package":"example.invalid/synthetic-calculator","Output":"ok  \texample.invalid/synthetic-calculator\t0.001s\n"}
+{"Time":"2026-11-28T09:40:34.262690217Z","Action":"pass","Package":"example.invalid/synthetic-calculator","Elapsed":0.002}

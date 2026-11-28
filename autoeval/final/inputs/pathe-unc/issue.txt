@@ -1,0 +1,3 @@
+resolve() loses the leading UNC network prefix when resolving Windows network
+paths. Preserve the double leading slash for a UNC input and resolve subsequent
+relative segments correctly. Preserve normal POSIX and drive-letter behavior.

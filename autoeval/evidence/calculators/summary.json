@@ -1,0 +1,106 @@
+{
+  "examples": [
+    {
+      "detected_unit": ".:pytest",
+      "excluded_from_real_benchmark": true,
+      "exit_code": 0,
+      "fail_to_pass": [
+        "tests.test_calculator::test_negative",
+        "tests.test_calculator::test_positive"
+      ],
+      "fix_sha": "0e9d80834148860da7ca04a7584fe2c897d21969",
+      "fixture_sha256": "cad8363ed724990390a29094b10598ef272c8ea709010818e80ca67b6106207a",
+      "kind": "synthetic_calculator_demo",
+      "name": "python",
+      "parent_sha": "687bc6bd88d1b20b923cbd9d0b8aac68080f67f8",
+      "pass_to_pass": [
+        "tests.test_calculator::test_zero"
+      ],
+      "repository": "/Users/arjunreddyr/Desktop/nasiko/autoeval/.cache/calculators/python-cad8363ed724",
+      "run": "python",
+      "verified": true
+    },
+    {
+      "detected_unit": ".:jest",
+      "excluded_from_real_benchmark": true,
+      "exit_code": 0,
+      "fail_to_pass": [
+        "tests/calculator.test.js::negative",
+        "tests/calculator.test.js::positive"
+      ],
+      "fix_sha": "f8c5d1516534163252aa4758ddc3d86ecb3c1ae2",
+      "fixture_sha256": "5d016ab8f64f49e5d541b9a8f7a9bba34a7ba0c6720e6410882e6a2c19ebef1a",
+      "kind": "synthetic_calculator_demo",
+      "name": "javascript",
+      "parent_sha": "fa41707e6b235a83dc1187fae09dead960792f13",
+      "pass_to_pass": [
+        "tests/calculator.test.js::zero"
+      ],
+      "repository": "/Users/arjunreddyr/Desktop/nasiko/autoeval/.cache/calculators/javascript-5d016ab8f64f",
+      "run": "javascript",
+      "verified": true
+    },
+    {
+      "detected_unit": ".:vitest",
+      "excluded_from_real_benchmark": true,
+      "exit_code": 0,
+      "fail_to_pass": [
+        "tests/calculator.test.ts::negative",
+        "tests/calculator.test.ts::positive"
+      ],
+      "fix_sha": "24df7bcb9176e6cb736e01533c2b3768248277a7",
+      "fixture_sha256": "789800335472a5ae5d25beb8bf7065e63031f847180d7ac8e72a662c3a28bccd",
+      "kind": "synthetic_calculator_demo",
+      "name": "typescript",
+      "parent_sha": "f13222ea0bb6b811d88de97fac7a8e7139886dea",
+      "pass_to_pass": [
+        "tests/calculator.test.ts::zero"
+      ],
+      "repository": "/Users/arjunreddyr/Desktop/nasiko/autoeval/.cache/calculators/typescript-789800335472",
+      "run": "typescript",
+      "verified": true
+    },
+    {
+      "detected_unit": ".:go-test",
+      "excluded_from_real_benchmark": true,
+      "exit_code": 0,
+      "fail_to_pass": [
+        "example.invalid/synthetic-calculator::TestNegative",
+        "example.invalid/synthetic-calculator::TestPositive"
+      ],
+      "fix_sha": "5340a20524758b6d1a1ad51d851e1f751dfd6fee",
+      "fixture_sha256": "e744b5f276d0c0cc0fa74bb0771db64dd1139480ebbdeff3f4ee8d00d6911b7e",
+      "kind": "synthetic_calculator_demo",
+      "name": "go",
+      "parent_sha": "c4b1a2dc43632956156a336b07551d8e0fe40b42",
+      "pass_to_pass": [
+        "example.invalid/synthetic-calculator::TestZero"
+      ],
+      "repository": "/Users/arjunreddyr/Desktop/nasiko/autoeval/.cache/calculators/go-e744b5f276d0",
+      "run": "go",
+      "verified": true
+    },
+    {
+      "detected_unit": ".:cargo",
+      "excluded_from_real_benchmark": true,
+      "exit_code": 0,
+      "fail_to_pass": [
+        "calculator::negative",
+        "calculator::positive"
+      ],
+      "fix_sha": "43d754e7dd64f29598ba550eff896d3ead3dd88f",
+      "fixture_sha256": "60ea76a47723eee0dee76f07142f7352a8a09f1f2267aae878f6da7a70840218",
+      "kind": "synthetic_calculator_demo",
+      "name": "rust",
+      "parent_sha": "307399c14c6d26997ef1e37178a155be18e5f075",
+      "pass_to_pass": [
+        "calculator::zero"
+      ],
+      "repository": "/Users/arjunreddyr/Desktop/nasiko/autoeval/.cache/calculators/rust-60ea76a47723",
+      "run": "rust",
+      "verified": true
+    }
+  ],
+  "excluded_from_real_benchmark": true,
+  "kind": "synthetic_calculator_demo"
+}

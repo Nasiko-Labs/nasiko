@@ -1,0 +1,147 @@
+{
+  "attempts": [],
+  "blockers": [],
+  "grading": {
+    "host_owned_capture": true,
+    "scope": "File/log replacement regression verified; in-process framework/stdout manipulation remains a risk",
+    "tamper_proof": false,
+    "version": "host-stream-v2"
+  },
+  "images": {
+    "prepared_image_id": "sha256:bbada8b049489b68a49fdbf04defd525409e851d2ed80afd8f98633339da13b6",
+    "runtime_image_id": "sha256:bea9efe10c6f25fd07a8e0f4adc508702a3873e731bd2a7582d78050fe32d575"
+  },
+  "mode": "one_shot",
+  "preflight": [],
+  "preflight_failures": [],
+  "run_id": "autoeval-20261128-150842-ee2184",
+  "schema_version": 1,
+  "summary": [],
+  "task": {
+    "allowed_paths": [
+      "calculator.js"
+    ],
+    "fix_sha": "f8c5d1516534163252aa4758ddc3d86ecb3c1ae2",
+    "id": "f8c5d1516534",
+    "ignored_documentation": [],
+    "input_kind": "local_fixture",
+    "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+    "issue_source": "operator",
+    "parent_sha": "fa41707e6b235a83dc1187fae09dead960792f13",
+    "plan": {
+      "cpus": 1.0,
+      "dependency_files": [
+        "package.json"
+      ],
+      "discovery_evidence": [
+        "package.json declares jest",
+        "packageManager=npm"
+      ],
+      "framework": "jest",
+      "language": "javascript",
+      "memory_mib": 1024,
+      "pids": 256,
+      "result_format": "jest",
+      "runtime_image": "node:22-bookworm-slim",
+      "runtime_requirements": {
+        "engines": {},
+        "nvmrc": null,
+        "packageManager": null
+      },
+      "schema_version": 1,
+      "setup_commands": [
+        "npm install --ignore-scripts"
+      ],
+      "setup_timeout_seconds": 600,
+      "test_command": "./node_modules/.bin/jest --runInBand --json",
+      "test_path_rules": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "*.test.*",
+        "*.spec.*",
+        "**/__tests__/**",
+        "__tests__/**",
+        "test/**",
+        "tests/**"
+      ],
+      "timeout_seconds": 180,
+      "working_directory": "."
+    },
+    "production_changes": [
+      "calculator.js"
+    ],
+    "repository_url": "local fixture",
+    "test_changes": [
+      "tests/calculator.test.js"
+    ]
+  },
+  "validation": {
+    "before": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/javascript/artifacts/before-1",
+        "duration_seconds": 0.9624524160753936,
+        "exit_code": 1,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "tests/calculator.test.js::negative": "failed",
+          "tests/calculator.test.js::positive": "failed",
+          "tests/calculator.test.js::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/javascript/artifacts/before-2",
+        "duration_seconds": 1.0983823749702424,
+        "exit_code": 1,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "tests/calculator.test.js::negative": "failed",
+          "tests/calculator.test.js::positive": "failed",
+          "tests/calculator.test.js::zero": "passed"
+        }
+      }
+    ],
+    "expected_tests": [
+      "tests/calculator.test.js::negative",
+      "tests/calculator.test.js::positive",
+      "tests/calculator.test.js::zero"
+    ],
+    "fail_to_pass": [
+      "tests/calculator.test.js::negative",
+      "tests/calculator.test.js::positive"
+    ],
+    "pass_to_pass": [
+      "tests/calculator.test.js::zero"
+    ],
+    "reference": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/javascript/artifacts/reference-1",
+        "duration_seconds": 1.0372659170534462,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "tests/calculator.test.js::negative": "passed",
+          "tests/calculator.test.js::positive": "passed",
+          "tests/calculator.test.js::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/javascript/artifacts/reference-2",
+        "duration_seconds": 0.7374981660395861,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "tests/calculator.test.js::negative": "passed",
+          "tests/calculator.test.js::positive": "passed",
+          "tests/calculator.test.js::zero": "passed"
+        }
+      }
+    ],
+    "repetitions": 2,
+    "skipped_tests": [],
+    "status": "verified"
+  }
+}

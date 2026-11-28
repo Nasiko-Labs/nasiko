@@ -126,7 +126,7 @@ if __name__ == "__main__":
     import os
 
     base = Path(
-        os.environ.get("AUTOEVAL_SMOKE_OUTPUT", "autoeval/results/adapter-smoke")
+        os.environ.get("AUTOEVAL_SMOKE_OUTPUT", "autoeval/synthetic-runs/adapter-smoke")
     )
     selected = sys.argv[1:] or list(FIXTURES)
     rows = []

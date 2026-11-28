@@ -1,0 +1,12 @@
+{
+  "kind": "synthetic_calculator_demo",
+  "files": [
+    "pyproject.toml",
+    "calculator.py",
+    "tests/test_calculator.py"
+  ],
+  "test_file": "tests/test_calculator.py",
+  "source_file": "calculator.py",
+  "base_tag": "buggy",
+  "reference_tag": "reference-fix"
+}

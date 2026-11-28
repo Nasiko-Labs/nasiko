@@ -1,0 +1,147 @@
+{
+  "attempts": [],
+  "blockers": [],
+  "grading": {
+    "host_owned_capture": true,
+    "scope": "File/log replacement regression verified; in-process framework/stdout manipulation remains a risk",
+    "tamper_proof": false,
+    "version": "host-stream-v2"
+  },
+  "images": {
+    "prepared_image_id": "sha256:1ffdee6d522fa3a48c08188c023e818c04ae0aca76e15de11c8461e6000476f1",
+    "runtime_image_id": "sha256:bea9efe10c6f25fd07a8e0f4adc508702a3873e731bd2a7582d78050fe32d575"
+  },
+  "mode": "one_shot",
+  "preflight": [],
+  "preflight_failures": [],
+  "run_id": "autoeval-20261128-150922-823dbe",
+  "schema_version": 1,
+  "summary": [],
+  "task": {
+    "allowed_paths": [
+      "calculator.ts"
+    ],
+    "fix_sha": "24df7bcb9176e6cb736e01533c2b3768248277a7",
+    "id": "24df7bcb9176",
+    "ignored_documentation": [],
+    "input_kind": "local_fixture",
+    "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+    "issue_source": "operator",
+    "parent_sha": "f13222ea0bb6b811d88de97fac7a8e7139886dea",
+    "plan": {
+      "cpus": 1.0,
+      "dependency_files": [
+        "package.json"
+      ],
+      "discovery_evidence": [
+        "package.json declares vitest",
+        "packageManager=npm"
+      ],
+      "framework": "vitest",
+      "language": "typescript",
+      "memory_mib": 1024,
+      "pids": 256,
+      "result_format": "jest",
+      "runtime_image": "node:22-bookworm-slim",
+      "runtime_requirements": {
+        "engines": {},
+        "nvmrc": null,
+        "packageManager": null
+      },
+      "schema_version": 1,
+      "setup_commands": [
+        "npm install --ignore-scripts"
+      ],
+      "setup_timeout_seconds": 600,
+      "test_command": "./node_modules/.bin/vitest run --no-cache --maxWorkers=1 --minWorkers=1 --reporter=json",
+      "test_path_rules": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "*.test.*",
+        "*.spec.*",
+        "**/__tests__/**",
+        "__tests__/**",
+        "test/**",
+        "tests/**"
+      ],
+      "timeout_seconds": 180,
+      "working_directory": "."
+    },
+    "production_changes": [
+      "calculator.ts"
+    ],
+    "repository_url": "local fixture",
+    "test_changes": [
+      "tests/calculator.test.ts"
+    ]
+  },
+  "validation": {
+    "before": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/before-1",
+        "duration_seconds": 0.726925625000149,
+        "exit_code": 1,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "tests/calculator.test.ts::negative": "failed",
+          "tests/calculator.test.ts::positive": "failed",
+          "tests/calculator.test.ts::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/before-2",
+        "duration_seconds": 0.7403802089393139,
+        "exit_code": 1,
+        "reason": null,
+        "status": "test_failure",
+        "tests": {
+          "tests/calculator.test.ts::negative": "failed",
+          "tests/calculator.test.ts::positive": "failed",
+          "tests/calculator.test.ts::zero": "passed"
+        }
+      }
+    ],
+    "expected_tests": [
+      "tests/calculator.test.ts::negative",
+      "tests/calculator.test.ts::positive",
+      "tests/calculator.test.ts::zero"
+    ],
+    "fail_to_pass": [
+      "tests/calculator.test.ts::negative",
+      "tests/calculator.test.ts::positive"
+    ],
+    "pass_to_pass": [
+      "tests/calculator.test.ts::zero"
+    ],
+    "reference": [
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/reference-1",
+        "duration_seconds": 0.7298971249256283,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "tests/calculator.test.ts::negative": "passed",
+          "tests/calculator.test.ts::positive": "passed",
+          "tests/calculator.test.ts::zero": "passed"
+        }
+      },
+      {
+        "artifact": "/Users/arjunreddyr/Desktop/nasiko/autoeval/evidence/calculators/typescript/artifacts/reference-2",
+        "duration_seconds": 1.408012584084645,
+        "exit_code": 0,
+        "reason": null,
+        "status": "passed",
+        "tests": {
+          "tests/calculator.test.ts::negative": "passed",
+          "tests/calculator.test.ts::positive": "passed",
+          "tests/calculator.test.ts::zero": "passed"
+        }
+      }
+    ],
+    "repetitions": 2,
+    "skipped_tests": [],
+    "status": "verified"
+  }
+}

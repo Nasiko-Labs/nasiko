@@ -203,12 +203,10 @@ def python_plan(directory, root):
         )
     rules = ["**/test_*.py", "**/*_test.py", "test_*.py", "*_test.py"]
     rules += [safe_path(p).rstrip("/") + "/**" for p in testpaths]
-    command = "/opt/venv/bin/python -m pytest " + " ".join(
+    command = "/opt/venv/bin/python /eval/pytest_driver.py {report_token} " + " ".join(
         shlex.quote(safe_path(p)) for p in testpaths
     )
-    command += (
-        " -o addopts='' -o cache_dir=/tmp/pytest-cache --junitxml=/eval/out/results.xml"
-    )
+    command += " --capture=no -o addopts='' -o cache_dir=/tmp/pytest-cache"
     requirement = data.get("project", {}).get("requires-python", "")
     pinned = _read(directory, ".python-version").strip()
     minimum = re.search(r">=?\s*(3\.\d+)", requirement)
@@ -228,7 +226,7 @@ def python_plan(directory, root):
             f"python:{version}-slim",
             commands,
             command,
-            "junit",
+            "pytest-events",
             rules,
             [
                 "pytest configuration/dependency in manifest",
@@ -266,9 +264,9 @@ def node_plans(directory, root):
             setup = []  # Explicit setup override is required; never silently use another lockfile.
         binary = f"./node_modules/.bin/{framework}"
         command = (
-            f"{binary} --runInBand --json --outputFile=/eval/out/results.json"
+            f"{binary} --runInBand --json"
             if framework == "jest"
-            else f"{binary} run --no-cache --maxWorkers=1 --minWorkers=1 --reporter=json --outputFile=/eval/out/results.json"
+            else f"{binary} run --no-cache --maxWorkers=1 --minWorkers=1 --reporter=json"
         )
         language = (
             "typescript"

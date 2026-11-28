@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="2" time="0.016" timestamp="2026-11-28T09:03:56.089361+00:00" hostname="93198c428ea0"><testcase classname="tests.test_module" name="test_existing" time="0.000" /><testcase classname="tests.test_module" name="test_regression" time="0.000"><failure message="assert 0 == 1&#10; +  where 0 = answer()">def test_regression():
+&gt;       assert answer() == 1
+E       assert 0 == 1
+E        +  where 0 = answer()
+
+tests/test_module.py:5: AssertionError</failure></testcase></testsuite></testsuites>

@@ -1,0 +1,48 @@
+   Compiling synthetic-calculator v0.1.0 (/work)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.42s
+     Running unittests src/lib.rs (/tmp/target/debug/build/synthetic-calculator/e89dbb78d330a32d/out/synthetic_calculator-e89dbb78d330a32d)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/calculator.rs (/tmp/target/debug/build/synthetic-calculator/927c83bf0034fe07/out/calculator-927c83bf0034fe07)
+
+running 3 tests
+test negative ... FAILED
+test positive ... FAILED
+test zero ... ok
+
+failures:
+
+---- negative stdout ----
+
+thread 'negative' (45) panicked at tests/calculator.rs:8:17:
+assertion `left == right` failed
+  left: 1
+ right: -5
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- positive stdout ----
+
+thread 'positive' (46) panicked at tests/calculator.rs:6:17:
+assertion `left == right` failed
+  left: -1
+ right: 5
+
+
+failures:
+    negative
+    positive
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test calculator`
+   Doc-tests synthetic_calculator
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: 1 target failed:
+    `--test calculator`

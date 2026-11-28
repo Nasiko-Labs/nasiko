@@ -12,8 +12,10 @@ class SuiteLoadError(EvalError):
     """Code could not compile/import/initialize the selected suite."""
 
 
-def parse_results(kind, report, output):
+def parse_results(kind, report, output, *, protocol_token=None, exit_code=None):
     try:
+        if kind == "pytest-events":
+            return _pytest_events(output, protocol_token, exit_code)
         if kind == "junit":
             return _junit(report)
         if kind == "jest":
@@ -25,6 +27,71 @@ def parse_results(kind, report, output):
     except (ValueError, KeyError, TypeError, ET.ParseError) as error:
         raise EvalError(f"Invalid {kind} result report: {error}") from None
     raise EvalError(f"Unsupported result format: {kind}")
+
+
+def _pytest_events(output, token, exit_code):
+    if not token or exit_code is None:
+        raise EvalError("Pytest stream requires host token and observed exit status")
+    prefix = "\x1eNASIKO_PYTEST_V1 "
+    events = []
+    for line in output.split("\n"):
+        if line.startswith(prefix):
+            raw_token, payload = line[len(prefix) :].split(" ", 1)
+            if raw_token != token:
+                raise EvalError("Unexpected pytest stream token")
+            events.append(json.loads(payload))
+    if (
+        len(events) < 2
+        or events[0] != {"event": "start"}
+        or events[-1].get("event") != "finish"
+    ):
+        raise EvalError("Missing pytest start/finish record")
+    if events[-1].get("exit_code") != exit_code:
+        raise EvalError("Pytest finish status disagrees with container exit status")
+    phases = {}
+    collection_failed = False
+    for event in events[1:-1]:
+        if event.get("event") == "collection_error":
+            collection_failed = True
+            continue
+        if event.get("event") != "test":
+            raise EvalError("Unexpected/duplicate pytest control record")
+        identity, phase, outcome = event["id"], event["phase"], event["outcome"]
+        if (
+            not isinstance(identity, str)
+            or phase not in {"setup", "call", "teardown"}
+            or outcome not in {"passed", "failed", "skipped"}
+        ):
+            raise EvalError("Invalid pytest phase record")
+        seen = phases.setdefault(identity, {})
+        if (
+            phase in seen
+            or phase == "call"
+            and "setup" not in seen
+            or phase == "teardown"
+            and "setup" not in seen
+        ):
+            raise EvalError("Duplicate/out-of-order pytest phase record")
+        seen[phase] = outcome
+    if collection_failed:
+        raise SuiteLoadError("Pytest collection failed")
+    tests = {}
+    for nodeid, seen in phases.items():
+        if "setup" not in seen or "teardown" not in seen:
+            raise EvalError("Incomplete pytest test phases")
+        if seen["setup"] == "failed" or seen["teardown"] == "failed":
+            raise SuiteLoadError(f"Test setup/teardown failed: {nodeid}")
+        if seen["setup"] != "skipped" and "call" not in seen:
+            raise EvalError("Missing pytest call phase")
+        path, *names = nodeid.split("::")
+        if not names:
+            raise EvalError("Pytest event has no test identity")
+        classname = path.removesuffix(".py").replace("/", ".")
+        if len(names) > 1:
+            classname += "." + ".".join(names[:-1])
+        status = seen.get("call", "skipped")
+        _insert(tests, classname + "::" + names[-1], status)
+    return tests
 
 
 def _insert(tests, identity, status):
@@ -160,9 +227,17 @@ def _cargo(output):
     return tests
 
 
-def normalize(plan, exit_code, duration, report, output, artifact):
+def normalize(
+    plan, exit_code, duration, report, output, artifact, *, protocol_token=None
+):
     try:
-        tests = parse_results(plan.result_format, report, output)
+        tests = parse_results(
+            plan.result_format,
+            report,
+            output,
+            protocol_token=protocol_token,
+            exit_code=exit_code,
+        )
         if not tests:
             raise EvalError("Zero collected tests")
         failures = any(s == "failed" for s in tests.values())

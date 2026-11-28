@@ -1,0 +1,56 @@
+{
+  "allowed_paths": [
+    "calculator.py"
+  ],
+  "fix_sha": "0e9d80834148860da7ca04a7584fe2c897d21969",
+  "id": "0e9d80834148",
+  "ignored_documentation": [],
+  "input_kind": "local_fixture",
+  "issue": "SYNTHETIC DEMO: Calculator.add must return the sum of its two integer operands. Fix positive and negative addition while preserving addition of zero.\n",
+  "issue_source": "operator",
+  "parent_sha": "687bc6bd88d1b20b923cbd9d0b8aac68080f67f8",
+  "plan": {
+    "cpus": 1.0,
+    "dependency_files": [
+      "pyproject.toml"
+    ],
+    "discovery_evidence": [
+      "pytest configuration/dependency in manifest",
+      "testpaths=['tests']"
+    ],
+    "framework": "pytest",
+    "language": "python",
+    "memory_mib": 1024,
+    "pids": 256,
+    "result_format": "pytest-events",
+    "runtime_image": "python:3.12-slim",
+    "runtime_requirements": {
+      "python-version-file": null,
+      "requires-python": null
+    },
+    "schema_version": 1,
+    "setup_commands": [
+      "python -m venv /opt/venv",
+      "/opt/venv/bin/pip install 'pytest==8.4.2'",
+      "SETUPTOOLS_SCM_PRETEND_VERSION=0.0.0 /opt/venv/bin/pip install -e ."
+    ],
+    "setup_timeout_seconds": 600,
+    "test_command": "/opt/venv/bin/python /eval/pytest_driver.py {report_token} tests --capture=no -o addopts='' -o cache_dir=/tmp/pytest-cache",
+    "test_path_rules": [
+      "**/test_*.py",
+      "**/*_test.py",
+      "test_*.py",
+      "*_test.py",
+      "tests/**"
+    ],
+    "timeout_seconds": 180,
+    "working_directory": "."
+  },
+  "production_changes": [
+    "calculator.py"
+  ],
+  "repository_url": "local fixture",
+  "test_changes": [
+    "tests/test_calculator.py"
+  ]
+}
