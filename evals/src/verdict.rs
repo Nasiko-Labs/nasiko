@@ -356,10 +356,12 @@ pub fn sentence(v: &Verdict) -> String {
         }
     };
     if let Some(saving) = v.saving() {
-        s.push_str(&format!(
-            " Switching saves {:.0}% of the cost.",
-            saving * 100.0
-        ));
+        let pct = (saving * 100.0).round();
+        s.push_str(&if pct >= 0.0 {
+            format!(" Switching saves {pct:.0}% of the cost.")
+        } else {
+            format!(" Switching costs {:.0}% more.", -pct)
+        });
     }
     let mut notes = Vec::new();
     if v.excluded_infra > 0 {
@@ -538,5 +540,18 @@ mod tests {
         assert_eq!(v.decision, Decision::NotEnoughData);
         assert_eq!(v.unpaired, 3);
         assert!(sentence(&v).contains("no task in common"));
+    }
+
+    #[test]
+    fn a_dearer_candidate_is_said_to_cost_more() {
+        // "big" costs 1.0 a task and "small" 0.25: switching from small to big costs 300% more.
+        let v = verdict(&run(3, 3, 3), "small", "big", DEFAULT_MARGIN);
+        assert!(
+            sentence(&v).contains("Switching costs 300% more."),
+            "{}",
+            sentence(&v)
+        );
+        let v = verdict(&run(3, 3, 3), "big", "small", DEFAULT_MARGIN);
+        assert!(sentence(&v).contains("Switching saves 75% of the cost."));
     }
 }
