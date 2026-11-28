@@ -3,21 +3,13 @@
  * components). See `EvalUniversePage.tsx` for where these are used, and the tests alongside this
  * file for what each one guarantees.
  *
- * Layout: one shared recall (X) / precision (Y) plane, drawn once, not per task — every attempt
- * from every task plots on that same 0..1 scale, so models are directly comparable at a glance.
- * Tasks are told apart by depth (Z) lanes and color is freed up to mean model identity instead. */
+ * Layout: one flat shared recall (X) / precision (Y) plane — every attempt from every task plots
+ * on that same 0..1 scale, no Z depth. An earlier version separated tasks into Z lanes, but with
+ * usually only 1-2 tasks that third dimension added nothing readable; which task an attempt
+ * belongs to is carried by its hover tooltip and the sidebar's task filter instead. */
 import type { UniverseAttempt } from './types'
 
 export const AXIS_SPAN = 3.4
-const LANE_GAP = 3.6
-
-/** Where a task's whole lane sits along Z — tasks line up front-to-back sharing the one X/Y axis
- * pair, instead of each getting its own pedestal. */
-export function taskLaneZ(index: number, total: number): number {
-  if (total <= 1) return 0
-  const span = (total - 1) * LANE_GAP
-  return index * LANE_GAP - span / 2
-}
 
 const UNGRADED_XY: [number, number] = [-0.5, -0.5]
 
@@ -66,6 +58,18 @@ const FALLBACK = '#64748b'
 export function pointColor(a: UniverseAttempt, palette: Map<string, string>): string {
   if (a.status !== 'done' || a.metrics == null) return GRAY
   return palette.get(a.model ?? a.model_name) ?? FALLBACK
+}
+
+/**
+ * A small ring offset for points that land on the exact same recall/precision score (common at
+ * the (0, 0) and (1, 1) corners) or the same ungraded/failed spot — without this, several attempts
+ * can sit fully on top of each other on the flat shared plane and look like a single point.
+ */
+export function overlapOffset(index: number, total: number): [number, number] {
+  if (total <= 1) return [0, 0]
+  const radius = 0.16
+  const angle = (2 * Math.PI * index) / total
+  return [radius * Math.cos(angle), radius * Math.sin(angle)]
 }
 
 const MIN_RADIUS = 0.14

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { AXIS_SPAN, buildModelPalette, pointColor, pointRadius, pointXY, taskLaneZ } from './scene'
+import { AXIS_SPAN, buildModelPalette, overlapOffset, pointColor, pointRadius, pointXY } from './scene'
 import type { UniverseAttempt } from './types'
 
 const attempt = (overrides: Partial<UniverseAttempt> = {}): UniverseAttempt => ({
@@ -21,16 +21,18 @@ const attempt = (overrides: Partial<UniverseAttempt> = {}): UniverseAttempt => (
   ...overrides,
 })
 
-describe('taskLaneZ', () => {
-  it('places a single task at the shared origin', () => {
-    expect(taskLaneZ(0, 1)).toBe(0)
+describe('overlapOffset', () => {
+  it('leaves a lone point exactly on its score, no offset', () => {
+    expect(overlapOffset(0, 1)).toEqual([0, 0])
   })
 
-  it('spreads several tasks into distinct lanes, none colliding', () => {
-    const a = taskLaneZ(0, 3)
-    const b = taskLaneZ(1, 3)
-    const c = taskLaneZ(2, 3)
-    expect(new Set([a, b, c]).size).toBe(3)
+  it('spreads several same-score points apart, none colliding', () => {
+    const a = overlapOffset(0, 3)
+    const b = overlapOffset(1, 3)
+    const c = overlapOffset(2, 3)
+    expect(a).not.toEqual(b)
+    expect(b).not.toEqual(c)
+    expect(a).not.toEqual(c)
   })
 })
 

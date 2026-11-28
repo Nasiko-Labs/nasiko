@@ -1,12 +1,14 @@
 /**
  * `/evals/universe` (`oss/docs/proposals/evals/CODE_REVIEW_EVALS.md`'s "Eval Universe" section):
  * every code review task and model attempt the caller has run, as a navigable 3D scene — one
- * shared recall (X) / precision (Y) plane, every attempt from every task plotted on that same
- * scale, tasks told apart by depth (Z) lanes, points colored by model identity. Reached from Code
- * review evals' own header link, not its own sidebar entry (`nav.ts`'s `/evals` item already
+ * flat, shared recall (X) / precision (Y) plane every attempt from every task plots on, points
+ * colored by model identity. An earlier version used Z depth to separate tasks into lanes, but
+ * with the usual 1-2 tasks that third dimension read as noise, not signal; which task a point
+ * belongs to is carried by its hover tooltip and the sidebar's task filter instead. Reached from
+ * Code review evals' own header link, not its own sidebar entry (`nav.ts`'s `/evals` item already
  * carries `also: ['/evals/code-review', '/evals/universe']`).
  *
- * Deliberately simple: a fixed lane layout (no force-directed physics), a flat capped list (no
+ * Deliberately simple: a fixed layout (no force-directed physics), a flat capped list (no
  * pagination), the caller's own data only. See the proposal doc for the full list of what this
  * does not do.
  */
@@ -21,7 +23,7 @@ import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Label } from '@nasiko/ui/primitives/label'
 import { useUniverse } from './api'
 import { copy } from './copy'
-import { AXIS_SPAN, buildModelPalette, pointColor, pointRadius, pointXY, taskLaneZ } from './scene'
+import { AXIS_SPAN, buildModelPalette, overlapOffset, pointColor, pointRadius, pointXY } from './scene'
 import type { TaskSummary, UniverseAttempt, UniverseView } from './types'
 
 const AXIS_TICKS = [0, 0.25, 0.5, 0.75, 1] as const
@@ -158,13 +160,12 @@ function AttemptPoint({
  * (the hover tooltip still uses `Html`, but only ever mounts once hovered, after that dance has
  * settled — see `AttemptTooltip` above).
  */
-function PrecisionRecallAxes({ depth }: { depth: number }) {
-  const originZ = -depth / 2 - 0.4
+function PrecisionRecallAxes() {
   return (
-    <group position={[0, 0, originZ]}>
+    <group position={[0, 0, 0]}>
       {/* Floor pedestal under the whole plotting plane. */}
-      <mesh position={[AXIS_SPAN / 2, -0.015, depth / 2 + 0.4]} rotation={[-Math.PI / 2, 0, 0]}>
-        <planeGeometry args={[AXIS_SPAN + 1.6, depth + 2]} />
+      <mesh position={[AXIS_SPAN / 2, -0.015, AXIS_SPAN / 2]} rotation={[-Math.PI / 2, 0, 0]}>
+        <planeGeometry args={[AXIS_SPAN + 1.6, AXIS_SPAN + 1.6]} />
         <meshStandardMaterial color="#0f172a" transparent opacity={0.6} />
       </mesh>
       {/* Y axis: precision. */}
@@ -242,88 +243,62 @@ function PrecisionRecallAxes({ depth }: { depth: number }) {
   )
 }
 
-/** One task's lane: its title floating above its own Z depth, and its attempts plotted on the
- * shared recall/precision plane (`PrecisionRecallAxes`, drawn once for the whole scene). */
-function TaskLane({
-  task,
-  z,
-  attempts,
-  hoveredId,
-  onHover,
-  palette,
-}: {
-  task: TaskSummary
-  z: number
-  attempts: UniverseAttempt[]
-  hoveredId: string | null
-  onHover: (id: string | null) => void
-  palette: Map<string, string>
-}) {
-  return (
-    <group position={[0, 0, z]}>
-      <Text
-        position={[-0.5, AXIS_SPAN + 0.75, 0]}
-        fontSize={0.22}
-        color="#f8fafc"
-        outlineWidth={0.013}
-        outlineColor="#05070d"
-        anchorX="left"
-        anchorY="bottom"
-      >
-        {`${task.owner}/${task.repo} #${task.pr_number}`}
-      </Text>
-      {attempts.map((a) => {
-        const [x, y] = pointXY(a)
-        return (
-          <AttemptPoint
-            key={a.attempt_id}
-            attempt={a}
-            task={task}
-            position={[x, y, 0]}
-            hovered={hoveredId === a.attempt_id}
-            onHover={onHover}
-            palette={palette}
-          />
-        )
-      })}
-    </group>
-  )
+/** Groups attempts sharing the same rounded (recall, precision) score, so `overlapOffset` only
+ * ever has to fan out points that would otherwise sit exactly on top of each other. */
+function groupByScore(attempts: UniverseAttempt[]): UniverseAttempt[][] {
+  const groups = new Map<string, UniverseAttempt[]>()
+  for (const a of attempts) {
+    const [x, y] = pointXY(a)
+    const key = `${x.toFixed(2)}:${y.toFixed(2)}`
+    const g = groups.get(key)
+    if (g) g.push(a)
+    else groups.set(key, [a])
+  }
+  return Array.from(groups.values())
 }
 
-function Scene({ tasks, attempts }: { tasks: TaskSummary[]; attempts: UniverseAttempt[] }) {
+function Scene({
+  tasksById,
+  attempts,
+}: {
+  tasksById: Map<string, TaskSummary>
+  attempts: UniverseAttempt[]
+}) {
   const [hoveredId, setHoveredId] = useState<string | null>(null)
-  const byTask = useMemo(() => {
-    const m = new Map<string, UniverseAttempt[]>()
-    for (const a of attempts) m.set(a.task_id, [...(m.get(a.task_id) ?? []), a])
-    return m
-  }, [attempts])
-  const lanes = useMemo(() => tasks.map((task, i) => taskLaneZ(i, tasks.length)), [tasks])
-  const depth = lanes.length > 1 ? Math.max(...lanes) - Math.min(...lanes) : 0
   const palette = useMemo(
     () => buildModelPalette(attempts.map((a) => a.model ?? a.model_name)),
     [attempts],
   )
+  const groups = useMemo(() => groupByScore(attempts), [attempts])
 
   return (
-    <Canvas camera={{ position: [1.5, 3, depth + 8], fov: 50 }}>
+    <Canvas camera={{ position: [1.5, 3, 7], fov: 50 }}>
       <color attach="background" args={['#05070d']} />
       <ambientLight intensity={0.6} />
       <pointLight position={[10, 10, 10]} intensity={1.2} />
       <gridHelper args={[60, 60, '#1e293b', '#141c2c']} />
       <Stars radius={60} depth={30} count={1500} factor={2} fade />
       <OrbitControls enableDamping dampingFactor={0.08} target={[AXIS_SPAN / 2, AXIS_SPAN / 3, 0]} />
-      <PrecisionRecallAxes depth={depth} />
-      {tasks.map((task, i) => (
-        <TaskLane
-          key={task.id}
-          task={task}
-          z={lanes[i]}
-          attempts={byTask.get(task.id) ?? []}
-          hoveredId={hoveredId}
-          onHover={setHoveredId}
-          palette={palette}
-        />
-      ))}
+      <PrecisionRecallAxes />
+      {groups.map((group) =>
+        group.map((a, i) => {
+          const [x, y] = pointXY(a)
+          const [dx, dy] = overlapOffset(i, group.length)
+          const task = tasksById.get(a.task_id)
+          if (!task) return null
+          return (
+            <AttemptPoint
+              key={a.attempt_id}
+              attempt={a}
+              task={task}
+              position={[x + dx, y + dy, 0]}
+              hovered={hoveredId === a.attempt_id}
+              onHover={setHoveredId}
+              palette={palette}
+            />
+          )
+        }),
+      )}
     </Canvas>
   )
 }
@@ -359,6 +334,7 @@ function ModelLegend({ attempts }: { attempts: UniverseAttempt[] }) {
 function UniverseExplorer({ data }: { data: UniverseView }) {
   const [providerOff, setProviderOff] = useState<Set<string>>(new Set())
   const [modelOff, setModelOff] = useState<Set<string>>(new Set())
+  const [taskOff, setTaskOff] = useState<Set<string>>(new Set())
   const [gradedOnly, setGradedOnly] = useState(false)
 
   const providers = useMemo(
@@ -369,21 +345,19 @@ function UniverseExplorer({ data }: { data: UniverseView }) {
     () => Array.from(new Set(data.attempts.map((a) => a.model ?? a.model_name))).sort(),
     [data.attempts],
   )
+  const tasksById = useMemo(() => new Map(data.tasks.map((t) => [t.id, t])), [data.tasks])
 
   const filtered = useMemo(
     () =>
       data.attempts.filter((a) => {
         if (providerOff.has(a.provider)) return false
         if (modelOff.has(a.model ?? a.model_name)) return false
+        if (taskOff.has(a.task_id)) return false
         if (gradedOnly && a.metrics == null) return false
         return true
       }),
-    [data.attempts, providerOff, modelOff, gradedOnly],
+    [data.attempts, providerOff, modelOff, taskOff, gradedOnly],
   )
-  const tasksShown = useMemo(() => {
-    const ids = new Set(filtered.map((a) => a.task_id))
-    return data.tasks.filter((t) => ids.has(t.id))
-  }, [data.tasks, filtered])
 
   const toggle = (set: Set<string>, setSet: (s: Set<string>) => void, key: string, on: boolean) => {
     const next = new Set(set)
@@ -397,7 +371,7 @@ function UniverseExplorer({ data }: { data: UniverseView }) {
       <Card>
         <CardContent className="flex flex-col gap-2 p-3">
           <div className="h-[36rem] overflow-hidden rounded-lg">
-            <Scene tasks={tasksShown} attempts={filtered} />
+            <Scene tasksById={tasksById} attempts={filtered} />
           </div>
         </CardContent>
       </Card>
@@ -426,6 +400,18 @@ function UniverseExplorer({ data }: { data: UniverseView }) {
             <CardTitle className="text-sm">{copy.filters.title}</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1">
+              <Label className="text-xs text-muted-foreground">{copy.filters.task}</Label>
+              {data.tasks.map((t) => (
+                <label key={t.id} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    checked={!taskOff.has(t.id)}
+                    onCheckedChange={(on) => toggle(taskOff, setTaskOff, t.id, !!on)}
+                  />
+                  {t.owner}/{t.repo} #{t.pr_number}
+                </label>
+              ))}
+            </div>
             <div className="flex flex-col gap-1">
               <Label className="text-xs text-muted-foreground">{copy.filters.provider}</Label>
               {providers.map((p) => (
