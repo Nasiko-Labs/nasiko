@@ -231,6 +231,13 @@ async fn ensure_spec(state: &AppState, user: uuid::Uuid, forge: &Forge) -> Resul
         }
     } else if root.iter().any(|f| f == "package.json") {
         toolchain = forge.file_at(head, "package.json").await?;
+    } else {
+        for name in ["pyproject.toml", "requirements.txt", "pytest.ini"] {
+            if root.iter().any(|f| f == name) {
+                toolchain = forge.file_at(head, name).await?;
+                break;
+            }
+        }
     }
     if let Some(spec) = nasiko_evals::spec::propose(&forge.repo, &root, toolchain.as_deref()) {
         store::save_spec(&state.db, user, &forge.repo, &spec).await?;

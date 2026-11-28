@@ -286,4 +286,58 @@ mod tests {
             }
         );
     }
+
+    const PYTEST_FAILING: &str = "\
+tests/test_pricing.py::test_base PASSED                                 [ 50%]
+tests/test_pricing.py::test_discount FAILED                             [100%]
+";
+
+    const PYTEST_PASSING: &str = "\
+tests/test_pricing.py::test_base PASSED                                 [ 50%]
+tests/test_pricing.py::test_discount PASSED                             [100%]
+";
+
+    fn pytest_outcome(log: &str) -> RunOutcome {
+        RunOutcome {
+            built: true,
+            results: crate::testlog::parse(crate::testlog::LogParserKind::Pytest, log),
+        }
+    }
+
+    #[test]
+    fn pytest_fail_to_pass_is_reproducible() {
+        let runs = GateRuns {
+            pristine: run(true, &[]),
+            before: vec![pytest_outcome(PYTEST_FAILING); 3],
+            after: vec![pytest_outcome(PYTEST_PASSING); 3],
+        };
+        let GateVerdict::Reproducible(lists) = judge(&runs) else {
+            panic!("expected reproducible verdict");
+        };
+        assert_eq!(
+            lists.fail_to_pass,
+            vec!["tests/test_pricing.py::test_discount"]
+        );
+        assert_eq!(lists.pass_to_pass, vec!["tests/test_pricing.py::test_base"]);
+        assert!(lists.flaky.is_empty());
+    }
+
+    #[test]
+    fn pytest_flaky_fail_to_pass_rejects_all_flaky() {
+        let runs = GateRuns {
+            pristine: run(true, &[]),
+            before: vec![pytest_outcome(PYTEST_FAILING); 3],
+            after: vec![
+                pytest_outcome(PYTEST_PASSING),
+                pytest_outcome(PYTEST_FAILING),
+                pytest_outcome(PYTEST_PASSING),
+            ],
+        };
+        assert_eq!(
+            judge(&runs),
+            GateVerdict::Rejected {
+                reason: GateRejection::AllFlaky,
+            }
+        );
+    }
 }

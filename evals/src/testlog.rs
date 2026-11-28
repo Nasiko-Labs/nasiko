@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub enum LogParserKind {
     Cargo,
     Vitest,
+    Pytest,
 }
 
 impl LogParserKind {
@@ -19,6 +20,7 @@ impl LogParserKind {
         match self {
             LogParserKind::Cargo => "parse_log_cargo",
             LogParserKind::Vitest => "parse_log_vitest",
+            LogParserKind::Pytest => "parse_log_pytest",
         }
     }
 }
@@ -39,6 +41,7 @@ pub fn parse(kind: LogParserKind, output: &str) -> TestResults {
     match kind {
         LogParserKind::Cargo => parse_cargo(output),
         LogParserKind::Vitest => parse_vitest(output),
+        LogParserKind::Pytest => parse_pytest(output),
     }
 }
 
@@ -87,6 +90,45 @@ fn parse_vitest(output: &str) -> TestResults {
         if !name.is_empty() {
             results.insert(name.to_string(), status);
         }
+    }
+    results
+}
+
+/// Reads `pytest -v` output: strips ANSI escapes, drops trailing `[ 50%]` progress percentages,
+/// and matches `<node_id> PASSED|FAILED|SKIPPED|XFAIL|ERROR` lines where `<node_id>` contains `::`.
+fn parse_pytest(output: &str) -> TestResults {
+    let mut results = TestResults::new();
+    for line in output.lines() {
+        let clean = strip_ansi(line);
+        let trimmed = clean.trim();
+        let without_progress = match trimmed.strip_suffix(']') {
+            Some(before_bracket) => match before_bracket.rsplit_once('[') {
+                Some((before, pct)) if pct.trim().ends_with('%') => before.trim_end(),
+                _ => trimmed,
+            },
+            None => trimmed,
+        };
+        let without_reason = if let Some((before, reason)) = without_progress.rsplit_once(" (")
+            && reason.ends_with(')')
+        {
+            before.trim_end()
+        } else {
+            without_progress
+        };
+        let Some((node_id, verdict)) = without_reason.rsplit_once(char::is_whitespace) else {
+            continue;
+        };
+        let node_id = node_id.trim();
+        if node_id.is_empty() || !node_id.contains("::") {
+            continue;
+        }
+        let status = match verdict {
+            "PASSED" => TestStatus::Passed,
+            "FAILED" | "ERROR" => TestStatus::Failed,
+            "SKIPPED" | "XFAIL" => TestStatus::Ignored,
+            _ => continue,
+        };
+        results.insert(node_id.to_string(), status);
     }
     results
 }
@@ -269,5 +311,65 @@ test src/lib.rs - compress (line 10) ... ok
             Some(&TestStatus::Ignored)
         );
         assert_eq!(r.len(), 2);
+    }
+
+    const PYTEST_VERBOSE_OUT: &str = "\
+\x1b[1m============================= test session starts ==============================\x1b[0m
+platform linux -- Python 3.12.0, pytest-8.3.2, pluggy-1.5.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /testbed
+collecting ... collected 6 items
+
+tests/test_math.py::TestCalc::test_add \x1b[32mPASSED\x1b[0m                            \x1b[36m[ 16%]\x1b[0m
+tests/test_math.py::TestCalc::test_sub \x1b[31mFAILED\x1b[0m                            \x1b[36m[ 33%]\x1b[0m
+tests/test_math.py::test_setup_err \x1b[31mERROR\x1b[0m                                 \x1b[36m[ 50%]\x1b[0m
+tests/test_math.py::test_skip \x1b[33mSKIPPED\x1b[0m (not on linux)                   \x1b[36m[ 66%]\x1b[0m
+tests/test_math.py::test_skip_clean \x1b[33mSKIPPED\x1b[0m                              \x1b[36m[ 83%]\x1b[0m
+tests/test_math.py::test_expected_fail \x1b[33mXFAIL\x1b[0m                             \x1b[36m[100%]\x1b[0m
+
+=================================== FAILURES ===================================
+______________________________ TestCalc.test_sub _______________________________
+
+    def test_sub(self):
+>       assert 5 - 3 == 1
+E       assert 2 == 1
+
+tests/test_math.py:12: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_math.py::TestCalc::test_sub - assert 2 == 1
+ERROR tests/test_math.py::test_setup_err - RuntimeError: boom
+\x1b[31m============== 1 failed, 1 passed, 1 skipped, 1 xfailed, 1 error in 0.05s ==============\x1b[0m
+";
+
+    #[test]
+    fn parses_pytest_verbose_output() {
+        assert_eq!(LogParserKind::Pytest.swebench_name(), "parse_log_pytest");
+        let r = parse(LogParserKind::Pytest, PYTEST_VERBOSE_OUT);
+        assert_eq!(
+            r.get("tests/test_math.py::TestCalc::test_add"),
+            Some(&TestStatus::Passed)
+        );
+        assert_eq!(
+            r.get("tests/test_math.py::TestCalc::test_sub"),
+            Some(&TestStatus::Failed)
+        );
+        assert_eq!(
+            r.get("tests/test_math.py::test_setup_err"),
+            Some(&TestStatus::Failed)
+        );
+        assert_eq!(
+            r.get("tests/test_math.py::test_skip"),
+            Some(&TestStatus::Ignored)
+        );
+        assert_eq!(
+            r.get("tests/test_math.py::test_skip_clean"),
+            Some(&TestStatus::Ignored)
+        );
+        assert_eq!(
+            r.get("tests/test_math.py::test_expected_fail"),
+            Some(&TestStatus::Ignored)
+        );
+        assert_eq!(r.len(), 6);
+        assert!(r.keys().all(|k| !k.contains('\x1b')));
     }
 }

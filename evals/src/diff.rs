@@ -147,6 +147,15 @@ impl TestPathRules {
         ])
     }
 
+    /// Default test-path rules for a Python (pytest) workspace.
+    pub fn python_default() -> Self {
+        Self::from_globs(&[
+            "**/test_*.py".to_string(),
+            "**/*_test.py".to_string(),
+            "**/tests/**".to_string(),
+        ])
+    }
+
     pub fn is_test(&self, path: &str) -> bool {
         self.patterns.iter().any(|p| p.is_match(path))
     }
@@ -329,5 +338,47 @@ index 0000000..57bb9cc
         }
         assert!(!rules.is_test("src/utils/festivalTimer.ts"));
         assert!(!rules.is_test("src/utils/testing.ts"));
+    }
+
+    const PYTHON_DIFF: &str = "\
+diff --git a/src/pricing.py b/src/pricing.py
+index 1111111..2222222 100644
+--- a/src/pricing.py
++++ b/src/pricing.py
+@@ -1,2 +1,2 @@
+ def total(x):
+-    return x
++    return x + 1
+diff --git a/tests/test_pricing.py b/tests/test_pricing.py
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/tests/test_pricing.py
+@@ -0,0 +1,2 @@
++def test_total():
++    assert True
+diff --git a/src/utils_test.py b/src/utils_test.py
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/src/utils_test.py
+@@ -0,0 +1,2 @@
++def test_helper():
++    assert True
+";
+
+    #[test]
+    fn splits_python_pytest_diff() {
+        let files = parse_unified(PYTHON_DIFF).expect("valid diff");
+        let split = split_tests(files, &TestPathRules::python_default());
+        assert_eq!(split.gold.len(), 1);
+        assert_eq!(split.gold[0].path(), "src/pricing.py");
+        assert_eq!(split.test.len(), 2);
+        let test_paths: Vec<&str> = split.test.iter().map(|f| f.path()).collect();
+        assert_eq!(
+            test_paths,
+            vec!["tests/test_pricing.py", "src/utils_test.py"]
+        );
+        assert!(split.mixed.is_empty());
     }
 }
