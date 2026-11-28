@@ -56,6 +56,7 @@ import {
   useRunEvals,
 } from './api'
 import { copy } from './copy'
+import { DesktopReport } from './DesktopReport'
 import {
   building,
   canApprove,
@@ -278,6 +279,7 @@ export function EvalsPage({
   search: EvalsSearch
   setSearch: (patch: Partial<EvalsSearch>) => void
 }) {
+  const [desktopOpen, setDesktopOpen] = useState(false)
   const sessions = useEvalSessions(HARNESS)
   const setup = useEvalSetup()
   const benchmarks = useEvalBenchmarks(sessions.isSuccess && !sessions.data.length)
@@ -309,8 +311,21 @@ export function EvalsPage({
   const frame = (children: ReactNode) => (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
       <TopBar />
-      <PageHeader title={copy.title} description={copy.description} />
-      {children}
+      <PageHeader
+        title={copy.title}
+        description={copy.description}
+        actions={
+          <Button
+            variant="outline"
+            size="sm"
+            aria-expanded={desktopOpen}
+            onClick={() => setDesktopOpen(!desktopOpen)}
+          >
+            {desktopOpen ? 'Back to replay evals' : 'Open desktop report'}
+          </Button>
+        }
+      />
+      {desktopOpen ? <DesktopReport /> : children}
     </div>
   )
   if (sessions.isPending) return frame(<PageLoader label={copy.loading} />)
