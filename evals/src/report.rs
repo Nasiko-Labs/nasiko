@@ -55,11 +55,6 @@ pub struct ModelSummary {
     pub unpriced_attempts: u32,
 }
 
-/// Bootstrap rounds for the 95% ranges.
-pub const BOOTSTRAP_ROUNDS: u32 = 1000;
-/// Fixed seed, so the same records always give the same report.
-pub const BOOTSTRAP_SEED: u64 = 0x5eed_2026;
-
 /// One summary per model, the control first.
 pub fn summarise(records: &[AttemptRecord], control: &str) -> Vec<ModelSummary> {
     let mut models: Vec<String> = records.iter().map(|r| r.model.clone()).collect();
@@ -156,9 +151,11 @@ fn failure_name(f: FailureClass) -> &'static str {
     }
 }
 
-/// The share of `true`s, with a bootstrap 95% range.
+/// The share of `true`s, with a Wilson score 95% range. A percentile bootstrap collapses to a
+/// point when every attempt agrees (5/5 gives 100%–100%); Wilson keeps an honest range there
+/// (5/5 gives about 57%–100%) and is deterministic.
 pub fn rate(hits: &[bool]) -> Rate {
-    let n = hits.len();
+    let n = hits.len() as u32;
     if n == 0 {
         return Rate {
             value: 0.0,
@@ -167,38 +164,13 @@ pub fn rate(hits: &[bool]) -> Rate {
             n: 0,
         };
     }
-    let value = hits.iter().filter(|h| **h).count() as f64 / n as f64;
-    let mut rng = SplitMix64(BOOTSTRAP_SEED);
-    let mut samples: Vec<f64> = (0..BOOTSTRAP_ROUNDS)
-        .map(|_| {
-            let wins = (0..n).filter(|_| hits[rng.below(n)]).count();
-            wins as f64 / n as f64
-        })
-        .collect();
-    samples.sort_by(f64::total_cmp);
-    let at = |q: f64| samples[((samples.len() - 1) as f64 * q).round() as usize];
+    let wins = hits.iter().filter(|h| **h).count() as u32;
+    let (low95, high95) = crate::verdict::wilson(wins, n);
     Rate {
-        value,
-        low95: at(0.025),
-        high95: at(0.975),
-        n: n as u32,
-    }
-}
-
-/// A tiny seeded generator, so reports need no `rand` crate and are repeatable.
-struct SplitMix64(u64);
-
-impl SplitMix64 {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9e37_79b9_7f4a_7c15);
-        let mut z = self.0;
-        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
+        value: f64::from(wins) / f64::from(n),
+        low95,
+        high95,
+        n,
     }
 }
 
@@ -304,5 +276,10 @@ mod tests {
         assert_eq!(a, b);
         assert!(a.low95 <= a.value && a.value <= a.high95);
         assert_eq!(rate(&[]).n, 0);
+        let all = rate(&[true; 5]);
+        assert!(
+            all.high95 == 1.0 && all.low95 > 0.5 && all.low95 < 0.6,
+            "{all:?}"
+        );
     }
 }

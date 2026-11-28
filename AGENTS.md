@@ -23,14 +23,19 @@ useless (the old bootstrap gives 5/5 → [100%, 100%]). We answer the real quest
   Flags: `--candidate`, `--control`, `--margin <points>`, `--allow-inconclusive`, `-j`.
 
 ## Open tasks (pick one, say which in the team chat)
-1. Replace the percentile bootstrap in `evals/src/report.rs::rate()` with Wilson
-   (`verdict::wilson`). Keep `ranges_are_repeatable_and_contain_the_value` passing.
+1. ~~Wilson in `report::rate()`~~ done (5/5 now shows about 57–100%).
 2. Add the verdict line to the markdown report (`cli/src/commands/eval/report.rs::markdown`).
 3. A GitHub Actions example in `docs/EVALS.md` that runs `nasiko eval verdict` as a gate.
 4. Write-up and demo script (one page, demo of 3 minutes or less).
 Server-side changes (`server/src/evals/attempt.rs`) are last: they need a slow Docker rebuild.
 
+## Eval data (done)
+4 Claude Code sessions in `saurabhburnwal/humantime`, each committed and pushed: 9afe897 (millisecond),
+c994780 (Greek mu), 63ca970 (error offset), 0f99037 (micro/nanosecond). Models: gemini-2.5-flash
+(control) and gemini-2.5-flash-lite (candidate). gemini-2.5-pro is closed to new API keys.
+
 ## Rules
+- `cli` test `run::tests::work_the_agent_committed_is_still_saved` fails on Windows only (needs `sh`).
 - The crate name for the CLI is `nasiko` (`cargo test -p nasiko`), and the evals crate is `nasiko-evals`.
 - Before pushing, run `cargo fmt`, then `cargo clippy -p nasiko-evals -p nasiko --all-targets`,
   then the tests. New code must have zero warnings. (`Stdio` unused in `coding_agent_router.rs`
