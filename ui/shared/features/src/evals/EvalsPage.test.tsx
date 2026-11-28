@@ -29,6 +29,16 @@ describe('Evals (docs/superpowers/specs/2026-11-23-evals-design.md)', () => {
     expect(screen.queryByRole('navigation', { name: copy.steps.label })).toBeNull()
   })
 
+  it('returns from a desktop report to the picked replay sessions', async () => {
+    renderApp('/evals')
+    const selected = usable(await sessionBoxes())[0]!
+    await userEvent.click(selected)
+    await userEvent.click(screen.getByRole('button', { name: 'Open desktop report' }))
+    expect(screen.getByRole('heading', { name: 'Desktop eval report' })).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Back to replay evals' }))
+    expect(ticked(await sessionBoxes())).toHaveLength(1)
+  })
+
   it('walks the stepper from sessions to a task × model comparison, and keeps the run', async () => {
     renderApp('/evals')
     // Sessions: Generate waits for a tick; the Dataset step for a dataset.

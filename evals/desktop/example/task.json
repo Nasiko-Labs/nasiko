@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "confirm-ticket",
+      "source": "Synthetic ticket-confirmation example",
+      "prompt": "Read the ticket ID shown in the window. Enter it in the confirmation field and select Save.",
+      "reset": ["python3", "ticket.py", "reset"],
+      "grade": ["python3", "ticket.py", "grade"]
+    }
+  ],
+  "harnesses": {"scripted": ["python3", "smoke.py"]},
+  "models": ["scripted"],
+  "trials": 1,
+  "timeout_seconds": 30
+}

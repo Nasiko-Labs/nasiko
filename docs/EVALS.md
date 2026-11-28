@@ -14,6 +14,8 @@ The server runs the whole pipeline. The Evals section of the UI and `nasiko eval
 clients of the same API, `/api/evals/*`. `nasiko eval local` runs the older pipeline on your
 own machine, for repositories that are not on GitHub (see the end of this page).
 
+For tasks graded by the saved state of a graphical application, see [Desktop evals](../evals/desktop/README.md). The desktop runner accepts a task manifest and produces a report folder you can open in Evals.
+
 ## How it works
 
 | Step | What happens |
