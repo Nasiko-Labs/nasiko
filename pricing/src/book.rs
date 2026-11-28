@@ -129,6 +129,9 @@ fn static_row(model: &str) -> Option<PriceRow> {
         ("gemini-2.5-pro", 1.25, 10.00, None, None),
         // Read price listed, write price not — a listed read does not establish
         // that writes are free, so the write stays unknown.
+        // Before "gemini-2.5-flash": names match by substring, so flash-lite would
+        // otherwise be charged at three times its rate.
+        ("gemini-2.5-flash-lite", 0.10, 0.40, None, Some(0.01)),
         ("gemini-2.5-flash", 0.30, 2.50, None, Some(0.03)),
         ("gemini-2.0", 0.10, 0.40, None, None),
         ("gemini-1.5-pro", 1.25, 5.00, None, None),
@@ -223,6 +226,8 @@ mod tests {
         );
         let flash = static_row("gemini-2.5-flash").expect("priced");
         assert_eq!((flash.input_per_1m, flash.output_per_1m), (0.30, 2.50));
+        let lite = static_row("gemini-2.5-flash-lite").expect("priced");
+        assert_eq!((lite.input_per_1m, lite.output_per_1m), (0.10, 0.40));
     }
 
     #[test]
