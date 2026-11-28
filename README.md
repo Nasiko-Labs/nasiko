@@ -1,20 +1,63 @@
-![Nasiko](docs/assets/nasiko-runtime-banner.png)
+<p align="center">
+  <img src="docs/assets/nasiko-runtime-banner.png" alt="Nasiko" width="100%" />
+</p>
 
-**Nasiko is the OpenRuntime for AI agents.**<br />
-See every coding agent your team runs and what it costs. Route it to the models you choose. Then deploy and govern your own agents on the same runtime.
+<p align="center">
+  <a href="https://trendshift.io/repositories/55165?utm_source=repository-badge&amp;utm_medium=badge&amp;utm_campaign=badge-repository-55165" target="_blank" rel="noopener noreferrer">
+    <img src="https://trendshift.io/api/badge/repositories/55165" alt="Nasiko on Trendshift" width="250" height="55" />
+  </a>
+</p>
 
-**[📚 Documentation](https://docs.nasiko.com)**  •  **[💬 Discord](https://discord.com/invite/HmnfkTfjFv)**  •  **[🐛 Report a bug](https://github.com/Nasiko-Labs/nasiko/issues)**
+<h3 align="center">
+  Nasiko is the OpenRuntime for AI agents.
+</h3>
 
-[![GitHub stars](https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=amber&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/stargazers)
-[![GitHub forks](https://shieldcn.dev/github/forks/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=blue&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/network/members)
-[![Latest release](https://shieldcn.dev/github/release/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=violet&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/releases)
-[![License: Apache-2.0](https://shieldcn.dev/badge/License-Apache_2.0-red.svg?mode=light&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/blob/main/LICENSE)
+<p align="center">
+  See every coding agent your team runs and what it costs.
+  Route it to the models you choose. Deploy and govern
+  your own agents.
+</p>
 
-[![Built with Rust](https://shieldcn.dev/badge/Language-Rust-orange.svg?logo=rust&mode=light&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko)
-[![Open issues](https://shieldcn.dev/github/issues/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=cyan&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/issues)
-[![Pull requests](https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=green&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/pulls)
-[![CI](https://shieldcn.dev/github/ci/Nasiko-Labs/nasiko.svg?variant=secondary&mode=light&theme=purple&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/actions)
-[![PRs Welcome](https://shieldcn.dev/badge/PRs-Welcome-pink.svg?mode=light&font=geist-mono)](https://github.com/Nasiko-Labs/nasiko/pulls)
+<p align="center">
+  <a href="https://docs.nasiko.com"><strong>📚 Documentation</strong></a>
+  &nbsp; • &nbsp;
+  <a href="https://discord.com/invite/HmnfkTfjFv"><strong>💬 Discord</strong></a>
+  &nbsp; • &nbsp;
+  <a href="https://github.com/Nasiko-Labs/nasiko/issues"><strong>🐛 Report a bug</strong></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Nasiko-Labs/nasiko/stargazers">
+    <img src="https://shieldcn.dev/github/stars/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=amber&amp;font=geist-mono" alt="GitHub stars" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/network/members">
+    <img src="https://shieldcn.dev/github/forks/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=blue&amp;font=geist-mono" alt="GitHub forks" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/releases">
+    <img src="https://shieldcn.dev/github/release/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=violet&amp;font=geist-mono" alt="Latest release" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/blob/main/LICENSE">
+    <img src="https://shieldcn.dev/badge/License-Apache_2.0-red.svg?mode=light&amp;font=geist-mono" alt="License: Apache-2.0" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Nasiko-Labs/nasiko">
+    <img src="https://shieldcn.dev/badge/Language-Rust-orange.svg?logo=rust&amp;mode=light&amp;font=geist-mono" alt="Built with Rust" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/issues">
+    <img src="https://shieldcn.dev/github/issues/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=cyan&amp;font=geist-mono" alt="Open issues" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/pulls">
+    <img src="https://shieldcn.dev/github/prs/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=green&amp;font=geist-mono" alt="Pull requests" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/actions">
+    <img src="https://shieldcn.dev/github/ci/Nasiko-Labs/nasiko.svg?variant=secondary&amp;mode=light&amp;theme=purple&amp;font=geist-mono" alt="CI" />
+  </a>
+  <a href="https://github.com/Nasiko-Labs/nasiko/pulls">
+    <img src="https://shieldcn.dev/badge/PRs-Welcome-pink.svg?mode=light&amp;font=geist-mono" alt="PRs Welcome" />
+  </a>
+</p>
 
 ## Table of Contents
 
