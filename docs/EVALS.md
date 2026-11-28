@@ -87,6 +87,43 @@ Models, rewriters and reviewers are named by LLM config name (or id). The rewrit
 reviewers default to the config of the model the sessions mostly used: a model that rewrote or
 screened the tasks still runs, and its scores are marked optimistic.
 
+## Is it safe to switch? `nasiko eval verdict`
+
+The report gives each model its own resolved rate. With the few tasks a replay dataset has,
+two such ranges almost always overlap, and equal scores can hide tasks the cheaper model lost.
+`nasiko eval verdict` answers the switch question on the same tasks:
+
+```sh
+nasiko eval verdict <run>                                  # every model against the run's control
+nasiko eval verdict <run> --control gemini-2.5-flash --candidate gemini-2.5-flash-lite
+nasiko eval verdict <run> --margin 5                       # allow at most 5 points worse (default 10)
+nasiko eval verdict <run> --allow-inconclusive             # let NOT ENOUGH DATA pass
+nasiko eval verdict <run> --json                           # pairs, range, costs, exclusions
+nasiko eval local verdict <run>                            # a run of `nasiko eval local run`
+```
+
+* **Paired.** Each model's first attempt on a task is paired with the other's, so each task
+  counts once and task difficulty cancels out. `--json` gives the 2×2 counts: both resolved,
+  control only (the candidate's regressions), candidate only, neither.
+* **Infra errors left out.** A task where either first attempt hit an infrastructure error is
+  excluded and counted, so a flaky sandbox is not mistaken for a worse model. Tasks whose
+  repeated attempts disagree are counted as flaky.
+* **A range that stays honest at small n.** The difference `candidate − control` gets a 95%
+  range from Newcombe's hybrid score interval for paired proportions (method 10, built from
+  Wilson intervals). It never collapses to a point the way a bootstrap of 5/5 does.
+* **A decision.** Against the margin: SAFE when the whole range is above `−margin`, NOT SAFE
+  when it is all below, otherwise NOT ENOUGH DATA, with about how many paired tasks would settle
+  it if the rates held.
+* **Cost.** The router's total cost for each side on the paired tasks, and the share a switch
+  saves. When any paired attempt is unpriced, the saving is left out rather than guessed.
+
+It exits 0 when every candidate is SAFE, 2 when any is NOT SAFE and 3 on NOT ENOUGH DATA
+(1 stays for tool errors), so a CI job can block a model switch until the evidence supports it:
+
+```sh
+nasiko eval verdict "$RUN" --candidate gemini-2.5-flash-lite || exit 1
+```
+
 ## API
 
 | Route | What it does |

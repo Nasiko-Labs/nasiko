@@ -200,6 +200,21 @@ not json at all
 "#;
 
     #[test]
+    fn windows_edit_paths_match_a_git_style_root() {
+        let log = LOG.replace("\"/repo/src/a.rs\"", r#""k:\\work\\repo\\src\\a.rs""#);
+        let s = parse_claude_code_log(&log).expect("valid log");
+        assert_eq!(
+            s.edited_paths_in(&["K:/work/repo".into()]),
+            vec!["src/a.rs"]
+        );
+        assert_eq!(
+            s.edited_paths_in(&[r"K:\work\repo".into()]),
+            vec!["src/a.rs"]
+        );
+        assert!(s.edited_paths_in(&["K:/other".into()]).is_empty());
+    }
+
+    #[test]
     fn reads_typed_messages_edits_and_deduped_usage() {
         let s = parse_claude_code_log(LOG).expect("valid log");
         assert_eq!(s.session_id, "s1");

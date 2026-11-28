@@ -15,6 +15,7 @@ pub mod router;
 pub mod run;
 pub mod screen;
 pub mod store;
+pub mod verdict;
 
 use anyhow::Result;
 pub use nasiko_evals::images;
