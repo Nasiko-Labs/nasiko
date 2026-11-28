@@ -57,12 +57,21 @@ pub struct NasikoExtras {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reject_reason: Option<String>,
     /// Whether prompt P1 rewrote `problem_statement` from the session (else it is the raw
-    /// message that led to the first edit).
+    /// message that led to the first edit, or, for a task from commit history, the raw commit
+    /// message: see [`NasikoExtras::needs_rewrite`]).
     #[serde(default)]
     pub statement_rewritten: bool,
     /// What the tests run on, e.g. `["-p nasiko-compress"]` for Cargo; set by the gate.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub test_scope: Vec<String>,
+}
+
+impl NasikoExtras {
+    /// Whether the statement is still a raw commit message. A commit message often describes
+    /// the fix, so such a task must not reach a model until prompt P1 has rewritten it.
+    pub fn needs_rewrite(&self) -> bool {
+        self.source == SessionSource::CommitHistory && !self.statement_rewritten
+    }
 }
 
 /// What the original session used.
@@ -107,12 +116,15 @@ pub enum TestSource {
     None,
 }
 
-/// Which coding agent produced the original session.
+/// Which coding agent produced the original session, or that there was none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionSource {
     ClaudeCode,
     Codex,
+    /// No session: the task was built from one commit of the repository's history
+    /// (`harvest::linked_from_commit`), and its request is the commit message.
+    CommitHistory,
 }
 
 /// Number of session-id characters used in an instance id.
@@ -154,8 +166,39 @@ mod tests {
     }
 
     #[test]
+    fn a_commit_history_id_is_the_slug_and_eight_sha_chars() {
+        assert_eq!(
+            instance_id("bytes", "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"),
+            "bytes__1a2b3c4d"
+        );
+    }
+
+    #[test]
+    fn only_an_unrewritten_commit_history_task_needs_a_rewrite() {
+        let mut extras = task().x_nasiko;
+        assert!(!extras.needs_rewrite(), "a session's request is not a leak");
+        extras.source = SessionSource::CommitHistory;
+        assert!(extras.needs_rewrite());
+        extras.statement_rewritten = true;
+        assert!(!extras.needs_rewrite());
+        assert_eq!(
+            serde_json::to_string(&SessionSource::CommitHistory).expect("serialises"),
+            "\"commit-history\""
+        );
+    }
+
+    #[test]
     fn swebench_keys_are_exact() {
-        let task = TaskInstance {
+        let task = task();
+        let line = task.to_swebench_line().expect("serialises");
+        assert!(line.contains("\"FAIL_TO_PASS\":[\"t1\"]"));
+        assert!(line.contains("\"difficulty\":\"<15 min fix\""));
+        let back: TaskInstance = serde_json::from_str(&line).expect("round-trips");
+        assert_eq!(back, task);
+    }
+
+    fn task() -> TaskInstance {
+        TaskInstance {
             instance_id: "r__1".into(),
             repo: "o/r".into(),
             base_commit: "a".into(),
@@ -190,11 +233,6 @@ mod tests {
                 statement_rewritten: false,
                 test_scope: vec![],
             },
-        };
-        let line = task.to_swebench_line().expect("serialises");
-        assert!(line.contains("\"FAIL_TO_PASS\":[\"t1\"]"));
-        assert!(line.contains("\"difficulty\":\"<15 min fix\""));
-        let back: TaskInstance = serde_json::from_str(&line).expect("round-trips");
-        assert_eq!(back, task);
+        }
     }
 }

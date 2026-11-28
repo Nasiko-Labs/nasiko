@@ -4,7 +4,7 @@
 //! Every model call goes through the Nasiko router tagged `build:<step>:<task>`, so the router
 //! also reports what building the dataset cost (`nasiko eval report build`).
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use nasiko_evals::prompt::{self, Distilled, ScreenVerdict};
 use nasiko_evals::screen::{self, ScreenDecision};
 use nasiko_evals::{Difficulty, TaskInstance, TaskSource, TaskStatus};
@@ -75,17 +75,32 @@ fn rewrite_one(store: &Store, llm: &LlmClient, task: &mut TaskInstance) -> Resul
         // One retry: small local models sometimes wrap or break the JSON.
         Err(_) => prompt::parse_distill_reply(&llm.complete(&request, &tag)?)?,
     };
+    apply_distilled(task, &source, parsed)
+}
+
+/// Puts prompt P1's answer on the task. A statement that leaks what its commit message says
+/// about the fix is an error and leaves the task as it was: still unrewritten, which keeps it
+/// out of `screen` and `freeze`.
+fn apply_distilled(
+    task: &mut TaskInstance,
+    source: &TaskSource,
+    parsed: Distilled,
+) -> Result<String> {
     Ok(match parsed {
         Distilled::Ok {
             title,
             statement,
             hints,
         } => {
-            task.problem_statement = if title.is_empty() {
+            let statement = if title.is_empty() {
                 statement
             } else {
                 format!("{title}\n\n{statement}")
             };
+            if let Some(leak) = prompt::distilled_statement_leak(source, &statement) {
+                bail!("not rewritten: {leak}; run rewrite on it again, or reject it");
+            }
+            task.problem_statement = statement;
             task.hints_text = hints;
             task.x_nasiko.statement_rewritten = true;
             "rewritten".to_string()
@@ -99,13 +114,14 @@ fn rewrite_one(store: &Store, llm: &LlmClient, task: &mut TaskInstance) -> Resul
 }
 
 /// `nasiko eval screen`: every reviewer model judges every reproducible task (prompt P3); then
-/// the keep/drop rule decides.
+/// the keep/drop rule decides. A task whose statement is still a raw commit message waits for
+/// `rewrite`: a verdict must be on the statement a model will be shown.
 pub fn screen(store: &Store, router: &RouterClient) -> Result<Vec<StepResult>> {
     let config = store.config()?;
     let tasks: Vec<TaskInstance> = store
         .tasks()?
         .into_iter()
-        .filter(|t| t.x_nasiko.status == TaskStatus::Reproducible)
+        .filter(|t| t.x_nasiko.status == TaskStatus::Reproducible && !t.x_nasiko.needs_rewrite())
         .collect();
     let mut errors: Vec<StepResult> = Vec::new();
     for short in &config.reviewers {
@@ -203,11 +219,13 @@ pub fn record_human_review(
     apply_decision(store, task)
 }
 
-/// Tasks no reviewer could judge: reproducible, with no review at all.
+/// Tasks no reviewer could judge: reproducible, with no review at all (and, like `screen`, not
+/// still waiting for `rewrite`).
 pub fn needing_people(store: &Store) -> Result<Vec<TaskInstance>> {
     let mut out = Vec::new();
     for task in store.tasks()? {
         if task.x_nasiko.status == TaskStatus::Reproducible
+            && !task.x_nasiko.needs_rewrite()
             && store.load_reviews(&task.instance_id)?.is_empty()
         {
             out.push(task);
@@ -252,5 +270,52 @@ mod tests {
         assert!(needing_people(&store).expect("lists").is_empty());
         let saved = &store.tasks().expect("loads")[0];
         assert_eq!(saved.x_nasiko.status, TaskStatus::Verified);
+    }
+
+    #[test]
+    fn a_rewrite_that_repeats_the_commit_message_leaves_the_task_unrewritten() {
+        const MESSAGE: &str = "Fix panic in split_off\n\nClamp the index in split_off so that at == len returns an empty buffer.";
+        let at = "2026-11-01T10:30:00Z";
+        let source: TaskSource = serde_json::from_value(serde_json::json!({
+            "session_id": "1a2b3c4d",
+            "source": "commit-history",
+            "git_branch": null,
+            "started_at": at,
+            "ended_at": at,
+            "task_messages": [{"at": at, "text": MESSAGE}],
+            "context_messages": [{"at": at, "text": MESSAGE}],
+            "commit_subjects": ["Fix panic in split_off"],
+            "changed_files": ["src/bytes_mut.rs"],
+            "usage_by_model": [],
+        }))
+        .expect("source");
+        let mut from_commit = task(TaskStatus::Candidate);
+        from_commit.x_nasiko.source = nasiko_evals::SessionSource::CommitHistory;
+        from_commit.problem_statement = MESSAGE.into();
+        let answer = |title: &str, statement: &str| Distilled::Ok {
+            title: title.into(),
+            statement: statement.into(),
+            hints: String::new(),
+        };
+
+        let (subject, body) = MESSAGE.split_once("\n\n").expect("subject and body");
+        let echoed = apply_distilled(&mut from_commit, &source, answer(subject, body));
+        let error = echoed.expect_err("an echo is not a rewrite").to_string();
+        assert!(error.contains("repeats the commit message"), "{error}");
+        assert!(from_commit.x_nasiko.needs_rewrite());
+        assert_eq!(from_commit.problem_statement, MESSAGE);
+
+        let rewritten = answer(
+            "split_off panics at the end of the buffer",
+            "Calling split_off(len) panics. It should return an empty buffer.",
+        );
+        let line = apply_distilled(&mut from_commit, &source, rewritten).expect("applies");
+        assert_eq!(line, "rewritten");
+        assert!(!from_commit.x_nasiko.needs_rewrite());
+        assert!(
+            from_commit
+                .problem_statement
+                .starts_with("split_off panics")
+        );
     }
 }

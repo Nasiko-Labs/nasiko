@@ -42,6 +42,11 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
     let mut packages = vec!["git", "ca-certificates", "curl", "ripgrep"];
     packages.extend(spec.system_packages.iter().map(String::as_str));
     let cargo = if is_cargo(spec) { CARGO_LEAN_ENV } else { "" };
+    // In the env image for the same reason as the lean profile: the warm build, the gate, the
+    // agent and the grader must compile with the same flags, or each compiles from scratch.
+    let lint_cap = spec::lint_cap_env(spec)
+        .map(|(name, value)| format!("ENV {name}={value}\n"))
+        .unwrap_or_default();
     format!(
         "FROM {toolchain}\n\
          RUN apt-get update \\\n    && apt-get install -y --no-install-recommends {packages} \\\n    && rm -rf /var/lib/apt/lists/*\n\
@@ -50,7 +55,7 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
          COPY --from={NODE_IMAGE} /usr/local/lib/node_modules /usr/local/lib/node_modules\n\
          RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \\\n    && npm install -g opencode-ai@{version} && npm cache clean --force\n\
          ENV OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \\\n    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \\\n    OPENCODE_DISABLE_PROJECT_CONFIG=1\n\
-         {cargo}",
+         {cargo}{lint_cap}",
         toolchain = spec.toolchain_image,
         packages = packages.join(" "),
         version = opencode_version(),
@@ -175,6 +180,32 @@ mod tests {
         let env = env_dockerfile(&rust_spec());
         assert!(env.contains("CARGO_INCREMENTAL=0"));
         assert!(env.contains("CARGO_PROFILE_TEST_DEBUG=0"));
+    }
+
+    #[test]
+    fn lints_are_capped_in_the_env_image_so_every_container_shares_the_flags() {
+        let capped = rust_spec();
+        let env = env_dockerfile(&capped);
+        assert!(env.ends_with("ENV CARGO_BUILD_RUSTFLAGS=--cap-lints=warn\n"));
+        // Not `RUSTFLAGS`: that would replace the repo's own `build.rustflags`.
+        assert!(!env.contains("ENV RUSTFLAGS"));
+        // The warm build runs after it in the same recipe, with the plain command.
+        let task = combined_dockerfile(&capped, &["-p a".into()]);
+        let cap = task.find("CARGO_BUILD_RUSTFLAGS").expect("capped");
+        let warm = task.find("cargo test -p a --no-run").expect("warm build");
+        assert!(cap < warm);
+
+        let uncapped = EnvSpec {
+            cap_lints: false,
+            ..rust_spec()
+        };
+        assert!(!env_dockerfile(&uncapped).contains("cap-lints"));
+        // Other flags, other images: a task image is never reused across the setting.
+        assert_ne!(env_image_tag(&capped), env_image_tag(&uncapped));
+        assert_ne!(
+            task_image_tag(&capped, "0123456789abcdef", &["-p a".into()]),
+            task_image_tag(&uncapped, "0123456789abcdef", &["-p a".into()])
+        );
     }
 
     #[test]

@@ -66,6 +66,7 @@ pub fn freeze(store: &Store, name: &str) -> Result<Manifest> {
     if tasks.is_empty() {
         bail!("no verified tasks yet: run `nasiko eval build`, then `screen`");
     }
+    refuse_raw_commit_messages(&tasks)?;
     let version = versions(store, name).last().map_or(1, |v| v + 1);
     let mut jsonl = String::new();
     for t in &tasks {
@@ -86,6 +87,28 @@ pub fn freeze(store: &Store, name: &str) -> Result<Manifest> {
     store.save_text(&dir.join("dataset.jsonl"), &jsonl)?;
     store.save_json(&dir.join("manifest.json"), &manifest)?;
     Ok(manifest)
+}
+
+/// A frozen task's statement is what the replayed model is shown. A task from commit history
+/// starts with the raw commit message as its statement, which often describes the fix, so
+/// nothing is frozen while a verified task still has it: a dataset that leaks an answer would
+/// look like any other.
+fn refuse_raw_commit_messages(tasks: &[TaskInstance]) -> Result<()> {
+    let raw: Vec<&str> = tasks
+        .iter()
+        .filter(|t| t.x_nasiko.needs_rewrite())
+        .map(|t| t.instance_id.as_str())
+        .collect();
+    if raw.is_empty() {
+        return Ok(());
+    }
+    bail!(
+        "not frozen: {} verified task(s) from commit history still have the raw commit message \
+         as their statement, and a commit message often describes the fix: {}. Run `nasiko eval \
+         local rewrite` (it rewrites each as an issue, or rejects it), then freeze again",
+        raw.len(),
+        raw.join(", ")
+    )
 }
 
 /// The tasks of a frozen dataset (latest version when none is given), checked against the
@@ -120,7 +143,7 @@ pub fn load(store: &Store, reference: &str) -> Result<(Manifest, Vec<TaskInstanc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nasiko_evals::EvalLayout;
+    use nasiko_evals::{EvalLayout, SessionSource};
 
     #[test]
     fn freezing_makes_new_versions_and_loading_checks_the_hash() {
@@ -139,5 +162,35 @@ mod tests {
         fs::write(&file, "{}\n").expect("tamper");
         assert!(load(&store, "ds@1").is_err());
         assert_eq!(parse_ref("ds@v3").expect("ref"), ("ds".into(), Some(3)));
+    }
+
+    #[test]
+    fn a_commit_history_task_is_frozen_only_once_its_statement_is_rewritten() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let store = Store::new(EvalLayout::new(dir.path()));
+        let mut from_session: TaskInstance =
+            serde_json::from_str(include_str!("testdata/task.json")).expect("task");
+        from_session.x_nasiko.status = TaskStatus::Verified;
+        store.save_task(&from_session).expect("saves");
+        let mut from_commit = from_session.clone();
+        from_commit.instance_id = "repo__1a2b3c4d".into();
+        from_commit.x_nasiko.source = SessionSource::CommitHistory;
+        from_commit.problem_statement = "Clamp the index in split_off".into();
+        store.save_task(&from_commit).expect("saves");
+
+        let refusal = freeze(&store, "ds").expect_err("a raw commit message is a leak");
+        let refusal = refusal.to_string();
+        assert!(refusal.contains("repo__1a2b3c4d"), "{refusal}");
+        assert!(!refusal.contains("repo__abcd1234"), "{refusal}");
+        assert!(refusal.contains("nasiko eval local rewrite"), "{refusal}");
+        assert!(
+            !store.layout().root().join("datasets").exists(),
+            "nothing is written when freezing is refused"
+        );
+
+        from_commit.x_nasiko.statement_rewritten = true;
+        store.save_task(&from_commit).expect("saves");
+        let manifest = freeze(&store, "ds").expect("freezes once rewritten");
+        assert_eq!(manifest.instance_ids, ["repo__1a2b3c4d", "repo__abcd1234"]);
     }
 }

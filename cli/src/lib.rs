@@ -1332,6 +1332,24 @@ pub enum EvalLocalCommands {
         #[arg(long)]
         redo: bool,
     },
+    /// Turn a repo's own commit history into candidate tasks (no sessions needed)
+    HarvestCommits {
+        /// The repository (any folder inside it)
+        #[arg(long, default_value = ".")]
+        repo: std::path::PathBuf,
+        /// Only commits made on or after this date (YYYY-MM-DD)
+        #[arg(long)]
+        since: Option<chrono::NaiveDate>,
+        /// Stop going back once this many commits, newest first, are tasks (rejected ones aside)
+        #[arg(long)]
+        max: Option<usize>,
+        /// Look again at commits an earlier harvest already looked at
+        #[arg(long)]
+        redo: bool,
+        /// Print what each commit would become without writing anything
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Build and test settings per repository
     Spec {
         #[command(subcommand)]
@@ -2139,6 +2157,29 @@ pub fn dispatch_eval_local(cmd: EvalLocalCommands) -> Result<()> {
                 eval::Redo::All
             } else {
                 eval::Redo::Skip
+            },
+        }),
+        EvalLocalCommands::HarvestCommits {
+            repo,
+            since,
+            max,
+            redo,
+            dry_run,
+        } => eval::harvest_commits(&eval::HarvestCommitsArgs {
+            repo,
+            since: since
+                .and_then(|d| d.and_hms_opt(0, 0, 0))
+                .map(|t| t.and_utc()),
+            max_tasks: max,
+            redo: if redo {
+                eval::Redo::All
+            } else {
+                eval::Redo::Skip
+            },
+            writes: if dry_run {
+                eval::Writes::DryRun
+            } else {
+                eval::Writes::Save
             },
         }),
         EvalLocalCommands::Tasks { status, json } => eval::tasks(status, json),

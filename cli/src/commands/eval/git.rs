@@ -6,6 +6,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
+use nasiko_evals::harvest::HistoryCommit;
 use nasiko_evals::remote::{RepoRef, owner_and_name, package_name, trailers};
 use nasiko_evals::{CommitFacts, diff};
 
@@ -95,6 +96,35 @@ impl Repo {
                 Some((sha, lines.map(str::to_string).collect()))
             })
             .collect())
+    }
+
+    /// The commits reachable from `HEAD`, newest first, each with its parents and whole
+    /// message; only those committed at or after `since`, when given. Not `--all`: other
+    /// branches hold backports and unmerged work, which would turn one fix into several tasks.
+    /// Merges are listed too, so a caller can count what it leaves out.
+    pub fn history(&self, since: Option<DateTime<Utc>>) -> Result<Vec<HistoryCommit>> {
+        let format = format!("--format={RECORD}%H{SEP}%P{SEP}%cI{SEP}%B");
+        let out = self
+            .git(&["log", &format, "HEAD"])
+            .context("could not list the commits of HEAD; does the repository have any?")?;
+        let commits: Vec<HistoryCommit> = out
+            .split(RECORD)
+            .filter(|record| !record.trim().is_empty())
+            .map(history_commit)
+            .collect::<Result<_>>()?;
+        // Not `git log --since`: it stops at the first commit older than the date, and so
+        // hides every newer commit behind one (commit dates are not ordered in a rebased or
+        // imported history, or under clock skew).
+        Ok(commits
+            .into_iter()
+            .filter(|commit| since.is_none_or(|since| commit.committed_at >= since))
+            .collect())
+    }
+
+    /// Whether the clone was cut off at some depth (`git clone --depth`). The oldest commits of
+    /// such a clone look like root commits, and nothing older is there to list.
+    pub fn is_shallow(&self) -> Result<bool> {
+        Ok(self.git(&["rev-parse", "--is-shallow-repository"])?.trim() == "true")
     }
 
     /// What linking needs to know about one commit.
@@ -210,6 +240,22 @@ fn run(dir: &Path, args: &[&str]) -> Result<String> {
 
 fn slug_from_remote(url: &str) -> Option<String> {
     RepoRef::parse(url).map(|r| r.name)
+}
+
+/// One record of [`Repo::history`]'s `git log` output.
+fn history_commit(record: &str) -> Result<HistoryCommit> {
+    let mut parts = record.splitn(4, SEP);
+    let mut next = || parts.next().unwrap_or_default().trim();
+    let (sha, parents, date, message) = (next(), next(), next(), next());
+    let committed_at = DateTime::parse_from_rfc3339(date)
+        .with_context(|| format!("bad commit date {date:?} on {sha}"))?
+        .with_timezone(&Utc);
+    Ok(HistoryCommit {
+        sha: sha.to_string(),
+        parents: parents.split_whitespace().map(str::to_string).collect(),
+        committed_at,
+        message: message.to_string(),
+    })
 }
 
 #[cfg(test)]

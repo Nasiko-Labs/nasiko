@@ -1,6 +1,7 @@
-//! `nasiko eval`: build a private SWE-bench-style benchmark from finished coding sessions and
-//! replay it on other models. The logic lives in the `nasiko-evals` crate; this module does the
-//! I/O (files, git, Docker, the Nasiko router) and the printing.
+//! `nasiko eval`: build a private SWE-bench-style benchmark from finished coding sessions (or,
+//! without any, from a repository's commit history) and replay it on other models. The logic
+//! lives in the `nasiko-evals` crate; this module does the I/O (files, git, Docker, the Nasiko
+//! router) and the printing.
 
 pub mod build;
 pub mod containers;
@@ -8,12 +9,14 @@ pub mod dataset;
 pub mod gateway;
 pub mod git;
 pub mod harvest;
+pub mod harvest_commits;
 pub mod llm;
 pub mod remote;
 pub mod report;
 pub mod router;
 pub mod run;
 pub mod screen;
+pub mod signals;
 pub mod store;
 
 use anyhow::Result;
@@ -25,6 +28,7 @@ use tabled::{Table, Tabled};
 
 pub use build::BuildArgs;
 pub use harvest::{HarvestArgs, Redo};
+pub use harvest_commits::{HarvestCommitsArgs, Writes};
 use store::{EvalConfig, Store, eval_root};
 
 fn open_store() -> Store {
@@ -73,6 +77,54 @@ pub fn harvest(args: &HarvestArgs) -> Result<()> {
     Ok(())
 }
 
+/// `nasiko eval local harvest-commits`.
+pub fn harvest_commits(args: &HarvestCommitsArgs) -> Result<()> {
+    let store = open_store();
+    let summary = harvest_commits::harvest_commits(&store, args)?;
+    println!("{}", summary.headline());
+    if summary.shallow {
+        nasiko_utils::term::print_note(
+            "This is a shallow clone: only the commits it holds are listed, and the oldest of \
+             them is counted as a root commit.",
+        );
+    }
+    print!("{}", summary.funnel());
+    if let Some(max) = summary.stopped_at_max {
+        println!(
+            "Stopped at --max {max} (rejected tasks are not counted): older commits were not \
+             looked at."
+        );
+    }
+    for task in &summary.new_tasks {
+        println!(
+            "  {:<34} {}  {}",
+            task.instance_id,
+            task.committed_at.format("%Y-%m-%d"),
+            trunc(&task.subject, 60)
+        );
+    }
+    match (summary.writes, summary.new_tasks.len()) {
+        (_, 0) => println!("No new tasks."),
+        (Writes::DryRun, count) => println!(
+            "Dry run: nothing was written. Without --dry-run: {}. Expect fewer usable tasks: \
+             `rewrite` rejects a message that states no problem, and `build` a task whose tests \
+             do not fail before the fix and pass after it.",
+            harvest_commits::counted(count, "new candidate task")
+        ),
+        (Writes::Save, count) => {
+            nasiko_utils::term::print_success(&harvest_commits::counted(
+                count,
+                "new candidate task",
+            ));
+            println!(
+                "Their statements are still the raw commit messages, which often describe the fix: \
+                 run `nasiko eval local rewrite` before `freeze`, which refuses them until then."
+            );
+        }
+    }
+    Ok(())
+}
+
 #[derive(Tabled)]
 struct TaskRow {
     #[tabled(rename = "ID")]
@@ -84,7 +136,7 @@ struct TaskRow {
     #[tabled(rename = "LINK")]
     link: String,
     #[tabled(rename = "TURNS")]
-    turns: u32,
+    turns: String,
     #[tabled(rename = "REQUEST")]
     request: String,
 }
@@ -101,18 +153,24 @@ pub fn tasks(status: Option<TaskStatus>, json: bool) -> Result<()> {
         return Ok(());
     }
     if tasks.is_empty() {
-        println!("No tasks yet. Run `nasiko eval harvest --repo <path>`.");
+        println!(
+            "No tasks yet. Run `nasiko eval local harvest --repo <path>` (from Claude Code \
+             sessions) or `nasiko eval local harvest-commits --repo <path>` (from commit history)."
+        );
         return Ok(());
     }
     let rows: Vec<TaskRow> = tasks
         .iter()
-        .map(|t| TaskRow {
-            id: t.instance_id.clone(),
-            status: format!("{:?}", t.x_nasiko.status).to_lowercase(),
-            tests: format!("{:?}", t.x_nasiko.test_source).to_lowercase(),
-            link: format!("{:.2}", t.x_nasiko.link_score),
-            turns: t.x_nasiko.orig.user_turns,
-            request: trunc(&t.problem_statement.replace('\n', " "), 60),
+        .map(|t| {
+            let (link, turns) = link_and_turns(t);
+            TaskRow {
+                id: t.instance_id.clone(),
+                status: format!("{:?}", t.x_nasiko.status).to_lowercase(),
+                tests: format!("{:?}", t.x_nasiko.test_source).to_lowercase(),
+                link,
+                turns,
+                request: trunc(&t.problem_statement.replace('\n', " "), 60),
+            }
         })
         .collect();
     println!(
@@ -122,6 +180,20 @@ pub fn tasks(status: Option<TaskStatus>, json: bool) -> Result<()> {
             .with(Alignment::left())
     );
     Ok(())
+}
+
+/// The LINK and TURNS cells of a task. A task from commit history was linked to no session
+/// and has no turns: its stored values (a link of 1.0, one turn) are stand-ins that keep the
+/// file format, so they are not shown as if they had been measured.
+fn link_and_turns(task: &nasiko_evals::TaskInstance) -> (String, String) {
+    const NOT_MEASURED: &str = "-";
+    if task.x_nasiko.source == nasiko_evals::SessionSource::CommitHistory {
+        return (NOT_MEASURED.to_string(), NOT_MEASURED.to_string());
+    }
+    (
+        format!("{:.2}", task.x_nasiko.link_score),
+        task.x_nasiko.orig.user_turns.to_string(),
+    )
 }
 
 /// `nasiko eval spec detect`.
@@ -188,6 +260,19 @@ pub fn screen_tasks() -> Result<()> {
     let store = open_store();
     let router = router::RouterClient::from_login()?;
     print_steps(screen::screen(&store, &router)?);
+    note_tasks_awaiting_rewrite(&store)
+}
+
+/// Says which tasks `screen` and `review` left out, so a skipped task is never a silent one.
+fn note_tasks_awaiting_rewrite(store: &Store) -> Result<()> {
+    let waiting = harvest_commits::awaiting_rewrite(store)?;
+    if !waiting.is_empty() {
+        nasiko_utils::term::print_note(&format!(
+            "Left out, because their statement is still a raw commit message: {}. \
+             Run `nasiko eval local rewrite` first.",
+            waiting.join(", ")
+        ));
+    }
     Ok(())
 }
 
@@ -196,6 +281,7 @@ pub fn review() -> Result<()> {
     use dialoguer::{Input, Select};
     use nasiko_evals::Difficulty;
     let store = open_store();
+    note_tasks_awaiting_rewrite(&store)?;
     let tasks = screen::needing_people(&store)?;
     if tasks.is_empty() {
         println!("No task needs a person: every reproducible task has a reviewer verdict.");

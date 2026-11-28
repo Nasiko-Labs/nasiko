@@ -6,6 +6,7 @@
 //! do the I/O.
 
 pub mod agent;
+pub mod consistency;
 pub mod cost;
 pub mod diff;
 pub mod gate;
@@ -15,16 +16,25 @@ pub mod images;
 pub mod instance;
 pub mod layout;
 pub mod link;
+pub mod method;
 pub mod opencode;
 pub mod patch;
 pub mod prompt;
 pub mod remote;
 pub mod report;
 pub mod rust_tests;
+pub mod scope;
 pub mod screen;
+pub mod selfcheck;
 pub mod session;
+pub mod shell;
+mod sight;
 pub mod spec;
+pub mod stats;
+pub mod story;
+pub mod tamper;
 pub mod testlog;
+pub mod trace;
 
 pub use cost::{PriceQuality, RouterUsage, TokenUsage};
 pub use diff::{FileDiff, SplitPatch, TestPathRules};
