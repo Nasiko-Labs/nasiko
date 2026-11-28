@@ -76,7 +76,9 @@ pub fn test_paths() -> Vec<String> {
     .collect()
 }
 
-/// The settings for a Node repo.
+/// The settings for a Node repo. The build and test commands each run in a subshell: the
+/// grading script runs one after the other in the same shell, so a `cd` into the package that
+/// leaked from the build would send the tests looking for `<package>/<package>`.
 pub fn propose(repo: &str) -> EnvSpec {
     EnvSpec {
         repo: repo.to_string(),
@@ -84,16 +86,16 @@ pub fn propose(repo: &str) -> EnvSpec {
         toolchain_image: NODE_IMAGE.to_string(),
         system_packages: Vec::new(),
         setup: vec![SETUP_INSTALL.into()],
-        build_cmd: format!("{READ_SCOPE} && [ -d node_modules ]"),
+        build_cmd: format!("({READ_SCOPE} && [ -d node_modules ])"),
         test_cmd: format!(
-            "{READ_SCOPE} || exit 1; {PICK_RUNNER}; \
+            "({READ_SCOPE} || exit 1; {PICK_RUNNER}; \
              rm -rf {JUNIT_DIR}; mkdir -p {JUNIT_DIR}; status=0; i=0; \
              for t in \"$@\"; do i=$((i+1)); [ -e \"$t\" ] || continue; \
              run_one \"$t\" \"{JUNIT_DIR}/$i.xml\" 2>&1 || status=1; done; \
              echo '{JUNIT_BEGIN}'; i=0; \
              for t in \"$@\"; do i=$((i+1)); echo \"{JUNIT_FILE}$t\"; \
              cat \"{JUNIT_DIR}/$i.xml\" 2>/dev/null; echo; done; \
-             echo '{JUNIT_END}'; exit $status"
+             echo '{JUNIT_END}'; exit $status)"
         ),
         test_paths: test_paths(),
         log_parser: LogParserKind::Junit,
@@ -252,14 +254,40 @@ mod tests {
         let spec = propose("o/r");
         let scope = ["'server'".to_string(), "'test/finch.test.ts'".to_string()];
         let test = crate::spec::with_scope(&spec.test_cmd, &scope);
-        assert!(test.starts_with("set -- 'server' 'test/finch.test.ts'; pkg=$1; shift;"));
+        assert!(test.starts_with("(set -- 'server' 'test/finch.test.ts'; pkg=$1; shift;"));
         // The runner comes from the base commit's script, not the working tree's.
         assert!(test.contains("git show HEAD:./package.json"));
         assert!(test.contains("--test-reporter=junit"));
         let last_run = test.rfind("run_one \"$t\"").expect("runs each file");
         let report = test.find(JUNIT_BEGIN).expect("prints the reports");
         assert!(last_run < report && report < test.find(JUNIT_END).expect("end"));
-        assert!(test.trim_end().ends_with("exit $status"));
+        assert!(test.trim_end().ends_with("exit $status)"));
         assert!(!spec.build_cmd.contains("tsc"));
+    }
+
+    /// The grading script runs the build command and then the test command in one shell; the
+    /// build's `cd` into the package must not carry over, or the tests look for
+    /// `server/server`. Found on the first real gate run.
+    #[cfg(unix)]
+    #[test]
+    fn the_build_command_leaves_the_shell_where_it_was() {
+        let root = std::env::temp_dir().join(format!("nasiko-node-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("server/node_modules")).expect("package folder");
+        let spec = propose("o/r");
+        let scope = ["'server'".to_string(), "'test/a.test.ts'".to_string()];
+        let script = format!(
+            "{} || exit 12\npwd\n",
+            crate::spec::with_scope(&spec.build_cmd, &scope)
+        );
+        let out = std::process::Command::new("bash")
+            .arg("-c")
+            .arg(&script)
+            .current_dir(&root)
+            .output()
+            .expect("bash runs");
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(out.status.success(), "{out:?}");
+        let cwd = String::from_utf8_lossy(&out.stdout);
+        assert!(!cwd.trim_end().ends_with("/server"), "cwd leaked: {cwd}");
     }
 }
