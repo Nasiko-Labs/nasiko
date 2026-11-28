@@ -53,6 +53,7 @@ export const HARNESS_MOCK_VARIANTS = [
   'flows-absent',
   'evals-absent',
   'evals-github-off',
+  'evals-review',
   'hub-not-visible',
   'hub-gate-error',
   'hub-deleted',
