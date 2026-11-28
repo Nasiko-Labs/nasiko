@@ -80,7 +80,14 @@ pub fn judge(runs: &GateRuns) -> GateVerdict {
     };
     for name in passes_after {
         let passed_before = if before_built {
-            runs.before[0].results.get(name) == Some(&TestStatus::Passed)
+            match runs.before[0].results.get(name) {
+                Some(status) => *status == TestStatus::Passed,
+                // Missing before the fix: its whole file failed to load with the new tests (in
+                // Python, an import of a function the fix adds). If it passed on the untouched
+                // code it is an old test the fix must keep passing, not one the fix makes pass;
+                // counting it as fixed would hand a model credit for a stub that only imports.
+                None => runs.pristine.results.get(name) == Some(&TestStatus::Passed),
+            }
         } else {
             runs.pristine.results.get(name) == Some(&TestStatus::Passed)
         };
@@ -128,6 +135,76 @@ mod tests {
         }
     }
     use TestStatus::{Failed, Passed};
+
+    /// `pytest -rA` output with only its summary, as `testlog` reads it.
+    fn pytest(summary: &str) -> RunOutcome {
+        let log = format!(
+            "== short test summary info ==
+{summary}"
+        );
+        RunOutcome {
+            built: true,
+            results: crate::testlog::parse(crate::testlog::LogParserKind::Pytest, &log),
+        }
+    }
+
+    #[test]
+    fn a_python_test_file_that_cannot_import_before_the_fix_keeps_its_old_tests_as_pass_to_pass() {
+        // The test patch adds `test_empty_is_error` to a file whose old test passed on the
+        // untouched code. Before the fix the file imports a function that does not exist yet,
+        // so pytest names none of its tests.
+        let before = "ERROR tests/test_dur.py - ImportError: cannot import name 'parse'
+                      PASSED tests/test_other.py::test_kept
+";
+        let after = "PASSED tests/test_dur.py::test_empty_is_error
+                     PASSED tests/test_dur.py::test_old
+                     PASSED tests/test_other.py::test_kept
+";
+        let pristine = "PASSED tests/test_dur.py::test_old
+";
+        let verdict = judge(&GateRuns {
+            pristine: pytest(pristine),
+            before: vec![pytest(before), pytest(before)],
+            after: vec![pytest(after), pytest(after)],
+        });
+        let GateVerdict::Reproducible(lists) = verdict else {
+            panic!("{verdict:?}");
+        };
+        assert_eq!(
+            lists.fail_to_pass,
+            ["tests/test_dur.py::test_empty_is_error"]
+        );
+        assert_eq!(
+            lists.pass_to_pass,
+            [
+                "tests/test_dur.py::test_old",
+                "tests/test_other.py::test_kept"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_python_test_that_flips_between_identical_runs_is_dropped_as_flaky() {
+        let after_a = "PASSED tests/t.py::test_fix
+PASSED tests/t.py::test_clock
+";
+        let after_b = "PASSED tests/t.py::test_fix
+FAILED tests/t.py::test_clock - late
+";
+        let before = "FAILED tests/t.py::test_fix - no
+FAILED tests/t.py::test_clock - late
+";
+        let verdict = judge(&GateRuns {
+            pristine: pytest(""),
+            before: vec![pytest(before), pytest(before)],
+            after: vec![pytest(after_a), pytest(after_b)],
+        });
+        let GateVerdict::Reproducible(lists) = verdict else {
+            panic!("{verdict:?}");
+        };
+        assert_eq!(lists.fail_to_pass, ["tests/t.py::test_fix"]);
+        assert_eq!(lists.flaky, ["tests/t.py::test_clock"]);
+    }
 
     #[test]
     fn new_test_that_fails_before_is_fail_to_pass() {

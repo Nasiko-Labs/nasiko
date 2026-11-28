@@ -160,8 +160,10 @@ async fn draft_and_insert(
     let spec = store::spec(db, user, &forge.repo).await?;
     let stage = if spec.is_none() {
         task.x_nasiko.status = TaskStatus::Rejected;
-        task.x_nasiko.reject_reason =
-            Some("unsupported: only Cargo (Rust) repositories can be built so far".into());
+        task.x_nasiko.reject_reason = Some(
+            "unsupported: only Cargo (Rust) and Python (pytest) repositories can be built so far"
+                .into(),
+        );
         "done"
     } else if dataset.rewriter_config_id.is_some() {
         "rewrite"

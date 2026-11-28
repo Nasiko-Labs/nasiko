@@ -34,6 +34,28 @@ const NODE_IMAGE: &str = "node:22-bookworm-slim";
 const CARGO_LEAN_ENV: &str = "ENV CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 \
                               CARGO_PROFILE_TEST_DEBUG=0\n";
 
+/// Python without bytecode files or pip's cache and version check: nothing a test run or the
+/// agent does should leave files behind in `/testbed`.
+const PYTHON_LEAN_ENV: &str = "ENV PYTHONDONTWRITEBYTECODE=1 PIP_NO_CACHE_DIR=1 \
+                               PIP_DISABLE_PIP_VERSION_CHECK=1\n";
+
+/// Files Python tooling writes into a checkout (bytecode, an editable install's metadata, tool
+/// caches, virtualenvs). The agent's patch is `git add -A` of `/testbed`, so without this an
+/// `.egg-info` the image's own `pip install -e .` wrote would land in the patch, and the grader,
+/// whose image already has it, could not apply a correct fix.
+const PYTHON_GIT_EXCLUDES: [&str; 10] = [
+    "__pycache__/",
+    "*.py[cod]",
+    "*.egg-info/",
+    ".eggs/",
+    "build/",
+    ".pytest_cache/",
+    ".mypy_cache/",
+    ".ruff_cache/",
+    ".tox/",
+    ".venv/",
+];
+
 /// Compile jobs for the warm build: it runs on a shared image builder with little memory, where
 /// a large workspace at full parallelism runs out of it. Test runs keep their own CPUs.
 const WARM_BUILD_JOBS: u32 = 2;
@@ -41,7 +63,10 @@ const WARM_BUILD_JOBS: u32 = 2;
 pub fn env_dockerfile(spec: &EnvSpec) -> String {
     let mut packages = vec!["git", "ca-certificates", "curl", "ripgrep"];
     packages.extend(spec.system_packages.iter().map(String::as_str));
-    let cargo = if is_cargo(spec) { CARGO_LEAN_ENV } else { "" };
+    let lean = match spec.language {
+        spec::Language::Rust => CARGO_LEAN_ENV,
+        spec::Language::Python => PYTHON_LEAN_ENV,
+    };
     format!(
         "FROM {toolchain}\n\
          RUN apt-get update \\\n    && apt-get install -y --no-install-recommends {packages} \\\n    && rm -rf /var/lib/apt/lists/*\n\
@@ -50,7 +75,7 @@ pub fn env_dockerfile(spec: &EnvSpec) -> String {
          COPY --from={NODE_IMAGE} /usr/local/lib/node_modules /usr/local/lib/node_modules\n\
          RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \\\n    && npm install -g opencode-ai@{version} && npm cache clean --force\n\
          ENV OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 \\\n    OPENCODE_DISABLE_DEFAULT_PLUGINS=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 \\\n    OPENCODE_DISABLE_PROJECT_CONFIG=1\n\
-         {cargo}",
+         {lean}",
         toolchain = spec.toolchain_image,
         packages = packages.join(" "),
         version = opencode_version(),
@@ -68,6 +93,18 @@ pub fn task_dockerfile(env_image: &str, spec: &EnvSpec, scope: &[String]) -> Str
          RUN tar -xf /tmp/source.tar -C /testbed && rm /tmp/source.tar\n\
          RUN git init -q && git add -A \\\n    && git -c user.name=eval -c user.email=eval@nasiko.local commit -qm base \\\n    && git config --global --add safe.directory /testbed\n"
     );
+    if matches!(spec.language, spec::Language::Python) {
+        // Ignored, not deleted: a tracked file that matches is still part of the repo.
+        let _ = writeln!(
+            df,
+            "RUN printf '%s\\n' {} >> .git/info/exclude",
+            PYTHON_GIT_EXCLUDES
+                .iter()
+                .map(|p| format!("'{p}'"))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+    }
     for cmd in &spec.setup {
         let _ = writeln!(df, "RUN {cmd}");
     }
@@ -175,6 +212,25 @@ mod tests {
         let env = env_dockerfile(&rust_spec());
         assert!(env.contains("CARGO_INCREMENTAL=0"));
         assert!(env.contains("CARGO_PROFILE_TEST_DEBUG=0"));
+    }
+
+    #[test]
+    fn python_images_keep_tool_output_out_of_the_agent_patch() {
+        let spec = spec::propose("o/dur", &["pyproject.toml".into()], None).expect("python");
+        let env = env_dockerfile(&spec);
+        assert!(env.starts_with("FROM python:3.12-slim-bookworm\n"));
+        assert!(env.contains("PYTHONDONTWRITEBYTECODE=1"));
+        assert!(!env.contains("CARGO_INCREMENTAL"));
+        let df = task_dockerfile("env:1", &spec, &["'tests/test_a.py'".into()]);
+        let exclude = df.find(".git/info/exclude").expect("excludes tool output");
+        let setup = df.find("pip install -e").expect("installs the package");
+        // Excluded before the editable install writes its `.egg-info`.
+        assert!(df.find("git init -q").unwrap() < exclude && exclude < setup);
+        assert!(df.contains("'*.egg-info/'") && df.contains("'__pycache__/'"));
+        assert!(df.contains("for f in 'tests/test_a.py'; do") && df.contains(") || true"));
+        assert!(!df.contains("CARGO_BUILD_JOBS"));
+        let rust = task_dockerfile("env:1", &rust_spec(), &["-p a".into()]);
+        assert!(!rust.contains(".git/info/exclude"));
     }
 
     #[test]

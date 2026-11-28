@@ -42,10 +42,9 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
         Ok(forge) => forge,
         Err(refusal) => bail!("the repository cannot be read: {}", refusal.code()),
     };
-    let Some(scope) = test_scope(&forge, &task).await? else {
+    let Some(scope) = test_scope(&forge, &spec, &task).await? else {
         task.x_nasiko.status = TaskStatus::Rejected;
-        task.x_nasiko.reject_reason =
-            Some("build: no Cargo package owns the task's files, so it has no tests to run".into());
+        task.x_nasiko.reject_reason = Some(format!("build: {}", spec::NO_SCOPE_REASON));
         store::save_task(&state.db, row.id, &task, "done").await?;
         return Ok(());
     };
@@ -119,9 +118,19 @@ pub async fn run(state: &AppState, job: &Job) -> Result<()> {
     Ok(())
 }
 
-/// The task's test scope, from the Cargo packages owning the files the fix and its tests change
-/// ([`spec::task_test_scope`]); `None` when no package owns them.
-async fn test_scope(forge: &Forge, task: &TaskInstance) -> Result<Option<Vec<String>>> {
+/// The task's test scope: for Cargo, the packages owning the files the fix and its tests change
+/// ([`spec::task_test_scope`]); for Python, the test files themselves
+/// ([`spec::python_test_scope`]). `None` when there is nothing to run.
+async fn test_scope(
+    forge: &Forge,
+    spec: &EnvSpec,
+    task: &TaskInstance,
+) -> Result<Option<Vec<String>>> {
+    if spec.language == spec::Language::Python {
+        return Ok(spec::python_test_scope(&diff::parse_unified(
+            &task.test_patch,
+        )?));
+    }
     let mut files = Vec::new();
     for (text, in_tests) in [(&task.patch, false), (&task.test_patch, true)] {
         for file in diff::parse_unified(text)? {

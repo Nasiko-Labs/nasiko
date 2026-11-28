@@ -54,15 +54,16 @@ pub fn from_payloads(
         // A prompt that opens with a tag is one the harness wrote (a background task's
         // `<task-notification>`, a `<system-reminder>`, a slash command's echo), not the person:
         // the same rule as the Claude Code log reader's.
+        // A pasted prompt is the person's too: its text sits inside a `<pasted_content>` tag.
         if let Some(text) = turn
             .prompt
             .as_deref()
-            .map(str::trim)
+            .map(unwrap_pasted)
             .filter(|t| !t.is_empty() && !t.starts_with('<'))
         {
             user_messages.push(UserMessage {
                 at: turn.started_at,
-                text: text.to_string(),
+                text,
             });
         }
         for tool in &turn.tool_calls {
@@ -110,6 +111,32 @@ pub fn from_payloads(
 /// with chat history on.
 pub fn has_content(payload: &Value) -> bool {
     payload.get("capture_policy").and_then(Value::as_str) == Some("content")
+}
+
+/// The prompt with every `<pasted_content …>…</pasted_content>` block replaced by the text it
+/// holds, trimmed. Claude Code's desktop app wraps a pasted message this way (with matching
+/// or bare closing tag `</pasted_content …>`); read as is, it
+/// opens with a tag and would be dropped as harness-written, so a task the person pasted in
+/// could never become an eval task. Other tags are left alone.
+fn unwrap_pasted(prompt: &str) -> String {
+    let mut out = String::new();
+    let mut rest = prompt;
+    while let Some(start) = rest.find("<pasted_content") {
+        let Some(open_end) = rest[start..].find('>').map(|i| start + i + 1) else {
+            break;
+        };
+        let Some(close_start) = rest[open_end..].find("</pasted_content").map(|i| open_end + i) else {
+            break;
+        };
+        let Some(close_end) = rest[close_start..].find('>').map(|i| close_start + i + 1) else {
+            break;
+        };
+        out.push_str(&rest[..start]);
+        out.push_str(rest[open_end..close_start].trim());
+        rest = &rest[close_end..];
+    }
+    out.push_str(rest);
+    out.trim().to_string()
 }
 
 fn file_edits(tool: &ToolCall, turn_start: DateTime<Utc>) -> Vec<FileEdit> {
@@ -203,6 +230,35 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn a_pasted_prompt_keeps_its_text_and_harness_tags_stay_dropped() {
+        assert_eq!(
+            unwrap_pasted(
+                "<pasted_content id=\"e12b\">
+Add roman().
+</pasted_content id=\"e12b\">"
+            ),
+            "Add roman()."
+        );
+        assert_eq!(
+            unwrap_pasted(
+                "<pasted_content id=\"e12b\">
+Add roman().
+</pasted_content>"
+            ),
+            "Add roman()."
+        );
+        assert_eq!(
+            unwrap_pasted("Do this: <pasted_content id=\"a\">spec</pasted_content> please"),
+            "Do this: spec please"
+        );
+        assert!(unwrap_pasted("<system-reminder>x</system-reminder>").starts_with('<'));
+        assert_eq!(
+            unwrap_pasted("<pasted_content id=\"a\">no end"),
+            "<pasted_content id=\"a\">no end"
+        );
+    }
 
     fn turn(id: &str, at: &str, prompt: Option<&str>, tools: Value, calls: Value) -> Value {
         json!({
