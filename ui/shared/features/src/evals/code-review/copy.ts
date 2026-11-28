@@ -3,6 +3,7 @@ export const copy = {
   title: 'Code review evals',
   description:
     'Import a pull request, add validated reference findings if you have them, and compare how different models review the same diff.',
+  universeLink: 'Eval Universe (preview)',
   import: {
     title: 'Import a pull request',
     owner: 'Owner',

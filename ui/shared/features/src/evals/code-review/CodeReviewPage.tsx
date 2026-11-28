@@ -7,17 +7,19 @@
  * the sample-size warning the server always sends says so in the results, too.
  */
 import { useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import { TopBar } from '@nasiko/app-core/shell/TopBar'
 import { useConfigs } from '@nasiko/features/router/api'
 import { PageHeader } from '@nasiko/ui/composites/page-header'
 import { fmtLatency, fmtMoneyFine, fmtPct } from '@nasiko/ui/lib/format'
 import { Alert, AlertDescription, AlertTitle } from '@nasiko/ui/primitives/alert'
 import { Badge } from '@nasiko/ui/primitives/badge'
-import { Button } from '@nasiko/ui/primitives/button'
+import { asButton, Button } from '@nasiko/ui/primitives/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@nasiko/ui/primitives/card'
 import { Checkbox } from '@nasiko/ui/primitives/checkbox'
 import { Input } from '@nasiko/ui/primitives/input'
 import { Label } from '@nasiko/ui/primitives/label'
+import { Textarea } from '@nasiko/ui/primitives/textarea'
 import {
   Table,
   TableBody,
@@ -42,7 +44,15 @@ export function CodeReviewPage() {
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-4">
       <TopBar />
-      <PageHeader title={copy.title} description={copy.description} />
+      <PageHeader
+        title={copy.title}
+        description={copy.description}
+        actions={
+          <Link to="/evals/universe" {...asButton({ variant: 'outline', size: 'sm' })}>
+            {copy.universeLink}
+          </Link>
+        }
+      />
       <ImportForm
         onImported={(t) => {
           setTask(t)
@@ -161,8 +171,8 @@ function TaskCard({
 
         {task.graded ? (
           <ul className="list-inside list-disc text-sm">
-            {task.reference_findings.map((f, i) => (
-              <li key={i}>
+            {task.reference_findings.map((f) => (
+              <li key={`${f.file}:${f.line}:${f.category}:${f.description}`}>
                 {f.file}:{f.line} ({f.severity}/{f.category}) — {f.description}
               </li>
             ))}
@@ -176,9 +186,9 @@ function TaskCard({
 
         <div className="flex flex-col gap-2">
           <Label htmlFor="cr-findings">{copy.findings.label}</Label>
-          <textarea
+          <Textarea
             id="cr-findings"
-            className="min-h-24 rounded-md border bg-transparent p-2 font-mono text-xs"
+            className="min-h-24 font-mono text-xs"
             placeholder={copy.findings.placeholder}
             value={findingsJson}
             onChange={(e) => setFindingsJson(e.target.value)}
@@ -201,7 +211,7 @@ function TaskCard({
               <label key={c.id} className="flex items-center gap-2 text-sm">
                 <Checkbox
                   checked={picked.includes(c.id)}
-                  onChange={(on) =>
+                  onCheckedChange={(on) =>
                     setPicked((p) => (on ? [...p, c.id] : p.filter((id) => id !== c.id)))
                   }
                 />
@@ -276,8 +286,8 @@ function RunResults({ runId }: { runId: string }) {
               <div key={r.model_id}>
                 <p className="text-sm font-medium">{r.model_name}</p>
                 <ul className="list-inside list-disc text-sm">
-                  {r.findings.map((f, i) => (
-                    <li key={i}>
+                  {r.findings.map((f) => (
+                    <li key={`${f.file}:${f.line}:${f.category}:${f.description}`}>
                       {f.file}:{f.line} ({f.severity}/{f.category}) — {f.description}
                     </li>
                   ))}

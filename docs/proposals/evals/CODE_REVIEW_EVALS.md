@@ -65,10 +65,21 @@ gesture at with an unimplemented doc section.
 - **No security benchmarking track.** Shares the same underlying primitives (a task, a run, an
   attempt, a grader) but needs its own labelled vulnerability datasets and its own defensible
   checks, which were not available to build and validate in this time budget.
-- **No Three.js "Eval Universe".** No graph/3D library exists anywhere in `ui/` today; adding one
-  for a single-task visualization was judged not worth the engineering-quality risk versus a plain,
-  accessible results table (reusing the existing `visx`-based charting stack would also have been
-  overkill for one task's results — a table is simply the right fit at n=1).
+- **Eval Universe** (`/evals/universe`, `ui/shared/features/src/evals/universe/`): a follow-up
+  pass built a cross-task 3D view on top of a new `GET /api/evals/code-review/universe` aggregate
+  endpoint (`server/src/code_review/api.rs::get_universe`, `store.rs::users_universe_attempts`) —
+  one cluster per task, one point per attempt, colored by precision and sized by tokens used
+  (`@react-three/fiber` + `@react-three/drei`, the monorepo's first 3D/WebGL dependency). Explicitly
+  simple: a fixed circular layout, not force-directed physics; a flat capped list
+  (`MAX_UNIVERSE_ATTEMPTS = 500`), not cursor pagination; the caller's own data only, never a
+  cross-user view. A floating in-3D label per cluster was attempted and dropped — `@react-three/
+  drei`'s `Html` loses its children under this app's `StrictMode` (`shared/app-shell/src/
+  mount.tsx`) double-mounting Canvas's own reconciler root on first render; the task identity lives
+  in the (reliable) hover tooltip and a plain HTML caption above the canvas instead. This also
+  carries forward, rather than fixes, the known `store::attempt_usage` cost/token display bug
+  (see that function's doc comment) — a universe point's size/cost can read as 0 even when the
+  real `trace_usage` row has real figures, because the attempt's own query ran before the async
+  usage backfill landed.
 - **No OpenAPI registration.** `server/src/openapi.rs`'s `ApiDoc` macro is an "opt-in, incremental
   rollout" by its own doc comment; the new routes were left unregistered to avoid editing a large,
   unseen macro invocation under this time budget. Follow-up, not a blocker.

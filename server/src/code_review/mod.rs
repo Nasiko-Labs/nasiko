@@ -38,6 +38,7 @@ pub fn router() -> Router<AppState> {
         )
         .route("/evals/code-review/tasks/{id}/runs", post(api::create_run))
         .route("/evals/code-review/runs/{id}", get(api::get_run))
+        .route("/evals/code-review/universe", get(api::get_universe))
 }
 
 /// A failed request: status, stable machine slug, human message. Duplicated from

@@ -66,13 +66,13 @@ pub async fn insert_task(db: &PgPool, new: &NewTask<'_>) -> Result<Uuid> {
 }
 
 pub async fn users_task(db: &PgPool, id: Uuid, user_id: Uuid) -> Result<Option<TaskRow>> {
-    Ok(
-        sqlx::query_as(&format!("SELECT {TASK_COLS} FROM review_tasks WHERE id = $1"))
-            .bind(id)
-            .fetch_optional(db)
-            .await?
-            .filter(|t: &TaskRow| t.user_id == user_id),
-    )
+    Ok(sqlx::query_as(&format!(
+        "SELECT {TASK_COLS} FROM review_tasks WHERE id = $1"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .filter(|t: &TaskRow| t.user_id == user_id))
 }
 
 pub async fn users_tasks(db: &PgPool, user_id: Uuid, limit: i64) -> Result<Vec<TaskRow>> {
@@ -258,20 +258,66 @@ pub struct RunRow {
     pub task_id: Uuid,
     pub models: Json<Vec<ModelConfig>>,
     pub status: String,
-    pub error: Option<String>,
     pub created_at: DateTime<Utc>,
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+/// `review_runs.error` is not read here: nothing in this module writes it today (a run that
+/// finds no successful attempt is reported via its attempts' own `error`, settled to `status =
+/// 'failed'` by `settle_run`), so selecting it would only ever surface `NULL`.
 pub async fn users_run(db: &PgPool, id: Uuid, user_id: Uuid) -> Result<Option<RunRow>> {
     Ok(sqlx::query_as(
-        "SELECT id, user_id, task_id, models, status, error, created_at, finished_at \
+        "SELECT id, user_id, task_id, models, status, created_at, finished_at \
          FROM review_runs WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(db)
     .await?
     .filter(|r: &RunRow| r.user_id == user_id))
+}
+
+/// One attempt joined with the model identity snapshotted on its run (`review_runs.models`),
+/// across every task — the "Eval Universe" view's flat point list. `review_attempts` itself only
+/// stores `model_id`; the human-readable name/provider/model string live only in the run's
+/// `models` JSONB snapshot, hence the lateral join rather than a second round-trip per attempt.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UniverseAttemptRow {
+    pub attempt_id: Uuid,
+    pub run_id: Uuid,
+    pub task_id: Uuid,
+    pub model_id: Uuid,
+    pub model_name: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub metrics: Option<Json<Metrics>>,
+    pub latency_ms: Option<i64>,
+    pub usage: Option<Json<AttemptUsage>>,
+    pub error: Option<String>,
+}
+
+pub async fn users_universe_attempts(
+    db: &PgPool,
+    user_id: Uuid,
+    limit: i64,
+) -> Result<Vec<UniverseAttemptRow>> {
+    Ok(sqlx::query_as(
+        "SELECT a.id AS attempt_id, a.run_id, a.task_id, a.model_id, a.status, a.metrics, \
+                a.latency_ms, a.usage, a.error, \
+                m.value->>'name' AS model_name, m.value->>'provider' AS provider, \
+                m.value->>'model' AS model \
+         FROM review_attempts a \
+         JOIN review_runs r ON r.id = a.run_id \
+         JOIN LATERAL jsonb_array_elements(r.models) AS m(value) \
+            ON (m.value->>'id')::uuid = a.model_id \
+         WHERE r.user_id = $1 \
+         ORDER BY a.started_at DESC NULLS LAST \
+         LIMIT $2",
+    )
+    .bind(user_id)
+    .bind(limit)
+    .fetch_all(db)
+    .await?)
 }
 
 pub async fn run_attempts(db: &PgPool, run_id: Uuid) -> Result<Vec<AttemptRow>> {

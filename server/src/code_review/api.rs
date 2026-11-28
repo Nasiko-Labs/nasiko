@@ -24,8 +24,7 @@ use crate::state::AppState;
 const MAX_LIST: i64 = 100;
 /// This slice reviews one task at a time; the UI and the report must say so plainly rather than
 /// imply a statistically meaningful ranking (`oss/docs/proposals/evals/CODE_REVIEW_EVALS.md`).
-const SAMPLE_SIZE_WARNING: &str =
-    "This run graded 1 task. Treat any difference between models as directional only, not a \
+const SAMPLE_SIZE_WARNING: &str = "This run graded 1 task. Treat any difference between models as directional only, not a \
      statistically significant ranking.";
 
 type ApiResult<T> = Result<T, ApiError>;
@@ -361,7 +360,15 @@ pub async fn create_run(
                 store::insert_pending_attempt(&state.db, run_id, task_id, config.id, &tag)
                     .await
                     .map_err(internal)?;
-            spawn_attempt(state.clone(), user_id, run_id, attempt_id, tag, config, task.clone());
+            spawn_attempt(
+                state.clone(),
+                user_id,
+                run_id,
+                attempt_id,
+                tag,
+                config,
+                task.clone(),
+            );
         }
         Ok(accepted(RunCreated {
             id: run_id,
@@ -437,11 +444,16 @@ fn log_err(result: anyhow::Result<()>) {
 
 #[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
 pub struct AttemptResult {
+    /// The attempt's own id — not a model config id, so a client can tell two attempts on the
+    /// same model apart if this task is ever re-run (e.g. a future retry or re-review).
+    pub attempt_id: Option<Uuid>,
     pub model_id: Uuid,
     pub model_name: String,
     pub provider: String,
     pub model: Option<String>,
     pub status: String,
+    /// The model's reply verbatim, kept for audit even when it failed to parse into `findings`.
+    pub raw_output: Option<String>,
     pub findings: Vec<ModelFinding>,
     pub metrics: Option<Metrics>,
     pub latency_ms: Option<i64>,
@@ -462,6 +474,8 @@ pub struct RunView {
     pub graded: bool,
     pub sample_size_warning: String,
     pub results: Vec<AttemptResult>,
+    pub created_at: DateTime<Utc>,
+    pub finished_at: Option<DateTime<Utc>>,
 }
 
 pub async fn get_run(
@@ -489,6 +503,7 @@ pub async fn get_run(
             .map(|config| {
                 let attempt = attempts.iter().find(|a| a.model_id == config.id);
                 AttemptResult {
+                    attempt_id: attempt.map(|a| a.id),
                     model_id: config.id,
                     model_name: config.name.clone(),
                     provider: config.provider.clone(),
@@ -496,6 +511,7 @@ pub async fn get_run(
                     status: attempt
                         .map(|a| a.status.clone())
                         .unwrap_or_else(|| "pending".to_string()),
+                    raw_output: attempt.and_then(|a| a.raw_output.clone()),
                     findings: attempt
                         .and_then(|a| a.findings.as_ref())
                         .map(|f| f.0.clone())
@@ -523,7 +539,108 @@ pub async fn get_run(
             graded: task.graded,
             sample_size_warning: SAMPLE_SIZE_WARNING.to_string(),
             results,
+            created_at: run.created_at,
+            finished_at: run.finished_at,
         }))
+    }
+    .await;
+    result.unwrap_or_else(IntoResponse::into_response)
+}
+
+// ── Universe (cross-task aggregate view) ────────────────────────────────────
+
+/// A bound on how many attempts the universe view ever returns. Flat, uncursored — correct at
+/// today's data volume; a genuinely large history needs real pagination, not raised here.
+const MAX_UNIVERSE_ATTEMPTS: i64 = 500;
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct TaskSummary {
+    pub id: Uuid,
+    pub owner: String,
+    pub repo: String,
+    pub pr_number: i64,
+    pub pr_title: String,
+    pub graded: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+impl From<TaskRow> for TaskSummary {
+    fn from(t: TaskRow) -> Self {
+        Self {
+            id: t.id,
+            owner: t.owner,
+            repo: t.repo,
+            pr_number: t.pr_number,
+            pr_title: t.pr_title,
+            graded: t.graded,
+            created_at: t.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct UniverseAttempt {
+    pub attempt_id: Uuid,
+    pub run_id: Uuid,
+    pub task_id: Uuid,
+    pub model_id: Uuid,
+    pub model_name: String,
+    pub provider: String,
+    pub model: Option<String>,
+    pub status: String,
+    pub metrics: Option<Metrics>,
+    pub latency_ms: Option<i64>,
+    pub cost_usd: Option<f64>,
+    pub input_tokens: Option<i64>,
+    pub output_tokens: Option<i64>,
+    pub worst_price_source: Option<String>,
+    pub error: Option<String>,
+}
+
+fn to_universe_attempt(row: store::UniverseAttemptRow) -> UniverseAttempt {
+    UniverseAttempt {
+        attempt_id: row.attempt_id,
+        run_id: row.run_id,
+        task_id: row.task_id,
+        model_id: row.model_id,
+        model_name: row.model_name,
+        provider: row.provider,
+        model: row.model,
+        status: row.status,
+        metrics: row.metrics.map(|m| m.0),
+        latency_ms: row.latency_ms,
+        cost_usd: row.usage.as_ref().map(|u| u.0.cost_usd),
+        input_tokens: row.usage.as_ref().map(|u| u.0.input_tokens),
+        output_tokens: row.usage.as_ref().map(|u| u.0.output_tokens),
+        worst_price_source: row.usage.as_ref().map(|u| u.0.worst_price_source.clone()),
+        error: row.error,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, utoipa::ToSchema)]
+pub struct UniverseView {
+    pub tasks: Vec<TaskSummary>,
+    pub attempts: Vec<UniverseAttempt>,
+}
+
+/// Every task and attempt the caller has run, flattened for a cross-task view — not one task's
+/// detail. User-scoped like every other route here; no cross-user visibility.
+pub async fn get_universe(State(state): State<AppState>, claims: Claims) -> Response {
+    let result: ApiResult<Response> = async {
+        let user_id = user(&claims)?;
+        let tasks = store::users_tasks(&state.db, user_id, MAX_LIST)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(TaskSummary::from)
+            .collect();
+        let attempts = store::users_universe_attempts(&state.db, user_id, MAX_UNIVERSE_ATTEMPTS)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .map(to_universe_attempt)
+            .collect();
+        Ok(data(UniverseView { tasks, attempts }))
     }
     .await;
     result.unwrap_or_else(IntoResponse::into_response)
@@ -547,5 +664,71 @@ mod tests {
         assert!(!valid_path_segment(""));
         assert!(!valid_path_segment("a/b"));
         assert!(!valid_path_segment(&"a".repeat(101)));
+    }
+
+    #[test]
+    fn universe_attempt_carries_the_joined_model_identity_and_flattens_usage() {
+        use sqlx::types::Json;
+
+        let row = store::UniverseAttemptRow {
+            attempt_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            model_id: Uuid::nil(),
+            model_name: "Flint (Free)".to_string(),
+            provider: "openrouter".to_string(),
+            model: Some("recursive/flint-v1.0:free".to_string()),
+            status: "done".to_string(),
+            metrics: Some(Json(Metrics {
+                true_positives: 1,
+                false_positives: 0,
+                false_negatives: 0,
+                precision: 1.0,
+                recall: 1.0,
+                severity_accuracy: Some(1.0),
+            })),
+            latency_ms: Some(117_327),
+            usage: Some(Json(AttemptUsage {
+                calls: 1,
+                cost_usd: 0.0,
+                input_tokens: 12_105,
+                output_tokens: 8_187,
+                worst_price_source: "Default".to_string(),
+            })),
+            error: None,
+        };
+
+        let attempt = to_universe_attempt(row);
+
+        assert_eq!(attempt.model_name, "Flint (Free)");
+        assert_eq!(attempt.provider, "openrouter");
+        assert_eq!(attempt.input_tokens, Some(12_105));
+        assert_eq!(attempt.output_tokens, Some(8_187));
+        assert_eq!(attempt.cost_usd, Some(0.0));
+        assert_eq!(attempt.metrics.unwrap().precision, 1.0);
+    }
+
+    #[test]
+    fn universe_attempt_with_no_usage_or_metrics_reports_none_not_zero() {
+        let row = store::UniverseAttemptRow {
+            attempt_id: Uuid::nil(),
+            run_id: Uuid::nil(),
+            task_id: Uuid::nil(),
+            model_id: Uuid::nil(),
+            model_name: "GPT-OSS 120B (Low Cost)".to_string(),
+            provider: "openrouter".to_string(),
+            model: Some("openai/gpt-oss-120b".to_string()),
+            status: "pending".to_string(),
+            metrics: None,
+            latency_ms: None,
+            usage: None,
+            error: None,
+        };
+
+        let attempt = to_universe_attempt(row);
+
+        assert!(attempt.metrics.is_none());
+        assert!(attempt.cost_usd.is_none());
+        assert!(attempt.input_tokens.is_none());
     }
 }

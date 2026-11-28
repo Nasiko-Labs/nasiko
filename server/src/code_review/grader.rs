@@ -6,7 +6,7 @@
 //! as a *supplement* to a deterministic method, never as a replacement, and that supplement is
 //! not built here (`oss/docs/proposals/evals/CODE_REVIEW_EVALS.md`).
 
-use super::api::{Category, Metrics, ModelFinding, ReferenceFinding};
+use super::api::{Metrics, ModelFinding, ReferenceFinding};
 
 const LINE_TOLERANCE: i64 = 3;
 
@@ -39,7 +39,10 @@ pub fn grade(reference: &[ReferenceFinding], model: &[ModelFinding]) -> GradeRes
             if distance > LINE_TOLERANCE {
                 continue;
             }
-            if best.map(|(_, best_distance)| distance < best_distance).unwrap_or(true) {
+            if best
+                .map(|(_, best_distance)| distance < best_distance)
+                .unwrap_or(true)
+            {
                 best = Some((mi, distance));
             }
         }
@@ -108,7 +111,12 @@ pub fn worst_price_source(recorded: &[String]) -> String {
     const ORDER: [&str; 5] = ["Exact", "Family", "Static", "Ratio", "Default"];
     recorded
         .iter()
-        .map(|name| ORDER.iter().position(|o| o == name).unwrap_or(ORDER.len() - 1))
+        .map(|name| {
+            ORDER
+                .iter()
+                .position(|o| o == name)
+                .unwrap_or(ORDER.len() - 1)
+        })
         .max()
         .map(|i| ORDER[i.min(ORDER.len() - 1)].to_string())
         .unwrap_or_else(|| "Default".to_string())
@@ -118,10 +126,16 @@ pub fn worst_price_source(recorded: &[String]) -> String {
 mod tests {
     use super::*;
 
-    use super::super::api::Severity::{Critical, High};
+    use super::super::api::Category;
     use super::super::api::Severity;
+    use super::super::api::Severity::{Critical, High};
 
-    fn ref_finding(file: &str, line: i64, category: Category, severity: Severity) -> ReferenceFinding {
+    fn ref_finding(
+        file: &str,
+        line: i64,
+        category: Category,
+        severity: Severity,
+    ) -> ReferenceFinding {
         ReferenceFinding {
             file: file.to_string(),
             line,
@@ -131,7 +145,12 @@ mod tests {
         }
     }
 
-    fn model_finding(file: &str, line: i64, category: Category, severity: Severity) -> ModelFinding {
+    fn model_finding(
+        file: &str,
+        line: i64,
+        category: Category,
+        severity: Severity,
+    ) -> ModelFinding {
         ModelFinding {
             file: file.to_string(),
             line,
@@ -190,7 +209,10 @@ mod tests {
         ];
         let result = grade(&reference, &model);
         assert_eq!(result.true_positives, 1);
-        assert_eq!(result.false_positives, 1, "the second duplicate is unmatched, not free");
+        assert_eq!(
+            result.false_positives, 1,
+            "the second duplicate is unmatched, not free"
+        );
     }
 
     #[test]
@@ -202,7 +224,11 @@ mod tests {
         let model = vec![model_finding("a.rs", 10, Category::Bug, High)];
         let result = grade(&reference, &model);
         assert_eq!(result.true_positives, 1);
-        assert_eq!(result.severity_accuracy, Some(0.0), "matched but wrong severity");
+        assert_eq!(
+            result.severity_accuracy,
+            Some(0.0),
+            "matched but wrong severity"
+        );
     }
 
     #[test]
@@ -210,8 +236,14 @@ mod tests {
         let model = vec![model_finding("a.rs", 1, Category::Bug, Critical)];
         let result = grade(&[], &model);
         assert_eq!(result.false_positives, 1);
-        assert_eq!(result.precision, 0.0, "nothing was predicted correctly, by definition");
-        assert_eq!(result.recall, 0.0, "no denominator reads as 0, not a misleading 1");
+        assert_eq!(
+            result.precision, 0.0,
+            "nothing was predicted correctly, by definition"
+        );
+        assert_eq!(
+            result.recall, 0.0,
+            "no denominator reads as 0, not a misleading 1"
+        );
         assert_eq!(result.severity_accuracy, None);
     }
 

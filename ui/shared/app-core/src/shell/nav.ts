@@ -101,7 +101,7 @@ export const NAV_ITEMS: readonly NavItem[] = [
     icon: FlaskConical,
     group: 'evals',
     shared: false,
-    also: ['/evals/code-review'],
+    also: ['/evals/code-review', '/evals/universe'],
   },
   { to: '/tokenops', label: copy.nav.monitor, icon: DollarSign, group: 'tokenops', shared: true },
   // Budgets (Control) are Enterprise only (docs/requirements/budgets.md): the item is an EE nav patch, after Optimise.
