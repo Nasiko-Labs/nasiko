@@ -74,6 +74,8 @@ export interface EvalTask {
   /** The next step: rewrite, build, screen, review (a person), done. */
   stage: string
   reject_reason: string | null
+  /** Whether a person may approve or reject it: the gate found it reproducible, whatever the reviewers decided. */
+  reviewable?: boolean | undefined
   /** What the original session did: the baseline every model is compared with. None for a benchmark's task. */
   original?:
     { model: string; cost_usd: number | null; latency_ms: number | null } | null | undefined
@@ -211,6 +213,7 @@ export const datasetSchema = z.looseObject({
       status: z.enum(['candidate', 'reproducible', 'verified', 'rejected']),
       stage: z.string(),
       reject_reason: nullable(z.string()),
+      reviewable: z.boolean().optional(),
       original: nullable(
         z.looseObject({
           model: z.string(),

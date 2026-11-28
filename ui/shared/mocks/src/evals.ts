@@ -118,6 +118,7 @@ function benchmarkTasks(ids: readonly string[]): EvalTask[] {
       status: 'verified' as const,
       stage: 'done',
       reject_reason: null,
+      reviewable: false,
       original: null,
     })),
   )
@@ -195,6 +196,7 @@ function tasksOf(sessionId: string, original: string): EvalTask[] {
       status: rejected ? 'rejected' : 'verified',
       stage: 'done',
       reject_reason: rejected ? 'gate: NoFailToPass' : null,
+      reviewable: !rejected,
       original: {
         model: original,
         cost_usd: Math.round((0.2 + (h % 100) / 100) * 10_000) / 10_000,
@@ -456,9 +458,9 @@ export function evalsHandlers(ctx: EvalsCtx): HttpHandler[] {
         .flatMap((d) => datasetView(ctx, d).tasks)
         .find((t) => t.id === id)
       if (!task) return notFound('no such task', 'not_found')
-      if (task.status !== 'reproducible')
+      if (!task.reviewable)
         return HttpResponse.json(
-          { error: 'only a reproducible task is reviewed', code: 'not_reviewable' },
+          { error: 'only a task the gate found reproducible is reviewed', code: 'not_reviewable' },
           { status: 409 },
         )
       const body = (await request.json().catch(() => ({}))) as { other_problems?: string[] }

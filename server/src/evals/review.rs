@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use nasiko_evals::prompt::{self, ChatPrompt, Distilled, ScreenVerdict};
 use nasiko_evals::screen::{self, ScreenDecision};
 use nasiko_evals::{TaskInstance, TaskStatus};
+use serde_json::Value;
 use uuid::Uuid;
 
 use super::jobs::{Job, JobKind};
@@ -16,6 +17,23 @@ use crate::state::AppState;
 /// The reviewer name a person's verdict is recorded under: it overrides the models'.
 pub fn human_reviewer(username: &str) -> String {
     format!("human:{username}")
+}
+
+/// Whether a person may give the task a verdict: any task the gate proved reproducible, the ones
+/// the reviewer models kept or rejected included, since a person's verdict overrides theirs.
+pub fn reviewable(row: &TaskRow) -> bool {
+    match row.instance.0.x_nasiko.status {
+        TaskStatus::Reproducible | TaskStatus::Verified => true,
+        TaskStatus::Rejected => passed_gate(row.gate.as_ref().map(|g| &g.0)),
+        TaskStatus::Candidate => false,
+    }
+}
+
+/// Whether the saved gate result (`{"verdict": GateVerdict, "runs": …}`) is reproducible.
+fn passed_gate(gate: Option<&Value>) -> bool {
+    gate.and_then(|g| g.pointer("/verdict/verdict"))
+        .and_then(Value::as_str)
+        == Some("reproducible")
 }
 
 /// The reviewer name a model's verdict is recorded under: its LLM config.
@@ -174,5 +192,31 @@ async fn ask<T, E: std::error::Error + Send + Sync + 'static>(
             let again = super::llm::complete(state, user_id, config, tag, request).await?;
             Ok(parse(&again)?)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nasiko_evals::gate::{GateRejection, GateVerdict, TestLists};
+    use serde_json::json;
+
+    fn saved(verdict: GateVerdict) -> Value {
+        json!({"verdict": verdict, "runs": []})
+    }
+
+    #[test]
+    fn only_a_gate_that_found_the_task_reproducible_counts_as_passed() {
+        let lists = TestLists {
+            fail_to_pass: vec!["t".into()],
+            pass_to_pass: vec![],
+            flaky: vec![],
+        };
+        assert!(passed_gate(Some(&saved(GateVerdict::Reproducible(lists)))));
+        let rejected = GateVerdict::Rejected {
+            reason: GateRejection::NoFailToPass,
+        };
+        assert!(!passed_gate(Some(&saved(rejected))));
+        assert!(!passed_gate(None));
     }
 }

@@ -95,6 +95,10 @@ export const runnable = (tasks: readonly EvalTask[]) => tasks.filter((t) => t.st
 /** The gate kept the task and no reviewer model judged it: a person approves or rejects it. */
 export const needsReview = (t: EvalTask) => t.status === 'reproducible' && t.stage === 'review'
 
+/** A person can approve a task waiting for review, and one the reviewers rejected after the gate kept it. */
+export const canApprove = (t: EvalTask) =>
+  needsReview(t) || (t.status === 'rejected' && t.reviewable === true)
+
 /** What a dataset starts with ticked: every runnable task, and the models the sessions used. */
 export function defaultPicks(dataset: EvalDataset): { tasks: string[]; models: string[] } {
   return {

@@ -95,6 +95,28 @@ describe('Evals (docs/superpowers/specs/2026-11-23-evals-design.md)', () => {
     expect(within(dataset).queryByRole('button', { name: `Approve ${title}` })).toBeNull()
   })
 
+  it('a person can still approve a task the reviewers rejected, and it can run', async () => {
+    configureMocks({ variant: 'evals-review' })
+    renderApp('/evals')
+    const open = usable(await sessionBoxes()).slice(0, 3)
+    for (const box of open) await userEvent.click(box)
+    await userEvent.click(screen.getByRole('button', { name: copy.generate(open.length) }))
+
+    const dataset = await screen.findByRole('region', { name: copy.steps.dataset }, T)
+    const reject = (await within(dataset).findAllByRole('button', { name: /^Reject / }, T))[0]!
+    const title = reject.getAttribute('aria-label')!.replace(/^Reject /, '')
+    const box = within(dataset).getByRole('checkbox', { name: new RegExp(`^${title}`) })
+    await userEvent.click(reject)
+    // Rejected: still not runnable, but Approve stays offered (and Reject is gone).
+    await waitFor(
+      () => expect(within(dataset).queryByRole('button', { name: `Reject ${title}` })).toBeNull(),
+      T,
+    )
+    expect(box).toHaveAttribute('data-disabled')
+    await userEvent.click(within(dataset).getByRole('button', { name: `Approve ${title}` }))
+    await waitFor(() => expect(box).not.toHaveAttribute('data-disabled'), T)
+  })
+
   it('asks to connect GitHub when it is not, and offers no session', async () => {
     configureMocks({ variant: 'evals-github-off' })
     renderApp('/evals')

@@ -58,6 +58,7 @@ import {
 import { copy } from './copy'
 import {
   building,
+  canApprove,
   comparison,
   defaultPicks,
   needsReview,
@@ -685,7 +686,7 @@ function DatasetStep({
                   disabled={!runnable}
                   onChange={(on) => setPicks((p) => ({ ...p, tasks: toggle(p.tasks, t.id, on) }))}
                   actions={
-                    needsReview(t) ? (
+                    canApprove(t) ? (
                       <span className="flex shrink-0 gap-1">
                         <Button
                           size="sm"
@@ -696,15 +697,17 @@ function DatasetStep({
                         >
                           {copy.dataset.approveShort}
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={reviewing}
-                          aria-label={copy.dataset.reject(t.title)}
-                          onClick={() => review.mutate({ taskId: t.id, approve: false })}
-                        >
-                          {copy.dataset.rejectShort}
-                        </Button>
+                        {needsReview(t) ? (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            disabled={reviewing}
+                            aria-label={copy.dataset.reject(t.title)}
+                            onClick={() => review.mutate({ taskId: t.id, approve: false })}
+                          >
+                            {copy.dataset.rejectShort}
+                          </Button>
+                        ) : null}
                       </span>
                     ) : null
                   }

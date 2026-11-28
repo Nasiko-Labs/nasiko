@@ -420,6 +420,9 @@ pub struct TaskView {
     pub fail_to_pass: usize,
     pub pass_to_pass: usize,
     pub reject_reason: Option<String>,
+    /// Whether a person may approve or reject it (`POST /api/evals/tasks/{id}/review`): the gate
+    /// found it reproducible, whatever the reviewer models decided.
+    pub reviewable: bool,
     pub original: OriginalView,
 }
 
@@ -502,6 +505,7 @@ async fn task_view(state: &AppState, row: &TaskRow) -> TaskView {
         fail_to_pass: task.fail_to_pass.len(),
         pass_to_pass: task.pass_to_pass.len(),
         reject_reason: task.x_nasiko.reject_reason.clone(),
+        reviewable: super::review::reviewable(row),
         original: OriginalView {
             model: task.x_nasiko.orig.model.clone(),
             cost_usd: super::attempt::original_cost_of(state, source).await,
@@ -663,7 +667,7 @@ pub struct ReviewBody {
     responses((status = 200, description = "The task, decided again"),
               (status = 400, description = "`invalid_review`"),
               (status = 404, description = "`not_found`"),
-              (status = 409, description = "`not_reviewable`: only reproducible tasks are reviewed")))]
+              (status = 409, description = "`not_reviewable`: only tasks the gate found reproducible are reviewed")))]
 pub async fn review_task(
     State(state): State<AppState>,
     claims: Claims,
@@ -673,11 +677,11 @@ pub async fn review_task(
     let result: ApiResult<Response> = async {
         let user_id = user(&claims)?;
         let row = users_task(&state, user_id, id).await?;
-        if row.instance.0.x_nasiko.status != TaskStatus::Reproducible {
+        if !super::review::reviewable(&row) {
             return Err(ApiError(
                 StatusCode::CONFLICT,
                 "not_reviewable",
-                "only a reproducible task is reviewed",
+                "only a task the gate found reproducible is reviewed",
             ));
         }
         if body.clarity > 3 || body.test_validity > 3 {

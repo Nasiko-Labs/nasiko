@@ -86,7 +86,7 @@ export const copy = {
       'None of these sessions could be linked to a single commit, so there is nothing to run.',
     tasks: 'Tasks',
     tasksHint:
-      'Each task is a request from a session, its real fix and the tests that prove it. Only verified tasks run; approve the ones that need review.',
+      'Each task is a request from a session, its real fix and the tests that prove it. Only verified tasks run; approve the ones that need review, or one the reviewers rejected that you would keep.',
     approveShort: 'Approve',
     rejectShort: 'Reject',
     approve: (task: string) => `Approve ${task}`,

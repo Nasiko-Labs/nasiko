@@ -629,7 +629,7 @@ async fn a_run_is_queued_shown_cancelled_and_deleted_by_its_owner_only() {
 
 #[tokio::test]
 #[serial]
-async fn a_person_decides_a_task_no_reviewer_could() {
+async fn a_person_decides_any_task_the_gate_found_reproducible() {
     let server = start(true).await;
     let db = &server.db;
     let dev = seed_user(db, "dev").await;
@@ -647,11 +647,38 @@ async fn a_person_decides_a_task_no_reviewer_could() {
     assert_eq!(body["data"]["status"], "verified");
     assert_eq!(body["data"]["difficulty"], "15 min - 1 hour");
 
+    // A rejected task the gate found reproducible stays reviewable, so it can be approved
+    // again (the same holds for one the reviewer models rejected).
+    sqlx::query("UPDATE eval_tasks SET gate = $2 WHERE id = $1")
+        .bind(task)
+        .bind(json!({"verdict": {"verdict": "reproducible"}, "runs": []}))
+        .execute(db)
+        .await
+        .unwrap();
+    let rejected = json!({"clarity": 0, "test_validity": 0, "effort": "<15 min fix",
+                          "other_problems": ["rejected by a person"]});
+    let (status, body) = call(&server, dev, reqwest::Method::POST, &review, Some(rejected)).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"]["status"], "rejected");
+    assert_eq!(body["data"]["reviewable"], true);
     let (status, body) = call(
         &server,
         dev,
         reqwest::Method::POST,
         &review,
+        Some(json!({"clarity": 0, "test_validity": 0, "effort": "<15 min fix"})),
+    )
+    .await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(body["data"]["status"], "verified");
+
+    // A task the gate rejected has nothing a person could keep.
+    let (_, gated) = ready_dataset(db, dev, "rejected").await;
+    let (status, body) = call(
+        &server,
+        dev,
+        reqwest::Method::POST,
+        &format!("/api/evals/tasks/{gated}/review"),
         Some(json!({"clarity": 0, "test_validity": 0, "effort": "<15 min fix"})),
     )
     .await;
